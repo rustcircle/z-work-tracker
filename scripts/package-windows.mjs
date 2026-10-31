@@ -3,7 +3,7 @@
 // (only DLLs that ship in Windows are allowed) and reports the signature state honestly.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const TARGET = 'x86_64-pc-windows-gnu';
 const OBJDUMP = 'x86_64-w64-mingw32-objdump';
@@ -22,7 +22,9 @@ const env = { ...process.env, LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' };
 const build = spawnSync('pnpm', ['tauri', 'build', '--target', TARGET, '--bundles', 'nsis'], { stdio: 'inherit', env });
 if (build.status !== 0) process.exit(build.status ?? 1);
 
-const release = join('src-tauri', 'target', TARGET, 'release');
+// Cargo reads a relative CARGO_TARGET_DIR against the folder it runs in, which here is src-tauri.
+const targetRoot = process.env.CARGO_TARGET_DIR ? resolve('src-tauri', process.env.CARGO_TARGET_DIR) : join('src-tauri', 'target');
+const release = join(targetRoot, TARGET, 'release');
 const nsisDir = join(release, 'bundle', 'nsis');
 const installer = readdirSync(nsisDir).find((f) => f.endsWith('-setup.exe'));
 if (!installer) {

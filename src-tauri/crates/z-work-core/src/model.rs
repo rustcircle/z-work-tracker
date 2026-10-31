@@ -502,6 +502,9 @@ pub struct LocalPrefs {
     /// When the current absence began, so a crash during it still records it as time away.
     #[serde(default)]
     pub away_since: Option<Ts>,
+    /// What that absence is, so a crash labels it correctly.
+    #[serde(default)]
+    pub away_kind: Option<GapKind>,
     /// The highest reference number ever seen per prefix. Kept across a restore, so a number that
     /// has been handed out is never handed out again.
     #[serde(default)]

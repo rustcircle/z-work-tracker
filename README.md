@@ -96,7 +96,7 @@ Only the tray's **Quit** really exits. On a real exit a running segment closes a
 
 If the app crashes, a heartbeat saved about every 30 seconds marks the last moment it was alive. At the next launch the open segment closes at that moment, the task is paused and a notice tells you, including that the next start asks for every field.
 
-**Time away.** While a task runs, the app watches for gaps: the machine slept, the wall clock jumped by more than two minutes between checks, the session was locked, or nobody touched the keyboard or mouse for the idle limit (10 minutes by default; 0 turns idle detection off, but a sleep, clock jump or lock is always noticed). The app checks for a lock every few seconds on Windows, so the gap's ends can be a few seconds off. When you return, the app asks what to do with the time:
+**Time away.** While a task runs, the app watches for gaps: the machine slept, the wall clock jumped by more than two minutes between checks, the session was locked, or nobody touched the keyboard or mouse for the idle limit (10 minutes by default; 0 turns idle detection off, but a sleep, clock jump or lock is always noticed). The app checks for a lock every few seconds on Windows, so the gap's ends can be a few seconds off, and a lock of 10 seconds or less can't be measured and stays work. If Windows stops answering during a lock, the gap closes after a minute at the last moment it confirmed the lock, and idle and sleep detection take over. When you return, the app asks what to do with the time:
 
 | Answer | Exact | Billable and earnings |
 |---|---|---|

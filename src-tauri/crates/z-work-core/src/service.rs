@@ -116,6 +116,7 @@ impl Service {
     fn recover_crash(&mut self) -> Result<(), CoreError> {
         let device = self.file.device_id.clone();
         let away = self.file.prefs.away_since.take();
+        let away_kind = self.file.prefs.away_kind.take();
         let Some(segment) = self.file.data.own_open_segments(&device).into_iter().next() else {
             return Ok(());
         };
@@ -130,7 +131,7 @@ impl Service {
         if let Some(away) = away {
             self.file
                 .data
-                .add_gap(&ctx, &segment, away, at, GapKind::Idle);
+                .add_gap(&ctx, &segment, away, at, away_kind.unwrap_or(GapKind::Idle));
         }
         let names = self
             .file
@@ -455,14 +456,15 @@ impl Service {
         self.save_away()
     }
 
-    /// The OS says whether the session is locked. `None` when it can't say.
+    /// The OS says whether the session is locked. `None` when it can't say, which ends a lock if it
+    /// goes on too long.
     pub fn observe_lock(&mut self, locked: Option<bool>) -> Result<bool, CoreError> {
-        let Some(locked) = locked else {
-            return Ok(false);
-        };
         let device = self.file.device_id.clone();
         let running = self.file.data.own_open_segments(&device).into_iter().next();
-        let gaps = self.idle.set_locked(self.now(), locked);
+        let gaps = match locked {
+            Some(locked) => self.idle.set_locked(self.now(), locked),
+            None => self.idle.lock_unknown(self.now()),
+        };
         if let Some(segment) = running {
             self.unsaved_gaps
                 .extend(gaps.into_iter().map(|g| (segment.clone(), g)));
@@ -473,7 +475,11 @@ impl Service {
     /// Writes found time away and the absence in progress. True when time away was recorded.
     fn save_away(&mut self) -> Result<bool, CoreError> {
         let away = self.idle.away_since();
-        if self.unsaved_gaps.is_empty() && self.file.prefs.away_since == away {
+        let kind = self.idle.away_kind();
+        if self.unsaved_gaps.is_empty()
+            && self.file.prefs.away_since == away
+            && self.file.prefs.away_kind == kind
+        {
             return Ok(false);
         }
         let gaps = self.unsaved_gaps.clone();
@@ -482,6 +488,7 @@ impl Service {
                 f.data.add_gap(c, segment, g.start, g.end, g.kind);
             }
             f.prefs.away_since = away;
+            f.prefs.away_kind = kind;
             Ok(())
         })?;
         self.unsaved_gaps.clear();
@@ -626,6 +633,7 @@ impl Service {
             .data
             .raise_reference_marks(&mut prefs.reference_marks);
         prefs.away_since = None;
+        prefs.away_kind = None;
         restored.prefs = prefs;
         restored.device_id = self.file.device_id.clone();
         restored.device_name = self.file.device_name.clone();
@@ -2125,5 +2133,121 @@ mod tests {
         clock.advance(60);
         let safety = s.restore_backup(&name).unwrap();
         assert_eq!(s.list_backups().unwrap()[0].name, safety);
+    }
+
+    /// One poll round as the app makes it: the lock first, then the activity tick.
+    fn poll(s: &mut Service, clock: &ManualClock, secs: i64, locked: Option<bool>) {
+        clock.advance(secs);
+        s.observe_lock(locked).unwrap();
+        s.observe_activity(Some(0)).unwrap();
+    }
+
+    #[test]
+    fn a_query_that_never_answers_leaves_idle_and_sleep_detection_working() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        for _ in 0..50 {
+            poll(&mut s, &clock, 5, None);
+        }
+        assert!(pending_gaps(&s).is_empty(), "working is not an absence");
+        poll(&mut s, &clock, 3600, None);
+        assert_eq!(pending_gaps(&s).len(), 1, "the sleep is still found");
+    }
+
+    #[test]
+    fn a_query_failing_after_a_lock_closes_it_at_the_last_confirmed_moment() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        poll(&mut s, &clock, 5, Some(true));
+        for _ in 0..60 {
+            poll(&mut s, &clock, 5, Some(true));
+        }
+        for _ in 0..720 {
+            poll(&mut s, &clock, 5, None);
+        }
+        assert!(
+            s.file().prefs.away_since.is_none(),
+            "the lock no longer latches"
+        );
+        let gaps = pending_gaps(&s);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].kind, GapKind::Lock);
+        assert_eq!(
+            gaps[0].end.secs() - gaps[0].start.secs(),
+            300,
+            "not the hour of work after it"
+        );
+        // The answer coming back later adds nothing.
+        s.observe_lock(Some(false)).unwrap();
+        assert_eq!(s.file().data.gaps.len(), 1);
+    }
+
+    #[test]
+    fn a_lock_seen_once_before_the_query_fails_stays_work_and_a_later_sleep_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        poll(&mut s, &clock, 5, Some(true));
+        for _ in 0..720 {
+            poll(&mut s, &clock, 5, None);
+        }
+        assert!(pending_gaps(&s).is_empty());
+        poll(&mut s, &clock, 3600, None);
+        let gaps = pending_gaps(&s);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].kind, GapKind::Sleep);
+        s.on_exit().unwrap();
+        assert_eq!(pending_gaps(&s).len(), 1);
+    }
+
+    #[test]
+    fn one_failed_poll_does_not_split_a_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        poll(&mut s, &clock, 5, Some(true));
+        poll(&mut s, &clock, 5, None);
+        poll(&mut s, &clock, 5, Some(true));
+        poll(&mut s, &clock, 5, Some(false));
+        let gaps = pending_gaps(&s);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].end.secs() - gaps[0].start.secs(), 15);
+    }
+
+    #[test]
+    fn a_clock_going_back_during_a_lock_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        clock.advance(5);
+        s.observe_activity(Some(0)).unwrap();
+        s.observe_lock(Some(true)).unwrap();
+        clock.advance(-300);
+        s.observe_lock(Some(false)).unwrap();
+        assert!(pending_gaps(&s).is_empty());
+    }
+
+    #[test]
+    fn a_crash_during_a_lock_is_labelled_a_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        poll(&mut s, &clock, 5, Some(true));
+        clock.advance(60);
+        s.heartbeat().unwrap();
+        assert_eq!(s.file().prefs.away_kind, Some(GapKind::Lock));
+        drop(s);
+        clock.advance(600);
+        let s = open(dir.path(), &clock);
+        let gaps = pending_gaps(&s);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].kind, GapKind::Lock);
+        assert_eq!(s.file().prefs.away_kind, None);
     }
 }

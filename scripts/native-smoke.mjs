@@ -129,7 +129,7 @@ run(async () => {
   await inv('smoke_observe', { idle: 0 });
   // A lock is noticed whatever the idle count says.
   await inv('smoke_observe', { idle: 0, locked: true });
-  await wait(1100);
+  await wait(11000);
   await inv('smoke_observe', { idle: 0, locked: false });
   s = await inv('get_snapshot');
   r.lockGap = s.gaps.filter((g) => g.kind === 'lock' && g.decision === 'pending').length;

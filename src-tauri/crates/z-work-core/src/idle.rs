@@ -6,6 +6,11 @@ use crate::time::Ts;
 
 /// Ticks arrive every few seconds. A wall-clock step beyond this means the machine wasn't running.
 pub const JUMP_SECS: i64 = 120;
+/// A lock isn't believed past this long without the OS confirming it, so a failing query can't
+/// leave the app thinking the screen is locked while someone works.
+pub const LOCK_SILENCE_SECS: i64 = 60;
+/// Polls are seconds apart, so a lock this short can't be measured. That time stays work.
+pub const MIN_LOCK_SECS: i64 = 10;
 
 #[derive(Debug, Default)]
 pub struct IdleTracker {
@@ -15,6 +20,20 @@ pub struct IdleTracker {
     settled_until: Option<Ts>,
     /// When the session locked, while it stays locked.
     locked_since: Option<Ts>,
+    /// The last time the OS answered that the session is locked.
+    locked_confirmed: Option<Ts>,
+}
+
+/// The gap for a lock, unless it is too short to measure.
+fn lock_gap(start: Ts, end: Ts, measured_from: Ts) -> Vec<NewGap> {
+    if end.secs() - measured_from.secs() <= MIN_LOCK_SECS && start >= measured_from {
+        return Vec::new();
+    }
+    vec![NewGap {
+        start,
+        end,
+        kind: GapKind::Lock,
+    }]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,19 +112,53 @@ impl IdleTracker {
         match (locked, self.locked_since) {
             (true, None) => {
                 self.locked_since = Some(now);
+                self.locked_confirmed = Some(now);
                 Vec::new()
             }
-            (false, Some(since)) => {
-                self.locked_since = None;
-                let start = self.away_since.take().map_or(since, |a| a.min(since));
-                self.settled_until = Some(now);
-                vec![NewGap {
-                    start,
-                    end: now,
-                    kind: GapKind::Lock,
-                }]
+            (true, Some(_)) => {
+                self.locked_confirmed = Some(now);
+                Vec::new()
             }
-            _ => Vec::new(),
+            (false, Some(_)) => self.close_lock(now),
+            (false, None) => Vec::new(),
+        }
+    }
+
+    /// The OS couldn't say. One failed poll doesn't end a lock, but after a while the lock closes at
+    /// the last moment it was confirmed, and idle and sleep detection take over again.
+    pub fn lock_unknown(&mut self, now: Ts) -> Vec<NewGap> {
+        let Some(confirmed) = self
+            .locked_confirmed
+            .filter(|_| self.locked_since.is_some())
+        else {
+            return Vec::new();
+        };
+        if now.secs() - confirmed.secs() < LOCK_SILENCE_SECS {
+            return Vec::new();
+        }
+        self.close_lock(confirmed)
+    }
+
+    fn close_lock(&mut self, end: Ts) -> Vec<NewGap> {
+        let Some(since) = self.locked_since.take() else {
+            return Vec::new();
+        };
+        self.locked_confirmed = None;
+        let start = self.away_since.take().map_or(since, |a| a.min(since));
+        let gaps = lock_gap(start, end, since);
+        if !gaps.is_empty() {
+            self.settled_until = Some(end);
+        }
+        gaps
+    }
+
+    /// What the current absence is, for a crash to label it correctly.
+    #[must_use]
+    pub fn away_kind(&self) -> Option<GapKind> {
+        if self.locked_since.is_some() {
+            Some(GapKind::Lock)
+        } else {
+            self.away_since.map(|_| GapKind::Idle)
         }
     }
 
@@ -127,13 +180,12 @@ impl IdleTracker {
         if let Some(since) = self.locked_since {
             // Still locked as far as is known, so what follows belongs to the same absence.
             self.locked_since = Some(now);
-            out.push(NewGap {
-                start: away.map_or(since, |a| a.min(since)),
-                end: now,
-                kind: GapKind::Lock,
-            });
-            self.settled_until = Some(now);
-            return out;
+            self.locked_confirmed = Some(now);
+            let gaps = lock_gap(away.map_or(since, |a| a.min(since)), now, since);
+            if !gaps.is_empty() {
+                self.settled_until = Some(now);
+            }
+            return gaps;
         }
         if let Some(l) = last
             && now.secs() - l.secs() > JUMP_SECS
@@ -291,6 +343,26 @@ mod tests {
     }
 
     #[test]
+    fn a_lock_of_ten_seconds_or_less_stays_work_and_anything_longer_asks() {
+        for (secs, gaps) in [(5, 0), (10, 0), (15, 1)] {
+            let mut t = IdleTracker::default();
+            t.tick(Ts(T), true, Some(0), 600);
+            t.set_locked(Ts(T), true);
+            assert_eq!(t.set_locked(Ts(T + secs), false).len(), gaps, "{secs}");
+        }
+    }
+
+    #[test]
+    fn idle_time_before_a_short_lock_is_still_an_absence() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(900), 600);
+        t.set_locked(Ts(T + 1), true);
+        let g = t.set_locked(Ts(T + 6), false);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].start, Ts(T - 900));
+    }
+
+    #[test]
     fn a_long_lock_with_idle_detection_off_is_one_gap() {
         let mut t = IdleTracker::default();
         t.tick(Ts(T), true, Some(0), 0);
@@ -307,8 +379,8 @@ mod tests {
         assert!(t.set_locked(Ts(T), false).is_empty());
         t.set_locked(Ts(T + 5), true);
         assert!(t.set_locked(Ts(T + 10), true).is_empty());
-        assert_eq!(t.set_locked(Ts(T + 15), false)[0].start, Ts(T + 5));
-        assert!(t.set_locked(Ts(T + 20), false).is_empty());
+        assert_eq!(t.set_locked(Ts(T + 20), false)[0].start, Ts(T + 5));
+        assert!(t.set_locked(Ts(T + 25), false).is_empty());
     }
 
     #[test]
