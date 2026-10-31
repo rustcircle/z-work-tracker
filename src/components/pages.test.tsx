@@ -130,6 +130,68 @@ describe('projects tab', () => {
   });
 });
 
+describe('project rounding override', () => {
+  it('adds an override from today for one project and lists it', async () => {
+    const user = userEvent.setup();
+    boot(demoState());
+    await go(user, 'Projects');
+    await user.click(await screen.findByRole('button', { name: 'Edit Website' }));
+    const form = screen.getByRole('form', { name: 'Edit project Website' });
+    expect(within(form).getByText('This project follows the global rounding in Settings.')).toBeVisible();
+    await user.click(within(form).getByRole('checkbox', { name: 'Override the global rounding for this project' }));
+    await user.selectOptions(within(form).getByRole('combobox', { name: 'Increment' }), '30');
+    await user.selectOptions(within(form).getByRole('combobox', { name: 'Method' }), 'nearest');
+    await user.click(within(form).getByRole('button', { name: 'Save project' }));
+    await waitFor(() => expect(calls('set_rounding')).toHaveLength(1));
+    expect(calls('set_rounding')[0]).toMatchObject({ input: { projectId: 'p-web', effectiveFrom: '2026-03-12', incrementMinutes: 30, method: 'nearest', confirmRetroactive: false }, today: '2026-03-12' });
+    await user.click(await screen.findByRole('button', { name: 'Edit Website' }));
+    expect(await screen.findByText('From 2026-03-12: 30 min, Nearest')).toBeVisible();
+  });
+});
+
+describe('editing a task', () => {
+  it('changes name and project without touching its state', async () => {
+    const user = userEvent.setup();
+    boot(demoState());
+    await user.click(await screen.findByRole('button', { name: 'Edit Social templates' }));
+    const form = screen.getByRole('form', { name: 'Edit task' });
+    const name = within(form).getByRole('textbox', { name: 'Task name' });
+    await user.clear(name);
+    await user.type(name, 'Social kit');
+    await user.selectOptions(within(form).getByRole('combobox', { name: 'Project' }), 'p-web');
+    await user.click(within(form).getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(calls('update_task')).toHaveLength(1));
+    expect(calls('update_task')[0]).toMatchObject({ id: 't-next', input: { name: 'Social kit', projectId: 'p-web' } });
+    expect(await screen.findByRole('article', { name: 'Social kit' })).toHaveAttribute('data-state', 'draft');
+  });
+
+  it('refuses an empty name when editing', async () => {
+    const user = userEvent.setup();
+    boot(demoState());
+    await user.click(await screen.findByRole('button', { name: 'Edit Social templates' }));
+    const form = screen.getByRole('form', { name: 'Edit task' });
+    await user.clear(within(form).getByRole('textbox', { name: 'Task name' }));
+    await user.click(within(form).getByRole('button', { name: 'Save changes' }));
+    expect(await within(form).findByText('Enter a task name.')).toBeVisible();
+    expect(calls('update_task')).toEqual([]);
+  });
+
+  it('deletes a draft only after confirming, and shows the description of a task read-only', async () => {
+    const user = userEvent.setup();
+    boot(demoState());
+    await user.click(await screen.findByRole('button', { name: 'Delete draft Social templates' }));
+    expect(calls('delete_draft')).toEqual([]);
+    await user.click(within(screen.getByRole('dialog', { name: 'Delete this draft?' })).getByRole('button', { name: 'Delete draft' }));
+    await waitFor(() => expect(calls('delete_draft')).toEqual([{ id: 't-next' }]));
+    const logo = await screen.findByRole('article', { name: 'Logo concepts' });
+    await user.click(within(logo).getByRole('button', { name: /Description/ }));
+    const doc = await within(logo).findByRole('document', { name: 'Description of Logo concepts' });
+    expect(doc).toHaveTextContent('Final artwork');
+    expect(doc.querySelector('ol')).not.toBeNull();
+    expect(doc).toHaveAttribute('contenteditable', 'false');
+  });
+});
+
 describe('banners', () => {
   it('shows warnings without a way to dismiss them, and dismisses notices', async () => {
     const user = userEvent.setup();
