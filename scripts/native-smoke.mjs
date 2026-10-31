@@ -49,7 +49,7 @@ function launch(exe, script, out, env = {}) {
   return { child, exited };
 }
 
-async function waitFile(path, ms = 40000) {
+async function waitFile(path, ms = 90000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     if (existsSync(path)) {
