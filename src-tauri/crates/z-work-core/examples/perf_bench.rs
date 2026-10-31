@@ -390,6 +390,10 @@ fn main() -> Res<()> {
     results
         .borrow_mut()
         .insert("pdfBytes".into(), json!(pdf_bytes.len()));
+    // An xlsx holds its creation time, so two runs are compared by unzipping these.
+    if let Ok(dir) = std::env::var("PERF_ARTIFACTS") {
+        std::fs::write(Path::new(&dir).join("export.xlsx"), &xlsx_bytes)?;
+    }
     digests.insert("csv".into(), fnv(csv::build(&source, &request)?.as_bytes()));
     digests.insert("pdf".into(), fnv(&pdf_bytes));
     digests.insert("xlsx_len".into(), xlsx_bytes.len().to_string());
