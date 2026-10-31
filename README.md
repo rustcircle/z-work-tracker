@@ -367,7 +367,7 @@ ZWT_SAMPLE_XLSX=/tmp/sample.xlsx cargo test -p z-work-core builds_with_earnings
 cd .. && uv run --no-project --with openpyxl scripts/verify_xlsx.py /tmp/sample.xlsx
 ```
 
-Continuous integration: `.github/workflows/ci.yml` runs these gates on `windows-latest` on each push to `main` and each pull request into `main`, and can be started by hand. Playwright there runs against the IPC mock, so it doesn't drive the real backend, and a green run says nothing about the installer or the app on a real desktop. A small macOS job runs the core's lint and tests, for its Unix-only file handling. It uses no secrets and signs nothing. The timing test and packaging run only in `windows-build.yml`, by hand or on a tag.
+Continuous integration: `.github/workflows/ci.yml` runs these gates on `windows-latest` on each push to `main` and each pull request into `main`, and can be started by hand. Playwright there runs against the IPC mock, so it doesn't drive the real backend, and a green run says nothing about the installer or the app on a real desktop. A small macOS job runs the core's lint and tests, for its Unix-only file handling. It uses no secrets and signs nothing. Packaging runs only in `windows-build.yml`, by hand or on a tag. The timing test is too noisy for a shared runner, so run it locally.
 
 `pnpm gen:tz` regenerates `src/generated/tzdata.json` from Rust's time zone database. Run it after updating `chrono-tz`.
 
