@@ -8,11 +8,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use labor_core::detect::{RealEnv, detect, host_os};
-use labor_core::machine::{ProjectInput, RateInput, RoundingInput, ShiftInput, TaskInput};
+use labor_core::machine::{
+    ProjectInput, RateInput, RoundingInput, ShiftInput, TaskInput, TaskPatch,
+};
 use labor_core::model::{SyncProvider, SyncTarget, Theme};
 use labor_core::report::ExportRequest;
 use labor_core::service::Service;
-use labor_core::sync::{FolderPreview, RealIo, preview_folder, run_cycle};
+use labor_core::sync::{FolderPreview, RealIo, TARGET_TIMEOUT, bounded, preview_folder, run_cycle};
 use labor_core::tray::{
     CloseDecision, ToggleRoute, TrayAction, close_decision, toggle_route, tray_state,
 };
@@ -178,6 +180,7 @@ fn show_main(app: &AppHandle) {
         let _ = w.set_focus();
     }
     if let Some(core) = app.try_state::<Arc<Core>>() {
+        core.hide_pending.store(false, Ordering::SeqCst);
         core.tell_sync(SyncMsg::Now);
     }
 }
@@ -244,6 +247,7 @@ fn handle_close(app: &AppHandle, core: &Core) -> bool {
     match close_decision(core.quitting.load(Ordering::SeqCst), shown) {
         CloseDecision::Exit => false,
         CloseDecision::Hide => {
+            core.hide_pending.store(false, Ordering::SeqCst);
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.hide();
             }
@@ -359,6 +363,16 @@ fn update_task(
     input: TaskInput,
 ) -> CmdResult<Snapshot> {
     Ok(core.change(&app, |s| s.update_task(&id, &input))?.1)
+}
+
+#[tauri::command(async)]
+fn patch_task(
+    app: AppHandle,
+    core: CoreState<'_>,
+    id: String,
+    patch: TaskPatch,
+) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.patch_task(&id, &patch))?.1)
 }
 
 #[tauri::command(async)]
@@ -507,13 +521,20 @@ fn pick_sync_folder(app: AppHandle) -> Option<String> {
 
 #[tauri::command(async)]
 fn preview_sync_folder(core: CoreState<'_>, root: String) -> CmdResult<FolderPreview> {
-    usable_folder(&root)?;
-    let (own, now) = {
+    let (own, now, hung) = {
         let svc = core.svc()?;
         let s = guard(&svc);
-        (s.file().device_id.clone(), s.now())
+        (s.file().device_id.clone(), s.now(), s.hung_targets())
     };
-    Ok(preview_folder(&RealIo, Path::new(&root), &own, now))
+    // A hung drive must not hold a command thread. Its own key: a sync of this folder may be running.
+    bounded(
+        &hung,
+        &format!("preview:{root}"),
+        TARGET_TIMEOUT,
+        move || usable_folder(&root).map(|()| preview_folder(&RealIo, Path::new(&root), &own, now)),
+    )
+    .map_err(|e| CmdError::from(CoreError::Conflict(e)))?
+    .map_err(CmdError::from)
 }
 
 #[tauri::command(async)]
@@ -928,6 +949,7 @@ pub fn run() {
         delete_project,
         create_task,
         update_task,
+        patch_task,
         delete_draft,
         start_task,
         resume_task,
@@ -965,6 +987,7 @@ pub fn run() {
         delete_project,
         create_task,
         update_task,
+        patch_task,
         delete_draft,
         start_task,
         resume_task,

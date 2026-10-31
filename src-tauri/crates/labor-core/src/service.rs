@@ -10,7 +10,7 @@ use crate::detect::Detected;
 use crate::error::CoreError;
 use crate::machine::{
     COLD_REQUIRED, Ctx, ProjectInput, RateInput, RequiredField, RoundingInput, ShiftInput,
-    TaskInput, Transition, doc_has_text,
+    TaskInput, TaskPatch, Transition, doc_has_text,
 };
 use crate::merge::merge;
 use crate::model::{
@@ -183,6 +183,9 @@ impl Service {
     pub fn update_task(&mut self, id: &str, input: &TaskInput) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.update_task(c, id, input))
     }
+    pub fn patch_task(&mut self, id: &str, patch: &TaskPatch) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.patch_task(c, id, patch))
+    }
     pub fn delete_draft(&mut self, id: &str) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.delete_draft(c, id))
     }
@@ -253,15 +256,11 @@ impl Service {
             f.data
                 .pause(c, id)
                 .map_err(|e| name_device(e, f.remote_devices.clone()))
-        })?;
-        self.last_worked = Some(id.to_owned());
-        Ok(())
+        })
     }
 
     pub fn stop_task(&mut self, id: &str) -> Result<(), CoreError> {
-        self.mutate(|f, c| f.data.stop(c, id))?;
-        self.last_worked = Some(id.to_owned());
-        Ok(())
+        self.mutate(|f, c| f.data.stop(c, id))
     }
 
     #[must_use]
@@ -416,16 +415,21 @@ impl Service {
         own_files: Vec<DeviceFile>,
     ) -> bool {
         let mut merged = merge(&self.file.data, incoming);
-        // This device's own file can hold what a restored store lost. An open segment that comes
-        // back this way belongs to a past run, so it closes at that file's last heartbeat.
-        for mut own in own_files {
-            for seg in own.data.segments.values_mut() {
-                let open_here = seg.end.is_none() && seg.device_id == self.file.device_id;
-                if open_here && !self.file.data.segments.contains_key(&seg.id) {
-                    seg.end = Some(own.last_heartbeat.unwrap_or(seg.start).max(seg.start));
-                }
-            }
+        // This device's own file can hold what a restored store lost.
+        let mut last_beat = None;
+        for own in &own_files {
+            last_beat = last_beat.max(own.last_heartbeat);
             merged = merge(&merged, &own.data);
+        }
+        // An open segment of this device that the store doesn't hold belongs to a past run, whichever
+        // file brought it back. Nothing is timing it now, so it closes at the last known heartbeat.
+        for seg in merged.segments.values_mut() {
+            let past_run = seg.end.is_none()
+                && seg.device_id == self.file.device_id
+                && !self.file.data.segments.contains_key(&seg.id);
+            if past_run {
+                seg.end = Some(last_beat.unwrap_or(seg.start).max(seg.start));
+            }
         }
         let mut known = self.file.remote_devices.clone();
         for (id, device) in seen {
@@ -855,6 +859,38 @@ mod tests {
             s.resume_task(&t),
             Err(CoreError::ColdStartRequired)
         ));
+    }
+
+    #[test]
+    fn stopping_an_older_task_does_not_change_the_copy_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, old) = running(dir.path(), &clock);
+        let p = s.file().data.tasks[&old].project_id.clone();
+        let new = s.create_task(&tinput("New", &p)).unwrap();
+        s.start_task(&new).unwrap();
+        s.stop_task(&old).unwrap();
+        assert_eq!(s.snapshot().launch.copy_source.unwrap().task_id, new);
+    }
+
+    #[test]
+    fn a_past_open_segment_from_another_devices_file_is_closed_and_leaves_no_running_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        let mut incoming = s.file().data.clone();
+        s.mutate(|f, _| {
+            f.data = Shared::default();
+            Ok(())
+        })
+        .unwrap();
+        clock.advance(86_400);
+        assert!(incoming.tasks.contains_key(&t));
+        incoming.settings.clear();
+        s.absorb_remote(&incoming, BTreeMap::new(), Vec::new());
+        let device = s.file().device_id.clone();
+        assert!(s.file().data.own_open_segments(&device).is_empty());
+        assert_ne!(s.file().data.tasks[&t].state, TaskState::Running);
     }
 
     #[test]

@@ -97,6 +97,24 @@ pub struct TaskInput {
     pub continued_from: Option<String>,
 }
 
+/// An edit to some fields of a task. A field left out keeps whatever the store holds now, so an
+/// autosave never reverts what another device has just changed.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPatch {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// `null` from the page clears the description; leaving the key out keeps it.
+    #[serde(default, deserialize_with = "present_value")]
+    pub description: Option<Value>,
+}
+
+fn present_value<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
+}
+
 /// Fields that must be filled before the first start of a launch. Add tags here when they exist.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -383,6 +401,54 @@ impl Shared {
         }
         if t.description != input.description {
             t.description = input.description.clone();
+            t.description_stamp = ctx.next(&t.description_stamp);
+        }
+        Ok(())
+    }
+
+    /// Edits only the given fields, in any state. Never touches segments or the task's state.
+    pub fn patch_task(
+        &mut self,
+        ctx: &Ctx<'_>,
+        id: &str,
+        patch: &TaskPatch,
+    ) -> Result<(), CoreError> {
+        let previous = self.live_task(id)?.project_id.clone();
+        let name = patch
+            .name
+            .as_deref()
+            .map(|n| clean_text(n, "Task name", MAX_NAME))
+            .transpose()?;
+        let project_id = match patch.project_id.as_deref() {
+            Some(p) if p != previous => {
+                let project = self.live_project(p)?;
+                if project.archived {
+                    return Err(CoreError::Validation(
+                        "this project is archived; restore it first".into(),
+                    ));
+                }
+                Some(project.id.clone())
+            }
+            _ => None,
+        };
+        if let Some(d) = &patch.description {
+            check_description(d)?;
+        }
+        let t = self.tasks.get_mut(id).ok_or(CoreError::NotFound("task"))?;
+        if let Some(name) = name
+            && t.name != name
+        {
+            t.name = name;
+            t.name_stamp = ctx.next(&t.name_stamp);
+        }
+        if let Some(project_id) = project_id {
+            t.project_id = project_id;
+            t.project_stamp = ctx.next(&t.project_stamp);
+        }
+        if let Some(d) = &patch.description
+            && t.description != *d
+        {
+            t.description = d.clone();
             t.description_stamp = ctx.next(&t.description_stamp);
         }
         Ok(())
@@ -1049,6 +1115,38 @@ pub(crate) mod tests {
         s.delete_project(&c, &empty).unwrap();
         assert!(s.projects[&empty].deleted);
         s.create_project(&c, &project_input("Empty")).unwrap();
+    }
+
+    #[test]
+    fn a_patch_changes_only_the_fields_it_names() {
+        let (mut s, _, t) = base();
+        let c = ctx("2026-01-02T09:00:00Z");
+        let before = s.tasks[&t].clone();
+        let keep_name = TaskPatch {
+            description: Some(Value::Null),
+            ..TaskPatch::default()
+        };
+        s.patch_task(&c, &t, &keep_name).unwrap();
+        let after = &s.tasks[&t];
+        assert_eq!(after.description, Value::Null);
+        assert_eq!(
+            after.name_stamp, before.name_stamp,
+            "untouched field keeps its clock"
+        );
+        assert_eq!(after.project_stamp, before.project_stamp);
+        let blank = TaskPatch {
+            name: Some("  ".into()),
+            ..TaskPatch::default()
+        };
+        assert!(s.patch_task(&c, &t, &blank).is_err());
+        assert_eq!(s.tasks[&t].name, "Write");
+        let parsed: TaskPatch = serde_json::from_str(r#"{"name":"N"}"#).unwrap();
+        assert_eq!(
+            parsed.description, None,
+            "a missing description is left alone"
+        );
+        let parsed: TaskPatch = serde_json::from_str(r#"{"description":null}"#).unwrap();
+        assert_eq!(parsed.description, Some(Value::Null), "null clears it");
     }
 
     #[test]

@@ -166,6 +166,9 @@ pub struct TargetRead {
     pub own: Option<DeviceFile>,
     /// This device's own file was written by a newer app version, so it must not be overwritten.
     pub own_newer: bool,
+    /// This device's own file exists but could not be read, so its contents are unknown. Writing
+    /// would destroy a file from a newer version, or the only copy of a restored store's data.
+    pub own_unread: bool,
     pub warnings: Vec<String>,
     pub ignored: usize,
     pub error: Option<String>,
@@ -202,8 +205,10 @@ pub fn read_target(io_impl: &dyn SyncIo, root: &Path, own_id: &str, now: Ts) -> 
             continue;
         };
         let is_own = id == own_id;
-        seen_files += 1;
-        if seen_files > MAX_DEVICE_FILES {
+        if !is_own {
+            seen_files += 1;
+        }
+        if !is_own && seen_files > MAX_DEVICE_FILES {
             out.warnings.push(format!(
                 "Skipped {name}: the folder holds too many device files."
             ));
@@ -214,13 +219,19 @@ pub fn read_target(io_impl: &dyn SyncIo, root: &Path, own_id: &str, now: Ts) -> 
         let size = match io_impl.file_size(&path) {
             Ok(size) => size,
             Err(e) => {
+                out.own_unread |= is_own;
                 out.warnings
                     .push(format!("Could not read {name} right now, will retry: {e}"));
                 continue;
             }
         };
-        total_bytes = total_bytes.saturating_add(size);
-        if size > MAX_REMOTE_FILE_BYTES || total_bytes > MAX_TOTAL_BYTES {
+        let over = size > MAX_REMOTE_FILE_BYTES
+            || (!is_own && total_bytes.saturating_add(size) > MAX_TOTAL_BYTES);
+        if !is_own && !over {
+            total_bytes += size;
+        }
+        if over {
+            out.own_unread |= is_own;
             out.warnings
                 .push(format!("Skipped {name}: the file is unreasonably large."));
             continue;
@@ -229,6 +240,7 @@ pub fn read_target(io_impl: &dyn SyncIo, root: &Path, own_id: &str, now: Ts) -> 
         let bytes = match with_retry(io_impl, || io_impl.read(&path)) {
             Ok(b) => b,
             Err(e) => {
+                out.own_unread |= is_own;
                 out.warnings
                     .push(format!("Could not read {name} right now, will retry: {e}"));
                 continue;
@@ -330,7 +342,7 @@ pub type HungTargets = Arc<Mutex<BTreeSet<String>>>;
 
 /// Runs folder work on its own thread with a time limit, so a hung network folder cannot hold up
 /// other folders. A worker that overran stays registered until it returns.
-fn bounded<T: Send + 'static>(
+pub fn bounded<T: Send + 'static>(
     hung: &HungTargets,
     root: &str,
     limit: Duration,
@@ -435,6 +447,8 @@ pub fn run_cycle_within<I: SyncIo + Clone + 'static>(
     for (target, read) in reads {
         let written = if let Some(e) = read.error.clone() {
             Err(e)
+        } else if read.own_unread {
+            Err("This device's file could not be read right now, so it was not overwritten. Will retry.".to_owned())
         } else if read.own_newer {
             Err(
                 "This device's file was written by a newer app version; it was not overwritten."
@@ -455,9 +469,12 @@ pub fn run_cycle_within<I: SyncIo + Clone + 'static>(
         let mut s = lock();
         let now = s.now();
         let status = s.target_status_mut(&target.root);
-        status.warnings = read.warnings;
-        status.ignored_files = read.ignored;
-        status.devices_seen = read.files.len();
+        // A folder that could not be read says nothing new: the last known figures stand.
+        if read.error.is_none() {
+            status.warnings = read.warnings;
+            status.ignored_files = read.ignored;
+            status.devices_seen = read.files.len();
+        }
         match written {
             Ok(()) => {
                 status.last_written_at = Some(now);
@@ -1249,6 +1266,68 @@ mod tests {
         assert_eq!(reads.load(Ordering::SeqCst), 0);
         assert_eq!(r.warnings.len(), MAX_DEVICE_FILES + 3);
         assert!(r.warnings.iter().any(|w| w.contains("too many")));
+    }
+
+    #[test]
+    fn an_unreadable_own_file_is_not_overwritten() {
+        #[derive(Clone)]
+        struct Unhydrated;
+        impl SyncIo for Unhydrated {
+            fn is_dir(&self, p: &Path) -> bool {
+                RealIo.is_dir(p)
+            }
+            fn create_dir_all(&self, p: &Path) -> io::Result<()> {
+                RealIo.create_dir_all(p)
+            }
+            fn list(&self, p: &Path) -> io::Result<Vec<String>> {
+                RealIo.list(p)
+            }
+            fn file_size(&self, p: &Path) -> io::Result<u64> {
+                RealIo.file_size(p)
+            }
+            fn read(&self, _: &Path) -> io::Result<Vec<u8>> {
+                Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "not available offline",
+                ))
+            }
+            fn write_atomic(&self, d: &Path, t: &Path, b: &[u8]) -> io::Result<()> {
+                RealIo.write_atomic(d, t, b)
+            }
+            fn sleep(&self, _: Duration) {}
+        }
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let a = device(&clock, &[root.path()]);
+        let path = own_file(&a, root.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, br#"{"schemaVersion":999}"#).unwrap();
+        run_cycle(&a.svc, &Unhydrated);
+        assert_eq!(std::fs::read(&path).unwrap(), br#"{"schemaVersion":999}"#);
+        let status = a
+            .s()
+            .target_status_mut(&root.path().to_string_lossy())
+            .clone();
+        assert!(status.last_error.unwrap().contains("not overwritten"));
+    }
+
+    #[test]
+    fn a_missing_folder_keeps_the_last_known_counts() {
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("drive");
+        std::fs::create_dir_all(&folder).unwrap();
+        let a = device(&clock, &[&folder]);
+        let b = device(&clock, &[&folder]);
+        b.cycle();
+        a.cycle();
+        let key = folder.to_string_lossy().into_owned();
+        assert_eq!(a.s().target_status_mut(&key).devices_seen, 1);
+        std::fs::remove_dir_all(&folder).unwrap();
+        a.cycle();
+        let status = a.s().target_status_mut(&key).clone();
+        assert_eq!(status.devices_seen, 1);
+        assert!(status.last_error.is_some());
     }
 
     #[test]
