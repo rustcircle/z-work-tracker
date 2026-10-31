@@ -210,6 +210,13 @@ export interface TaskInput {
   continuedFrom?: string | null;
 }
 
+/** An edit to some fields of a task. A key left out keeps the stored value; description null clears it. */
+export interface TaskPatch {
+  name?: string;
+  projectId?: string;
+  description?: RichDoc;
+}
+
 export interface ShiftInput {
   shiftId?: string | null;
   effectiveFrom: string;

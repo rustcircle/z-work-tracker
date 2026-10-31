@@ -4,6 +4,7 @@ import { useApp } from '../../app/store';
 import { RateBook, centsFromNumerator, type Numerators } from '../../lib/billing';
 import { toSegs } from '../../lib/split';
 import { addDays, dayOf, zoneLabel } from '../../lib/tz';
+import type { Task } from '../../lib/types';
 import { amountText, addNumerators, dayLabel, formatDuration, hasAmount, shortDay } from '../../components/format';
 import { MASK, money } from '../../lib/billing';
 import { useNav } from '../../components/nav';
@@ -57,6 +58,18 @@ export function TimelineTab() {
   const tasks = useMemo(() => new Map(snapshot.tasks.map((t) => [t.id, t])), [snapshot.tasks]);
   const work = useMemo(() => ({ start: snapshot.settings.clientWorkStart ?? '09:00', end: snapshot.settings.clientWorkEnd ?? '17:00' }), [snapshot.settings.clientWorkStart, snapshot.settings.clientWorkEnd]);
   const onSetRate = useCallback((id: string) => nav.openProject(id), [nav]);
+  const { goToTask } = nav;
+  const onOpenTask = useCallback((id: string, edit: boolean) => goToTask(id, edit), [goToTask]);
+  const chain = useMemo(() => {
+    const m = new Map<string, Task[]>();
+    for (const t of snapshot.tasks) {
+      if (!t.continuedFrom) continue;
+      const list = m.get(t.continuedFrom);
+      if (list) list.push(t);
+      else m.set(t.continuedFrom, [t]);
+    }
+    return m;
+  }, [snapshot.tasks]);
 
   const today = dayOf(nowSec, zone);
   const days = allDays(closed, overlay);
@@ -109,6 +122,8 @@ export function TimelineTab() {
             today={today}
             nowSec={d === today ? nowSec : 0}
             onSetRate={onSetRate}
+            chain={chain}
+            onOpenTask={onOpenTask}
           />
         ))}
       </div>

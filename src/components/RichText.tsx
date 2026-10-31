@@ -4,7 +4,7 @@ import { EditorContent, useEditor, useEditorState, type Editor } from '@tiptap/r
 import { TaskItem } from '@tiptap/extension-task-item';
 import { TaskList } from '@tiptap/extension-task-list';
 import StarterKit from '@tiptap/starter-kit';
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useImperativeHandle, useRef, type Ref } from 'react';
 
 import type { RichDoc } from '../lib/types';
 
@@ -55,22 +55,62 @@ function Toolbar({ editor }: { editor: Editor }) {
   );
 }
 
-/** The editable description field. `label` names the editing surface for assistive technology. */
-export function RichEditor({ label, value, onChange }: { label: string; value: RichDoc; onChange: (doc: RichDoc) => void }) {
+export interface RichEditorHandle {
+  focus: () => void;
+}
+
+/**
+ * The editable description field. `label` names the editing surface for assistive technology. The
+ * editor is built once from `value` and never re-initialised from props, so a re-render (a clock
+ * tick, a fresh snapshot) cannot move the caret or overwrite what is being typed.
+ */
+export function RichEditor({
+  label,
+  value,
+  onChange,
+  onFocus,
+  onBlur,
+  hint,
+  error,
+  ref,
+}: {
+  label: string;
+  value: RichDoc;
+  onChange: (doc: RichDoc) => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  hint?: string;
+  error?: string | null;
+  ref?: Ref<RichEditorHandle>;
+}) {
   const labelId = useId();
-  const onChangeRef = useRef(onChange);
+  const hintId = `${labelId}-hint`;
+  const errId = `${labelId}-err`;
+  const handlers = useRef({ onChange, onFocus, onBlur });
   useEffect(() => {
-    onChangeRef.current = onChange;
+    handlers.current = { onChange, onFocus, onBlur };
   });
+  const describedBy = [hint ? hintId : '', error ? errId : ''].filter(Boolean).join(' ') || undefined;
   const editor = useEditor({
     extensions: extensions(),
     content: docToEditorContent(value),
     injectCSS: false,
     editorProps: { attributes: { role: 'textbox', 'aria-multiline': 'true', 'aria-labelledby': labelId, class: 'rt-content' } },
-    onUpdate: ({ editor: e }) => onChangeRef.current(e.isEmpty ? null : (e.getJSON() as RichDoc)),
+    onUpdate: ({ editor: e }) => handlers.current.onChange(e.isEmpty ? null : (e.getJSON() as RichDoc)),
+    onFocus: () => handlers.current.onFocus?.(),
+    onBlur: () => handlers.current.onBlur?.(),
   });
+  // The hint and error text change while the editor lives, so its ARIA attributes follow them.
+  useEffect(() => {
+    editor?.setOptions({
+      editorProps: {
+        attributes: { role: 'textbox', 'aria-multiline': 'true', 'aria-labelledby': labelId, class: 'rt-content', ...(describedBy ? { 'aria-describedby': describedBy } : {}), ...(error ? { 'aria-invalid': 'true' } : {}) },
+      },
+    });
+  }, [editor, labelId, describedBy, error]);
+  useImperativeHandle(ref, () => ({ focus: () => editor?.commands.focus('end') }), [editor]);
   return (
-    <div className="rt">
+    <div className={`rt ${error ? 'rt-invalid' : ''}`}>
       <span id={labelId} className="field-label">
         {label}
       </span>
@@ -78,6 +118,16 @@ export function RichEditor({ label, value, onChange }: { label: string; value: R
         {editor && <Toolbar editor={editor} />}
         <EditorContent editor={editor} />
       </div>
+      {hint && (
+        <p id={hintId} className="field-hint">
+          {hint}
+        </p>
+      )}
+      {error && (
+        <p id={errId} className="field-error" role="alert">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

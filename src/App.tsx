@@ -1,5 +1,6 @@
 import { AppProvider, useApp } from './app/store';
 import { Banners } from './components/Banners';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { HideNoticeDialog } from './components/HideNoticeDialog';
 import { Shell } from './components/Shell';
 import { ToastProvider } from './components/Toasts';
@@ -31,6 +32,7 @@ function Root() {
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <AppProvider
       fallback={(error) => (
         <div className="loading" role={error ? 'alert' : 'status'}>
@@ -42,5 +44,6 @@ export default function App() {
         <Root />
       </ToastProvider>
     </AppProvider>
+    </ErrorBoundary>
   );
 }

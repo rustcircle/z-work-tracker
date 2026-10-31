@@ -11,11 +11,13 @@ import { TaskCard } from './TaskCard';
 import { TaskForm } from './TaskForm';
 
 const STOPPED_PAGE = 8;
+const NONE: readonly Task[] = [];
 
 /** Left rail: the new-task form and the task list, active tasks first. */
 export function TaskRail() {
   const { snapshot } = useApp();
   const nav = useNav();
+  const launch = snapshot.launch;
   const [formOpen, setFormOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const [showAllStopped, setShowAllStopped] = useState(false);
@@ -37,6 +39,29 @@ export function TaskRail() {
     return { logged, last };
   }, [snapshot.segments]);
 
+  // Tasks that continue another one, grouped by the task they continue.
+  const continuedBy = useMemo(() => {
+    const m = new Map<string, Task[]>();
+    for (const t of snapshot.tasks) {
+      if (!t.continuedFrom) continue;
+      const list = m.get(t.continuedFrom);
+      if (list) list.push(t);
+      else m.set(t.continuedFrom, [t]);
+    }
+    return m;
+  }, [snapshot.tasks]);
+
+  // A request to show one task (a chain link, a timeline entry) must reach it even when it is hidden
+  // by the filter or by the short list of stopped tasks.
+  const { focusTask } = nav;
+  const [revealedSeq, setRevealedSeq] = useState(0);
+  if (focusTask && focusTask.seq !== revealedSeq) {
+    setRevealedSeq(focusTask.seq);
+    setFilter('');
+    if (tasksById.get(focusTask.id)?.state === 'stopped') setShowAllStopped(true);
+  }
+
+  const continuing = nav.continueTaskId ? tasksById.get(nav.continueTaskId) : undefined;
   const q = filter.trim().toLowerCase();
   const visible = snapshot.tasks.filter((t) => q === '' || t.name.toLowerCase().includes(q) || (projectsById.get(t.projectId)?.name.toLowerCase().includes(q) ?? false));
   const byRecent = (a: Task, b: Task): number => (last.get(b.id) ?? parseIso(b.createdAt)) - (last.get(a.id) ?? parseIso(a.createdAt));
@@ -55,7 +80,7 @@ export function TaskRail() {
         <ul className="task-list">
           {tasks.map((t) => (
             <li key={t.id}>
-              <TaskCard task={t} project={projectsById.get(t.projectId)} tasks={tasksById} loggedSecs={logged.get(t.id) ?? 0} />
+              <TaskCard task={t} project={projectsById.get(t.projectId)} tasks={tasksById} continuedBy={continuedBy.get(t.id) ?? NONE} launch={launch} loggedSecs={logged.get(t.id) ?? 0} />
             </li>
           ))}
         </ul>
@@ -67,7 +92,7 @@ export function TaskRail() {
     <aside className="rail" aria-label="Tasks">
       <div className="rail-head">
         <h2>Tasks</h2>
-        <Button variant="primary" icon={<IconPlus />} aria-expanded={formOpen} onClick={() => setFormOpen((v) => !v)}>
+        <Button variant="primary" icon={<IconPlus />} aria-expanded={formOpen} onClick={() => { nav.clearContinue(); setFormOpen((v) => !v); }}>
           New task
         </Button>
       </div>
@@ -80,14 +105,20 @@ export function TaskRail() {
           .
         </p>
       )}
-      {formOpen && (
+      {continuing ? (
         <div className="card rail-form">
-          <TaskForm onDone={() => setFormOpen(false)} />
+          <TaskForm key={`continue-${continuing.id}`} continueFrom={continuing} onDone={nav.clearContinue} />
         </div>
+      ) : (
+        formOpen && (
+          <div className="card rail-form">
+            <TaskForm onDone={() => setFormOpen(false)} />
+          </div>
+        )
       )}
       {snapshot.tasks.length > 3 && <input className="input" type="search" placeholder="Filter tasks" aria-label="Filter tasks" value={filter} onChange={(e) => setFilter(e.target.value)} />}
       <div className="rail-scroll">
-        {snapshot.tasks.length === 0 && !formOpen && <p className="muted rail-empty">No tasks yet. Use New task to add one, then press Start to begin timing.</p>}
+        {snapshot.tasks.length === 0 && !formOpen && !continuing && <p className="muted rail-empty">No tasks yet. Use New task to add one, then press Start to begin timing.</p>}
         {group('Active', active)}
         {group('Drafts', drafts)}
         {group(

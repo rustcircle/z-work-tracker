@@ -8,7 +8,8 @@ import type { Project, ShiftVersion, Task } from '../../lib/types';
 import { Axis } from './Axis';
 import { repeatedPass } from './axisGeometry';
 import { amountText, clock, clockWithAbbr, dayLabel, formatDuration, formatHMS, hasAmount, relativeDay, shortDay } from '../../components/format';
-import { Badge, ProjectChip } from '../../components/ui';
+import { IconEdit } from '../../components/icons';
+import { Badge, IconButton, ProjectChip } from '../../components/ui';
 import { blocksOf, entriesOf, overlapSecs, projectTotals, totalsOf, workWindows, type Block, type DayData, type Entry } from './model';
 
 const BAND_HOURS = ['00–06', '06–12', '12–18', '18–24'] as const;
@@ -29,6 +30,10 @@ export interface DayCardProps {
   /** Current time, passed only to today's card so older cards never re-render on a tick. */
   nowSec: number;
   onSetRate: (projectId: string) => void;
+  /** Tasks that continue each task, by the id of the task they continue. */
+  chain: ReadonlyMap<string, readonly Task[]>;
+  /** Bring a task into view in the rail, and open its editor if asked. */
+  onOpenTask: (taskId: string, edit: boolean) => void;
 }
 
 /** "14:00–16:30", with a date prefix where the zone's date differs from the card's date. */
@@ -42,6 +47,34 @@ export function rangeText(start: number, end: number, zone: string, refDay: stri
   const suffix = pass ? ` (${pass === 1 ? '1st' : '2nd'} pass)` : '';
   if (sd === ed) return `${sd !== refDay ? `${shortDay(sd)} ` : ''}${a}–${b}${suffix}`;
   return `${shortDay(sd)} ${a} – ${shortDay(ed)} ${b}${suffix}`;
+}
+
+/** "Continued from X" and "Continued by Y", each a link that moves to that task. */
+function ChainLinks({ task, tasks, chain, onOpenTask }: { task: Task | undefined; tasks: ReadonlyMap<string, Task>; chain: ReadonlyMap<string, readonly Task[]>; onOpenTask: (id: string, edit: boolean) => void }) {
+  if (!task) return null;
+  const from = task.continuedFrom ? tasks.get(task.continuedFrom) : undefined;
+  const by = chain.get(task.id) ?? [];
+  if (!from && by.length === 0) return null;
+  return (
+    <ul className="chain chain-entry">
+      {from && (
+        <li>
+          Continued from{' '}
+          <button type="button" className="link" onClick={() => onOpenTask(from.id, false)}>
+            {from.name}
+          </button>
+        </li>
+      )}
+      {by.map((t) => (
+        <li key={t.id}>
+          Continued by{' '}
+          <button type="button" className="link" onClick={() => onOpenTask(t.id, false)}>
+            {t.name}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 function DayCardImpl(p: DayCardProps) {
@@ -268,8 +301,12 @@ function DayCardImpl(p: DayCardProps) {
                 <tr key={e.key} data-testid="entry">
                   <td className="tabular">{bothTimes(e.start, e.end, e.projectId, long)}</td>
                   <td>
-                    {taskName(e.taskId)}
-                    {e.live && <Badge tone="success">Running</Badge>}
+                    <div className="entry-task">
+                      <span>{taskName(e.taskId)}</span>
+                      {e.live && <Badge tone="success">Running</Badge>}
+                      <IconButton label={`Edit task ${taskName(e.taskId)}`} icon={<IconEdit />} className="entry-edit" onClick={() => p.onOpenTask(e.taskId, true)} />
+                    </div>
+                    <ChainLinks task={p.tasks.get(e.taskId)} tasks={p.tasks} chain={p.chain} onOpenTask={p.onOpenTask} />
                   </td>
                   <td>{proj ? <ProjectChip name={proj.name} color={proj.color} archived={proj.archived} /> : '—'}</td>
                   <td className="num tabular" title={formatHMS(e.end - e.start)}>

@@ -25,6 +25,7 @@ import type {
   Snapshot,
   Task,
   TaskInput,
+  TaskPatch,
   TaskState,
   Theme,
 } from '../lib/types';
@@ -52,6 +53,8 @@ export interface MockState {
   warnings: string[];
   exports: { kind: 'xlsx' | 'csv'; request: ExportRequest }[];
   calls: { cmd: string; args: unknown }[];
+  /** Test hook: these commands fail once each, like a failed save. */
+  failNext?: string[];
   autostart: boolean;
   nextId: number;
   /** Launch-scoped, like the Rust service: false until the first task of this launch has started. */
@@ -291,6 +294,20 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       t.description = input.description;
       return snapshot(s);
     }
+    case 'patch_task': {
+      const patch = a.patch as TaskPatch;
+      const t = task(s, a.id as string);
+      if (patch.name !== undefined && !patch.name.trim()) throw err('validation', 'Task name is required');
+      if (patch.projectId !== undefined && patch.projectId !== t.projectId) {
+        const project = s.projects.find((p) => p.id === patch.projectId);
+        if (!project) throw err('not_found', 'project not found');
+        if (project.archived) throw err('validation', 'this project is archived; restore it first');
+        t.projectId = patch.projectId;
+      }
+      if (patch.name !== undefined) t.name = patch.name.trim();
+      if (patch.description !== undefined) t.description = patch.description;
+      return snapshot(s);
+    }
     case 'delete_draft': {
       if (task(s, a.id as string).state !== 'draft') throw err('conflict', 'only a draft can be deleted');
       s.tasks = s.tasks.filter((t) => t.id !== a.id);
@@ -434,6 +451,11 @@ export function installMock(state: MockState): void {
   mockIPC(
     (cmd, args) => {
       state.calls.push({ cmd, args });
+    const failing = state.failNext?.indexOf(cmd) ?? -1;
+    if (failing >= 0) {
+      state.failNext?.splice(failing, 1);
+      throw err('io', `mock: ${cmd} failed`);
+    }
       return handle(state, cmd, (args ?? {}) as Record<string, unknown>);
     },
     { shouldMockEvents: true },

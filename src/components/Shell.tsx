@@ -1,11 +1,12 @@
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 
 import { useApp } from '../app/store';
-import { api } from '../lib/api';
+import { api, events } from '../lib/api';
 import { AnalysisTab } from '../features/analysis/AnalysisTab';
 import { ExportDialog } from '../features/export/ExportDialog';
 import { ProjectsTab } from '../features/projects/ProjectsTab';
 import { SettingsTab } from '../features/settings/SettingsTab';
+import { EditStoreProvider } from '../features/tasks/editStore';
 import { TaskRail } from '../features/tasks/TaskRail';
 import { TimelineTab } from '../features/timeline/TimelineTab';
 import { ActiveZoneBar } from '../features/zones';
@@ -42,6 +43,9 @@ export function Shell() {
   const [focusProject, setFocusProject] = useState<string | null>(null);
   const [settingsSection, setSettingsSection] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [focusTask, setFocusTask] = useState<Nav['focusTask']>(null);
+  const [continueTaskId, setContinueTaskId] = useState<string | null>(null);
+  const seq = useRef(0);
   const tabRefs = useRef(new Map<TabId, HTMLButtonElement>());
   const hide = snapshot.prefs.hideEarnings;
 
@@ -60,9 +64,30 @@ export function Shell() {
         setTab('settings');
       },
       settingsSection,
+      focusTask,
+      goToTask: (id, edit = false) => {
+        seq.current += 1;
+        setFocusTask({ id, edit, seq: seq.current });
+      },
+      clearFocusTask: () => setFocusTask(null),
+      continueTaskId,
+      openContinue: setContinueTaskId,
+      clearContinue: () => setContinueTaskId(null),
     }),
-    [tab, focusProject, settingsSection],
+    [tab, focusProject, settingsSection, focusTask, continueTaskId],
   );
+
+  // The tray's Resume on a cold launch: open the form for a new linked task and start nothing.
+  const tasksRef = useRef(snapshot.tasks);
+  useEffect(() => {
+    tasksRef.current = snapshot.tasks;
+  });
+  useEffect(() => {
+    const unlisten = events.onColdResume((taskId) => {
+      if (tasksRef.current.some((t) => t.id === taskId && t.state === 'paused')) setContinueTaskId(taskId);
+    });
+    return () => void unlisten.then((f) => f()).catch(() => undefined);
+  }, []);
 
   const onKey = useCallback(
     (e: KeyboardEvent<HTMLButtonElement>) => {
@@ -83,6 +108,7 @@ export function Shell() {
 
   return (
     <NavContext.Provider value={nav}>
+      <EditStoreProvider>
       <div className="app">
         <header className="app-header">
           <Brand />
@@ -130,6 +156,7 @@ export function Shell() {
         <ExportDialog open={exporting} onClose={() => setExporting(false)} />
         <ClientZonePrompt />
       </div>
+      </EditStoreProvider>
     </NavContext.Provider>
   );
 }

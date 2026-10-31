@@ -25,3 +25,12 @@
 .ticker-grid dt { font-size: 11.5px; color: var(--text-muted); }
 .ticker-grid dd { margin: 0; font-weight: 600; font-size: 14px; }
 .ticker-note { margin: 0; font-size: 13px; }
+
+.copy-note, .continue-note { margin: 0; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid color-mix(in srgb, var(--focus) 45%, var(--border)); background: color-mix(in srgb, var(--focus) 8%, var(--surface)); font-size: 13px; }
+.copy-note { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.task-editor { display: flex; flex-direction: column; gap: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.editor-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 30px; }
+.save-state { font-size: 12.5px; color: var(--text-muted); min-height: 1.4em; }
+.save-state[data-kind='rejected'], .save-state[data-kind='failed'] { color: var(--danger); font-weight: 600; }
+.rt-invalid .rt-frame { border-color: var(--danger); }
+.task:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

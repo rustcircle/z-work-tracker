@@ -11,7 +11,7 @@ import type {
   ShiftInput,
   Snapshot,
   SyncProvider,
-  TaskInput,
+  TaskInput, TaskPatch,
   Theme,
   TransitionResult,
   WithId,
@@ -25,6 +25,8 @@ export const api = {
   deleteProject: (id: string) => invoke<Snapshot>('delete_project', { id }),
   createTask: (input: TaskInput) => invoke<WithId>('create_task', { input }),
   updateTask: (id: string, input: TaskInput) => invoke<Snapshot>('update_task', { id, input }),
+  /** Edits only the fields given, so an autosave never reverts another device's newer edit. */
+  patchTask: (id: string, patch: TaskPatch) => invoke<Snapshot>('patch_task', { id, patch }),
   deleteDraft: (id: string) => invoke<Snapshot>('delete_draft', { id }),
   startTask: (id: string) => invoke<TransitionResult>('start_task', { id }),
   resumeTask: (id: string) => invoke<TransitionResult>('resume_task', { id }),

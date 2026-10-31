@@ -33,6 +33,9 @@ export function RoundingSection() {
         </strong>
         {versions.length === 0 && ' (the default until you change it)'}.
       </p>
+      <p className="field-hint" data-testid="rounding-chain-note">
+        Continued tasks count as separate tasks. A chain, such as a task resumed after a restart as a new linked task, can round up more than once on the same day because each task rounds separately. The Rounding adjustment figure in the analysis tab shows what that adds.
+      </p>
       <RoundingFields legend="New rule" value={value} onChange={setValue} />
       <Field label="Effective from" hint={from < today ? 'This date is in the past. Billable time and earnings already shown from then on will change.' : 'Past days keep the rule that applied to them.'}>
         {({ id, describedBy }) => <input id={id} className="input" type="date" value={from} onChange={(e) => e.target.value && setFrom(e.target.value)} aria-describedby={describedBy} />}

@@ -15,7 +15,7 @@ const g = (id: string, name: string, family: string, basis: GlossaryBasis, defin
 
 export const GLOSSARY: readonly GlossaryEntry[] = [
   g('basis', 'Exact and Billable time', 'Basics', 'Neither',
-    'Exact is the real logged time from the segments, to the second. Billable is the rounded time from your rounding rule (default 15 minutes, up), applied once per task per day in the zone shown, never per segment. Exact totals are the same in every zone; Billable can differ by zone because the day edges move.',
+    'Exact is the real logged time from the segments, to the second. Billable is the rounded time from your rounding rule (default 15 minutes, up), applied once per task per day in the zone shown, never per segment. Exact totals are the same in every zone; Billable can differ by zone because the day edges move. Continued tasks count as separate tasks: a task that continues an earlier one is rounded on its own, so a chain can round up more than once on the same day.',
     'Billable(task, day) = round(sum of that task\'s segment time on that day); totals = sum of those rows'),
   g('filters.time', 'Band and shift filters', 'Basics', 'Exact',
     'A band or shift filter keeps only the time inside the chosen band or shift. A session that crosses the edge is cut at the edge, so session lengths in a filtered view describe the part inside the filter. Billable rounds whole task-days, so Billable, earnings and rounding figures are hidden while a band or shift filter is on.',
@@ -94,7 +94,7 @@ export const GLOSSARY: readonly GlossaryEntry[] = [
   g('money.billable', 'Billable projects share', 'Money', 'Billable', 'Share of Billable time spent on projects marked billable.', 'time on billable projects / all Billable time'),
   g('money.earnings', 'Earnings', 'Money', 'Billable', 'Billable time multiplied by the rate in force when the time was logged, per currency. Currencies are never added together. Rounded to cents only at the total shown. A billable project with no rate shows "No rate set", not zero.', 'sum of rate x Billable seconds / 3600'),
   g('money.hourly', 'Effective hourly rate', 'Money', 'Billable', 'Earnings divided by the Exact hours that earned in that currency, so rounding up raises it above the nominal rate.', 'earnings / Exact hours with a rate'),
-  g('money.rounding', 'Rounding adjustment', 'Money', 'Billable', 'Billable time minus Exact time, per period and project, and what that difference is worth.', 'Billable - Exact'),
+  g('money.rounding', 'Rounding adjustment', 'Money', 'Billable', 'Billable time minus Exact time, per period and project, and what that difference is worth. Each task rounds separately per day, so a chain of continued tasks can round up more than once, and that shows up here as a larger adjustment.', 'Billable - Exact'),
 
   g('forecast.projected', 'Projection', 'Forecast', 'Follows the Basis switch', 'A projection, not a promise: the total so far extended linearly to the end of the period. Shown only for periods of 7 days or more that are under way, with at least two active days and 20% elapsed.', 'logged / elapsed fraction of the period'),
 
