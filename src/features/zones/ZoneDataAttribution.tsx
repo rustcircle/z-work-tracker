@@ -12,11 +12,12 @@ export function ZoneDataAttribution() {
       <ul>
         <li>
           Time zone boundaries: <strong>timezone-boundary-builder</strong> by Evan Siroky, packaged as{' '}
-          <strong>@photostructure/tz-lookup</strong>, released under CC0 1.0 (public domain dedication).
+          <strong>@photostructure/tz-lookup</strong> (CC0 1.0). The boundary data derives from OpenStreetMap, © OpenStreetMap contributors,
+          under the Open Data Commons Open Database License (ODbL).
         </li>
         <li>
           Country outlines: <strong>Natural Earth</strong>, 1:50m, redistributed as TopoJSON by the <strong>world-atlas</strong> package
-          (ISC licence) and read with <strong>topojson-client</strong> (ISC licence).
+          (ISC licence) and read with <strong>topojson-client</strong> (ISC licence). Natural Earth is in the public domain.
         </li>
       </ul>
       <p className="muted">
