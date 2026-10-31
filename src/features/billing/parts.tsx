@@ -1,7 +1,7 @@
 // Small pieces shared by the Billing tab, the device prefix section and the PDF export.
 import { useEffect, useRef, useState } from 'react';
 
-import { Button } from '../../components/ui';
+import { Button, Segmented } from '../../components/ui';
 import { IconCheck, IconWarn } from '../../components/icons';
 import { dayLabel, formatDuration } from '../../components/format';
 import type { Zones } from '../../app/store';
@@ -10,12 +10,6 @@ import type { SummaryRow } from '../../lib/types';
 import { defaultRange, labelOf, shiftRange, spanDays, MAX_CUSTOM_DAYS, type RangeKind, type RangeSpec } from '../analysis/range';
 import { GUIDANCE, centsText, pauseNote, sumRows, type Cents } from './billingText';
 import './billing.css';
-
-/** The text of a failed backend call. */
-export function messageOf(e: unknown): string {
-  if (e && typeof e === 'object' && 'message' in e) return String((e as { message: unknown }).message);
-  return String(e);
-}
 
 /** The label every part of the Billing tab carries. */
 export function GuidanceLabel({ compact = false }: { compact?: boolean }) {
@@ -79,11 +73,16 @@ export function RowsTable({ rows, totals, hide, showAmount, caption }: { rows: r
   );
 }
 
-type CopyState = { kind: 'idle' } | { kind: 'copied' } | { kind: 'manual'; text: string };
+type CopyState = { kind: 'idle' } | { kind: 'copied' } | { kind: 'manual' };
+
+/** How long "Copied to the clipboard." stays, so a row in a list does not keep saying it for good. */
+export const COPIED_MS = 3000;
 
 /**
  * A Copy button with a visible answer. When the clipboard is unavailable (or refuses), the text is shown
- * selected in a box so the user can copy it by hand. Remount it (change `key`) to clear the answer.
+ * selected in a box so the user can copy it by hand; the box always shows the text as it is now, so
+ * turning Hide earnings on takes the amounts out of it. "Copied" goes away after a moment. Remount it
+ * (change `key`) to clear the answer.
  */
 export function CopyButton({ getText, label = 'Copy', accessibleName, disabled = false }: { getText: () => string; label?: string; accessibleName?: string; disabled?: boolean }) {
   const [state, setState] = useState<CopyState>({ kind: 'idle' });
@@ -96,14 +95,21 @@ export function CopyButton({ getText, label = 'Copy', accessibleName, disabled =
     }
   }, [state]);
 
+  useEffect(() => {
+    if (state.kind !== 'copied') return undefined;
+    const timer = window.setTimeout(() => setState({ kind: 'idle' }), COPIED_MS);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+
   async function copy(): Promise<void> {
     const text = getText();
     try {
       if (typeof navigator === 'undefined' || !navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') throw new Error('no clipboard');
       await navigator.clipboard.writeText(text);
+      // A second press starts the countdown again.
       setState({ kind: 'copied' });
     } catch {
-      setState({ kind: 'manual', text });
+      setState({ kind: 'manual' });
     }
   }
 
@@ -121,7 +127,7 @@ export function CopyButton({ getText, label = 'Copy', accessibleName, disabled =
         {state.kind === 'manual' && 'Copying is not available here. The text is selected below: copy it yourself.'}
       </span>
       {state.kind === 'manual' && (
-        <textarea ref={box} className="input bl-copy-box" readOnly rows={8} value={state.text} aria-label="Text to copy" onFocus={(e) => e.currentTarget.select()} />
+        <textarea ref={box} className="input bl-copy-box" readOnly rows={8} value={getText()} aria-label="Text to copy" onFocus={(e) => e.currentTarget.select()} />
       )}
     </>
   );
@@ -147,13 +153,7 @@ export function PeriodPicker({ range, onChange, today, legend = 'Period' }: { ra
     <fieldset className="bl-period">
       <legend>{legend}</legend>
       <div className="bl-row">
-        <div className="segmented" role="radiogroup" aria-label={`${legend} length`}>
-          {PERIOD_KINDS.map((k) => (
-            <button key={k.kind} type="button" role="radio" aria-checked={range.kind === k.kind} className={range.kind === k.kind ? 'on' : ''} onClick={() => setKind(k.kind)}>
-              {k.label}
-            </button>
-          ))}
-        </div>
+        <Segmented value={range.kind} options={PERIOD_KINDS.map((k) => ({ value: k.kind, label: k.label }))} onChange={setKind} label={`${legend} length`} />
         <div className="bl-row">
           <Button small aria-label={`Previous ${legend.toLowerCase()}`} onClick={() => onChange(shiftRange(range, -1))}>
             ‹

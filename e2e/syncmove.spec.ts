@@ -33,21 +33,37 @@ test.describe('change the sync folder', () => {
       window.__mock.moveDelayMs = 350;
     });
     await toConfirm(page);
-    await expect(page.getByTestId('move-from')).toContainText('2 devices (Office PC, Mock PC): 4 projects, 12 tasks, 300 time segments');
+    await expect(page.getByTestId('move-from')).toContainText('1 device (Office PC): 4 projects, 12 tasks, 300 time segments');
     await expect(page.getByTestId('move-to')).toContainText('Nothing there yet');
     await expect(page.getByTestId('move-each-pc')).toContainText("Each PC needs switching. Other PCs keep using the old folder until you change them too");
     expect(await moves(page)).toEqual([]);
     await section(page).screenshot({ path: path.join(SHOTS, 'sync-change-folder.png') });
 
     await page.getByRole('button', { name: 'Copy and switch' }).click();
-    await expect(page.getByTestId('move-progress')).toContainText(/Copying files: \d+ of \d+|Starting/);
+    await expect(page.getByTestId('move-progress')).toContainText(/(Reading the folders|Copying device files|Writing this device's data|Checking the copy|Done): \d+ of \d+|Starting/);
     await expect(page.getByText(/Time tracking carries on/)).toBeVisible();
     // The rest of the app stays usable while it copies.
     await expect(page.getByRole('tab', { name: 'Timeline' })).toBeEnabled();
-    await expect(page.getByTestId('move-summary')).toContainText('Copied 6 files, 0 already there, 0 ignored');
+    await expect(page.getByTestId('move-summary')).toContainText("This device's data was written and checked. Copied 1 file from other devices, 0 already there.");
     await expect(page.getByText(/Checked by reading the copy back/)).toBeVisible();
     expect(await moves(page)).toEqual([{ from: OLD, to: NEW, provider: 'googleDrive', replacing: true }]);
     await expect(section(page).getByRole('heading', { name: 'Google Drive folder' })).toBeVisible();
+    await expectClean(page, found);
+  });
+
+  test('on a single PC the result says this device was written and checked, not "Copied 0 files"', async ({ page }) => {
+    const found = await start(page);
+    await page.evaluate((root) => {
+      window.__mock.folders[root] = { devices: ['Mock PC'], counts: { projects: 4, tasks: 12, segments: 300 }, available: true };
+    }, OLD);
+    await toConfirm(page);
+    await expect(page.getByTestId('move-from')).toContainText('no other devices: 4 projects, 12 tasks, 300 time segments');
+    await page.getByRole('button', { name: 'Copy and switch' }).click();
+    const summary = page.getByTestId('move-summary');
+    await expect(summary).toContainText("This device's data was written and checked. There were no files from other devices to copy.");
+    await expect(summary).not.toContainText('Copied 0');
+    await expect(page.getByText(/Checksum [0-9a-f]{16}\b/)).toBeVisible();
+    await expect(page.getByText(/sha256/)).toHaveCount(0);
     await expectClean(page, found);
   });
 
@@ -78,7 +94,7 @@ test.describe('change the sync folder', () => {
       window.__mock.folders[root]!.available = true;
     }, OLD);
     await pending.getByRole('button', { name: 'Retry copy' }).click();
-    await expect(page.getByTestId('move-summary')).toContainText('Copied 3 files, 3 already there');
+    await expect(page.getByTestId('move-summary')).toContainText('Copied 1 file from other devices, 0 already there');
     await expect(page.getByTestId('sync-pending')).toHaveCount(0);
     expect(await moves(page)).toEqual([
       { from: OLD, to: NEW, provider: 'googleDrive', replacing: true },

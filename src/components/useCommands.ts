@@ -5,6 +5,7 @@ import { useCallback, useMemo } from 'react';
 import { useApp } from '../app/store';
 import type { TransitionResult } from '../lib/types';
 import { useToast } from './Toasts';
+import { errorMessage } from '../lib/errorMessage';
 
 export function useCommands() {
   const { adopt, showError, act } = useApp();
@@ -18,7 +19,7 @@ export function useCommands() {
         if (r.autoPausedTaskName) toast.push(`Paused "${r.autoPausedTaskName}" because you started "${starting}". Only one task is timed at a time.`);
         return true;
       } catch (e) {
-        showError(e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
+        showError(errorMessage(e));
         return false;
       }
     },

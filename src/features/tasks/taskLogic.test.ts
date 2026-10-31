@@ -55,6 +55,7 @@ describe('pauseReasonText', () => {
   it('words each other reason', () => {
     expect(pauseReasonText({ kind: 'appQuit' }, tasks)).toContain('closed');
     expect(pauseReasonText({ kind: 'crashRecovery' }, tasks)).toContain('unexpectedly');
+    expect(pauseReasonText({ kind: 'backupRestored' }, tasks)).toBe('Paused: the restored backup held this running. Time stopped at the last moment the backup knows about.');
     expect(pauseReasonText({ kind: 'user' }, tasks)).toBe('Paused by you.');
     expect(pauseReasonText(null, tasks)).toBeNull();
   });

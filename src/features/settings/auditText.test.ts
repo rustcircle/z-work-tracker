@@ -33,6 +33,7 @@ describe('audit wording', () => {
     expect(summarize({ decision: 'thinking' }, 'UTC')).toBe('marked as thinking');
     expect(summarize({ reference: 'A-001' }, 'UTC')).toBe('A-001');
     expect(summarize({ start: '2026-03-12T10:00:00Z', end: '2026-03-12T10:20:00Z', kind: 'sleep' }, 'UTC')).toBe('2026-03-12 10:00 to 10:20 (sleep)');
+    expect(summarize({ start: '2026-03-12T10:00:00Z', end: '2026-03-12T10:20:00Z', kind: 'lock' }, 'UTC')).toBe('2026-03-12 10:00 to 10:20 (screen locked)');
     expect(summarize(null, 'UTC')).toBe('nothing');
   });
 
@@ -41,6 +42,16 @@ describe('audit wording', () => {
     expect(summarize(7, 'UTC')).toBe('7');
     expect(summarize(['a'], 'UTC')).toBe('a');
     expect(summarize({ big: 'y'.repeat(400) }, 'UTC').length).toBeLessThanOrEqual(160);
+  });
+
+  it('words a restore with the backup it came from and the safety copy it left', () => {
+    const e = entry({ entity: 'backup', entityId: 'z-work-data-2026-03-11.json', action: 'restore', before: null, after: { safetyCopy: 'pre-restore-2026-03-12T12-00-00.json' } });
+    expect(entityLabel('backup')).toBe('Backup');
+    expect(actionWords('restore')).toBe('restored');
+    expect(auditLine(e, 'UTC', 'dev', 'Office PC')).toMatchObject({
+      before: 'the data in use',
+      after: 'z-work-data-2026-03-11.json; the data from just before is kept as pre-restore-2026-03-12T12-00-00.json',
+    });
   });
 
   it('says who made the change', () => {

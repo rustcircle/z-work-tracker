@@ -9,6 +9,7 @@ import { isCurrency } from '../lib/billing';
 import { docHasText } from '../lib/docText';
 import { assignSubtaskIds, resetSubtasks, subtaskItems } from '../lib/subtasks';
 import { isZone, parseIso, toIso } from '../lib/tz';
+import { summaryCsv } from './summaryCsv';
 import { computePieces, effective, projectFigures, summaryPreview, taskTotals, unconfirmedSecs, type MockSegment, type PieceInput } from './pieces';
 import type {
   AuditEntry,
@@ -94,9 +95,14 @@ export interface MockState {
   tags: Tag[];
   templates: Template[];
   summaries: BillingSummary[];
-  /** This device's reference prefix, and names of other devices using the same one. */
-  prefix: string;
-  prefixClashes: string[];
+  /** This device's reference prefix, or null until one is chosen: then it is the first letter no other device uses. */
+  prefix: string | null;
+  /** The prefixes other devices use, by device name. A device with the same prefix as this one is a clash. */
+  otherPrefixes: Record<string, string>;
+  /** The highest number issued under each prefix on this device (prefs `referenceMarks`). It survives a restore, so a number is never reused. */
+  referenceMarks: Record<string, number>;
+  /** The text of the last CSV written for each billing summary, by summary id. */
+  summaryCsvFiles: Record<string, string>;
   audit: AuditEntry[];
   backups: BackupInfo[];
   /** Test hook: the data a backup holds, by name, as JSON. Restoring a backup without any only pauses and goes cold. */
@@ -148,8 +154,10 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     tags: STARTER_TAGS.map(([id, name, color]) => ({ id, name, color, deleted: false, stamp: { at: '0001-01-01T00:00:00Z', by: '' } })),
     templates: [],
     summaries: [],
-    prefix: 'A',
-    prefixClashes: [],
+    prefix: null,
+    otherPrefixes: {},
+    referenceMarks: {},
+    summaryCsvFiles: {},
     audit: [],
     backups: [],
     backupData: {},
@@ -186,13 +194,19 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
 const err = (code: string, message: string) => ({ code, message });
 
 // ---- sync folder moves, shaped like the Rust service: preview reads, the move copies, verifies and only
-// then changes anything, and an unreadable source still switches but leaves a copy owed.
+// then changes anything, and an unreadable source still switches but leaves a copy owed. A folder holds one
+// file per device. Counts and device lists follow `sync.rs`: the files of the OTHER devices are what a move
+// copies, and this device's own file is always written last.
 
 const NO_COUNTS: DataCounts = { projects: 0, tasks: 0, segments: 0 };
-const FILES_PER_DEVICE = 3;
+/** The name this mock gives its own device in a folder (`deviceName` of the snapshot). */
+const OWN_DEVICE = 'Mock PC';
+const FOLDER_NOT_FOUND = 'Folder not found. Is the drive connected and the desktop client running?';
 
 const folderOf = (s: MockState, root: string): MockFolder => s.folders[root] ?? { devices: [], counts: { ...NO_COUNTS }, available: true };
 const folderHasData = (f: MockFolder): boolean => f.devices.length > 0 || f.counts.projects + f.counts.tasks + f.counts.segments > 0;
+/** The other devices' files in a folder: this device's own file is read separately, as in `read_target`. */
+const othersIn = (f: MockFolder): string[] => f.devices.filter((d) => d !== OWN_DEVICE);
 const localCounts = (s: MockState): DataCounts => ({ projects: s.projects.length, tasks: s.tasks.length, segments: s.segments.length });
 const mergeCounts = (...all: DataCounts[]): DataCounts => ({
   projects: Math.max(...all.map((c) => c.projects)),
@@ -206,13 +220,13 @@ function movePreview(s: MockState, from: string | null, to: string): MovePreview
   const ok = src !== null && src.available;
   return {
     sourceAvailable: ok,
-    sourceDevices: ok ? [...src.devices] : [],
+    sourceDevices: ok ? othersIn(src) : [],
     sourceCounts: ok ? { ...src.counts } : { ...NO_COUNTS },
     destinationHasData: folderHasData(dst),
-    destinationDevices: [...dst.devices],
+    destinationDevices: othersIn(dst),
     destinationCounts: { ...dst.counts },
     localCounts: localCounts(s),
-    warnings: dst.available ? [] : [`The folder ${to} cannot be read right now.`],
+    warnings: dst.available ? [] : [FOLDER_NOT_FOUND],
   };
 }
 
@@ -224,6 +238,9 @@ function sendProgress(step: string, done: number, total: number): void {
   }
 }
 
+/** The 16 hex digits `sync.rs` prints for a checksum (FNV-1a there; here a stand-in of the same shape). */
+const checksumOf = (c: DataCounts): string => (c.projects * 1_000_000 + c.tasks * 1_000 + c.segments).toString(16).padStart(16, '0');
+
 async function moveSyncTarget(s: MockState, a: Record<string, unknown>): Promise<MoveResult> {
   const from = (a.from as string | null) ?? null;
   const to = a.to as string;
@@ -231,32 +248,41 @@ async function moveSyncTarget(s: MockState, a: Record<string, unknown>): Promise
   const dst = folderOf(s, to);
   const src = from === null ? null : folderOf(s, from);
   const sourceMissing = from !== null && !(src?.available ?? true);
-  const srcDevices = !src || sourceMissing ? [] : src.devices;
-  const shared = srcDevices.filter((d) => dst.devices.includes(d)).length;
-  const total = Math.max(1, srcDevices.length * FILES_PER_DEVICE);
+  const incoming = !src || sourceMissing ? [] : othersIn(src);
+  const there = othersIn(dst);
+  const total = incoming.length + 1;
   const pause = (): Promise<void> => new Promise((r) => setTimeout(r, s.moveDelayMs));
 
-  sendProgress('copy', 0, total);
+  // The steps are the backend's own words.
+  if (!dst.available) throw err('conflict', FOLDER_NOT_FOUND);
+  sendProgress('Reading the folders', 0, 1);
   await pause();
-  if (!dst.available) throw err('io', `The folder ${to} cannot be read right now.`);
+  let filesCopied = 0;
+  let filesAlreadyThere = 0;
+  for (const [i, device] of incoming.entries()) {
+    sendProgress('Copying device files', i, total);
+    await pause();
+    if (there.includes(device)) filesAlreadyThere += 1;
+    else filesCopied += 1;
+  }
+  sendProgress("Writing this device's data", total - 1, total);
+  await pause();
   if (dst.failNext) {
     dst.failNext = false;
     s.folders[to] = dst;
-    throw err('io', `Could not write to ${to}: the folder is read-only.`);
+    throw err('conflict', "Could not write this device's file: the folder is read-only.");
   }
-  sendProgress('copy', total, total);
-  await pause();
-  sendProgress('verify', total, total);
+  sendProgress('Checking the copy', total - 1, total);
   await pause();
 
   // Verified: only now does anything change.
   const counts = mergeCounts(sourceMissing || !src ? NO_COUNTS : src.counts, dst.counts, localCounts(s));
-  s.folders[to] = { ...dst, devices: [...new Set([...dst.devices, ...srcDevices, 'Mock PC'])], counts };
+  s.folders[to] = { ...dst, devices: [...new Set([...dst.devices, ...incoming, OWN_DEVICE])], counts };
   const view: Snapshot['sync']['targets'][number] = {
     provider: a.provider as Snapshot['sync']['targets'][number]['provider'],
     root: to,
     folder: `${to}/zWorkTracker`,
-    status: { lastWrittenAt: toIso(s.now), lastReadAt: toIso(s.now), lastError: null, lastErrorAt: null, warnings: [], ignoredFiles: 0, devicesSeen: Math.max(0, s.folders[to].devices.length - 1) },
+    status: { lastWrittenAt: toIso(s.now), lastReadAt: toIso(s.now), lastError: null, lastErrorAt: null, warnings: [], ignoredFiles: 0, devicesSeen: Math.max(0, othersIn(s.folders[to]).length) },
   };
   const at = replacing && from !== null ? s.targets.findIndex((t) => t.root === from) : -1;
   if (!s.targets.some((t) => t.root === to)) {
@@ -264,17 +290,17 @@ async function moveSyncTarget(s: MockState, a: Record<string, unknown>): Promise
     else s.targets.push(view);
   } else if (at >= 0) s.targets.splice(at, 1);
   s.syncPromptDone = true;
-  if (sourceMissing && from !== null) s.pendingCopy = { from, to };
-  else if (s.pendingCopy?.to === to) s.pendingCopy = null;
-  const fingerprint = counts.projects * 1_000_000 + counts.tasks * 1_000 + counts.segments;
+  // Every move settles the owed copy: a source that could not be read leaves one, anything else clears it.
+  s.pendingCopy = sourceMissing && from !== null ? { from, to } : null;
+  sendProgress('Done', total, total);
   return {
-    filesCopied: (srcDevices.length - shared) * FILES_PER_DEVICE,
-    filesAlreadyThere: shared * FILES_PER_DEVICE,
+    filesCopied,
+    filesAlreadyThere,
     filesIgnored: 0,
     sourceMissing,
     counts,
-    checksum: `sha256:${fingerprint.toString(16).padStart(16, '0')}`,
-    warnings: [],
+    checksum: checksumOf(counts),
+    warnings: sourceMissing ? ['The previous folder could not be read, so this used the data on this computer. You can retry the copy later.'] : [],
   };
 }
 
@@ -349,6 +375,35 @@ const endOf = (s: MockState) => (seg: MockSegment): number => (seg.provisionalEn
 
 const liveTaskIds = (s: MockState): Set<string> => new Set(s.tasks.map((t) => t.id));
 
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+
+/** `prefix_of` in summary.rs: this device's prefix, or the first letter no other device uses, or "PC" when all are taken. */
+export function prefixOf(s: MockState): string {
+  if (s.prefix !== null) return s.prefix;
+  const used = new Set(Object.values(s.otherPrefixes));
+  return LETTERS.find((c) => !used.has(c)) ?? 'PC';
+}
+
+/** Other devices using the same prefix as this one: their numbers could collide with ours. */
+export const prefixClashes = (s: MockState): string[] => {
+  const mine = prefixOf(s);
+  return Object.entries(s.otherPrefixes)
+    .filter(([, p]) => p === mine)
+    .map(([name]) => name);
+};
+
+/** References on more than one live summary, which offline devices can produce. */
+export function referenceClashes(s: MockState): string[] {
+  const seen = new Map<string, number>();
+  for (const b of s.summaries) if (!b.voided) seen.set(b.reference, (seen.get(b.reference) ?? 0) + 1);
+  return [...seen].filter(([, n]) => n > 1).map(([r]) => r).sort();
+}
+
+/** `raise_reference_marks`: each prefix's mark rises to the highest number on any summary, voided ones included. */
+export function raiseReferenceMarks(marks: Record<string, number>, summaries: readonly Pick<BillingSummary, 'prefix' | 'number'>[]): void {
+  for (const b of summaries) marks[b.prefix] = Math.max(marks[b.prefix] ?? 0, b.number);
+}
+
 function pieceInput(s: MockState): PieceInput {
   return { segments: s.segments, gaps: s.gaps, pauses: s.pauses, liveTasks: liveTaskIds(s) };
 }
@@ -384,6 +439,16 @@ function currentReminder(s: MockState): Reminder | null {
   const minutes = minutesSetting(s, 'longRunMinutes', 240);
   if (minutes > 0 && s.now - parseIso(open.start) >= minutes * 60) return { kind: 'longRun', taskId: open.taskId, since: open.start };
   return null;
+}
+
+/** The two reference warnings of `service.rs`, worded the same. */
+function referenceWarnings(s: MockState): string[] {
+  const out: string[] = [];
+  const repeated = referenceClashes(s);
+  if (repeated.length > 0) out.push(`More than one billing summary uses the same reference: ${repeated.join(', ')}. Change a device's prefix and void and reissue one of them.`);
+  const clashes = prefixClashes(s);
+  if (clashes.length > 0) out.push(`Another device uses the same reference prefix: ${clashes.join(', ')}. Choose a different prefix, or references can repeat.`);
+  return out;
 }
 
 function snapshot(s: MockState): Snapshot {
@@ -467,7 +532,7 @@ function snapshot(s: MockState): Snapshot {
       clientZonePromptDone: s.clientZonePromptDone,
     },
     notices: s.notices,
-    warnings: [...s.warnings, ...(s.prefixClashes.length ? [`Another device uses the same reference prefix: ${s.prefixClashes.join(', ')}. Choose a different prefix, or references can repeat.`] : [])],
+    warnings: [...s.warnings, ...referenceWarnings(s)],
     sync: { targets: s.targets, detected: s.detected, promptPending: !s.syncPromptDone && s.targets.length === 0, pendingCopy: s.pendingCopy },
     launch: { warm: s.warm, coldRequired: coldRequired(s), copySource: s.warm ? copySource(s) : null },
     rawSegments,
@@ -475,7 +540,7 @@ function snapshot(s: MockState): Snapshot {
     pauses: s.pauses.filter((x) => !x.deleted),
     tags,
     templates: s.templates.filter((x) => !x.deleted),
-    billing: { prefix: s.prefix, clashes: s.prefixClashes, summaries: s.summaries },
+    billing: { prefix: prefixOf(s), clashes: prefixClashes(s), summaries: s.summaries },
     reminder: currentReminder(s),
     reminderSettings: {
       idleMinutes: minutesSetting(s, 'idleMinutes', 10),
@@ -502,8 +567,7 @@ function cleanColor(raw: string): string {
 }
 
 function cleanProject(s: MockState, input: ProjectInput, except: string | null): ProjectInput & { billingType: 'hourly' | 'fixedFee'; fixedFeeCents: number | null; feeCurrency: 'EUR' | 'USD' | null } {
-  const name = input.name.trim();
-  if (!name) throw err('validation', 'Project name is required');
+  const name = cleanText(input.name, 'Project name', 80);
   if (s.projects.some((p) => p.id !== except && p.name.toLowerCase() === name.toLowerCase())) {
     throw err('conflict', `a project named "${name}" already exists`);
   }
@@ -518,6 +582,14 @@ function cleanProject(s: MockState, input: ProjectInput, except: string | null):
     fixedFeeCents = input.fixedFeeCents;
   }
   return { ...input, name, color, billingType, fixedFeeCents, feeCurrency: billingType === 'fixedFee' ? (input.feeCurrency ?? null) : null };
+}
+
+/** `validate.rs` MAX_NAME: a task name is at most 200 characters, with no control characters. */
+const cleanTaskName = (raw: string): string => cleanText(raw, 'Task name', 200);
+
+/** An edit removed the active subtask's item: no subtask is active now (`clear_missing_active`). */
+function clearMissingActive(t: MockTask): void {
+  if (t.activeSubtask && !subtaskItems(t.description).some((i) => i.id === t.activeSubtask)) t.activeSubtask = null;
 }
 
 function task(s: MockState, id: string): MockTask {
@@ -661,9 +733,52 @@ function checkSummaryRequest(s: MockState, req: SummaryRequest): void {
   if (!s.projects.some((p) => p.id === req.projectId)) throw err('not_found', 'project not found');
 }
 
-/** Everything a restore replaces, as JSON. Settings of this device, such as sync folders, stay as they are. */
-const dataKeys = ['projects', 'tasks', 'segments', 'gaps', 'pauses', 'tags', 'templates', 'summaries', 'rates', 'rounding', 'shifts'] as const;
-export const captureData = (s: MockState): string => JSON.stringify(Object.fromEntries(dataKeys.map((k) => [k, s[k]])));
+/**
+ * Everything a restore rolls back, as JSON: the records, the replicated settings (`data.settings`) and the
+ * moment it was taken (the backup's heartbeat). Kept on this computer, not rolled back: preferences such as
+ * the theme and how many backups to keep, sync folders, the device prefix, the reference marks, and the audit
+ * log, which only grows (the backup's copy is still written, and merged in).
+ */
+const dataKeys = ['projects', 'tasks', 'segments', 'gaps', 'pauses', 'tags', 'templates', 'summaries', 'rates', 'rounding', 'shifts', 'settings', 'audit'] as const;
+export const captureData = (s: MockState): string => JSON.stringify({ ...Object.fromEntries(dataKeys.map((k) => [k, s[k]])), heartbeat: s.now });
+
+type Captured = Pick<MockState, (typeof dataKeys)[number]> & { heartbeat?: number };
+
+/** `backup::list`: newest first by the date in the name, whichever kind of backup it is. */
+const backupDate = (name: string): string => name.replace(/^z-work-data-/, '').replace(/^pre-restore-/, '');
+const SAFETY_KEEP = 5;
+
+function sortBackups(s: MockState): void {
+  s.backups.sort((a, b) => (backupDate(a.name) < backupDate(b.name) ? 1 : backupDate(a.name) > backupDate(b.name) ? -1 : 0));
+}
+
+/** Keeps the newest few safety copies, like `backup::safety_copy`. */
+function pruneSafetyCopies(s: MockState): void {
+  const names = s.backups.filter((b) => b.safety).map((b) => b.name).sort();
+  for (const name of names.slice(0, Math.max(0, names.length - SAFETY_KEEP))) {
+    s.backups = s.backups.filter((b) => b.name !== name);
+    delete s.backupData[name];
+  }
+}
+
+/**
+ * A task the backup held running stopped being timed when the backup was taken: its open segment on this
+ * device ends at the backup's heartbeat, and the task is paused as `backupRestored`. Returns the task names.
+ */
+function closeBackupRunning(s: MockState, heartbeat: number | null): string[] {
+  const names: string[] = [];
+  for (const seg of s.segments) {
+    if (seg.end !== null || seg.deviceId !== DEVICE_ID) continue;
+    const start = parseIso(seg.start);
+    seg.end = toIso(Math.max(heartbeat ?? start, start));
+    const t = s.tasks.find((x) => x.id === seg.taskId);
+    if (!t) continue;
+    const stillOpen = s.segments.some((x) => x.taskId === t.id && x.end === null);
+    if (t.state === 'running' && !stillOpen) setState(t, 'paused', { kind: 'backupRestored' });
+    names.push(t.name);
+  }
+  return names;
+}
 
 function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown {
   switch (cmd) {
@@ -802,21 +917,29 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
       checkSummaryRequest(s, req);
       const preview = summaryPreview(summaryInput(s), req);
       if (preview.rows.length === 0) throw err('validation', 'there is no unbilled time in that period');
-      const number = Math.max(0, ...s.summaries.filter((b) => b.prefix === s.prefix).map((b) => b.number)) + 1;
+      // The prefix is fixed by the first summary. The number is above every summary under it, voided or
+      // restored away, and above the mark kept in the settings of this computer.
+      const prefix = prefixOf(s);
+      s.prefix = prefix;
+      const number = Math.max(0, s.referenceMarks[prefix] ?? 0, ...s.summaries.filter((b) => b.prefix === prefix).map((b) => b.number)) + 1;
       const id = newId(s, 'summary');
-      const reference = `${s.prefix}-${String(number).padStart(3, '0')}`;
+      const reference = `${prefix}-${String(number).padStart(3, '0')}`;
       s.summaries.push({
-        id, reference, prefix: s.prefix, number, deviceId: DEVICE_ID, projectId: req.projectId, from: req.from, to: req.to, zone: req.zone, createdAt: toIso(s.now),
+        id, reference, prefix, number, deviceId: DEVICE_ID, projectId: req.projectId, from: req.from, to: req.to, zone: req.zone, createdAt: toIso(s.now),
         segmentIds: preview.segmentIds, pauseIds: preview.pauseIds, rows: preview.rows, totals: preview.totals, voided: false, stamp: stamp(s),
       });
+      raiseReferenceMarks(s.referenceMarks, s.summaries);
       addAudit(s, 'summary', id, 'create', '', null, { reference });
       return { id, snapshot: snapshot(s) };
     }
     case 'void_summary': {
       const b = s.summaries.find((x) => x.id === a.id);
       if (!b) throw err('not_found', 'billing summary not found');
-      b.voided = true;
-      addAudit(s, 'summary', b.id, 'void', '', { reference: b.reference }, null);
+      // Voiding twice is a no-op, and writes no second entry in the history.
+      if (!b.voided) {
+        b.voided = true;
+        addAudit(s, 'summary', b.id, 'void', '', { reference: b.reference }, null);
+      }
       return snapshot(s);
     }
     case 'set_device_prefix': {
@@ -828,6 +951,8 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
     case 'export_summary_csv': {
       const b = s.summaries.find((x) => x.id === a.id);
       if (!b) throw err('not_found', 'billing summary not found');
+      // Like the backend, what the file holds follows Hide earnings as it is when the file is written.
+      s.summaryCsvFiles[b.id] = summaryCsv(b, s.projects.find((p) => p.id === b.projectId)?.name ?? '', s.hideEarnings);
       return `/mock/${b.reference}.csv`;
     }
     case 'export_pdf': {
@@ -841,7 +966,8 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
       s.hasPdfLogo = false;
       return snapshot(s);
     case 'list_backups':
-      return s.backups;
+      sortBackups(s);
+      return s.backups.map((b) => ({ ...b }));
     case 'set_backup_keep': {
       const keep = a.keep as number;
       if (!Number.isInteger(keep) || keep < 1 || keep > 365) throw err('validation', 'keep between 1 and 365 backups');
@@ -851,18 +977,43 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
     case 'restore_backup': {
       const name = a.name as string;
       if (!s.backups.some((b) => b.name === name)) throw err('not_found', 'backup not found');
+      const held = s.backupData[name];
+      // A running task is closed first, like a quit, so the safety copy holds the data as it is now.
       closeAllAndPause(s, { kind: 'appQuit' });
       const safety = `pre-restore-${toIso(s.now).replace(/:/g, '-').replace('Z', '')}.json`;
       s.backupData[safety] = captureData(s);
-      s.backups.unshift({ name: safety, bytes: s.backupData[safety].length, safety: true });
-      const data = s.backupData[name];
-      if (data) Object.assign(s, JSON.parse(data) as Partial<MockState>);
-      // What the backup held as running is paused, like a task found open after a crash.
-      closeAllAndPause(s, { kind: 'crashRecovery' });
-      // Settings of this device, such as sync folders, stay as they are. The launch counts as cold afterwards.
+      s.backups = s.backups.filter((b) => b.name !== safety);
+      s.backups.push({ name: safety, bytes: s.backupData[safety].length, safety: true });
+      sortBackups(s);
+      pruneSafetyCopies(s);
+      // Numbers already issued, here or in the backup, are never issued again.
+      raiseReferenceMarks(s.referenceMarks, s.summaries);
+      let names: string[] = [];
+      let heartbeat: number | null = null;
+      if (held) {
+        const restored = JSON.parse(held) as Captured;
+        raiseReferenceMarks(s.referenceMarks, restored.summaries);
+        // The log only grows: the backup's entries and every entry made since both stay.
+        const log = new Map(restored.audit.map((e) => [e.id, e]));
+        for (const e of s.audit) log.set(e.id, e);
+        const keep = [...log.values()];
+        Object.assign(s, Object.fromEntries(dataKeys.map((k) => [k, restored[k]])));
+        s.audit = keep;
+        heartbeat = restored.heartbeat ?? null;
+        names = closeBackupRunning(s, heartbeat);
+      }
+      addAudit(s, 'backup', name, 'restore', '', null, { safetyCopy: safety });
+      // The launch counts as cold afterwards.
       s.warm = false;
       s.lastWorked = null;
       s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'info', message: `Restored ${name}. The data just before it is kept as ${safety}.` });
+      if (names.length > 0) {
+        s.notices.push({
+          id: `notice-${newId(s, 'n')}`,
+          level: 'info',
+          message: `${names.join(', ')} was running when this backup was taken. It is paused at the last moment the backup knows about (${heartbeat === null ? 'its start' : toIso(heartbeat)}).`,
+        });
+      }
       if (s.targets.length > 0) {
         s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'warning', message: 'Sync is on, so newer records in your sync folders will merge back in at the next sync.' });
       }
@@ -917,13 +1068,13 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     }
     case 'create_task': {
       const input = a.input as TaskInput;
-      if (!input.name.trim()) throw err('validation', 'Task name is required');
+      const name = cleanTaskName(input.name);
       if (!input.projectId) throw err('validation', 'Project is required');
       if (!s.projects.some((p) => p.id === input.projectId)) throw err('not_found', 'project not found');
       checkTagIds(s, input.tags ?? []);
       const id = newId(s, 'task');
       s.tasks.push({
-        id, name: input.name.trim(), projectId: input.projectId, description: assignSubtaskIds(input.description, undefined, () => newId(s, 'sub')), state: 'draft',
+        id, name, projectId: input.projectId, description: assignSubtaskIds(input.description, undefined, () => newId(s, 'sub')), state: 'draft',
         pauseReason: null, createdAt: toIso(s.now), stoppedAt: null, runningElsewhere: null,
         continuedFrom: input.continuedFrom ?? null, tags: input.tags ?? [], activeSubtask: null,
       });
@@ -931,12 +1082,13 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     }
     case 'update_task': {
       const input = a.input as TaskInput;
-      if (!input.name.trim()) throw err('validation', 'Task name is required');
+      const name = cleanTaskName(input.name);
       checkTagIds(s, input.tags ?? []);
       const t = task(s, a.id as string);
-      t.name = input.name.trim();
+      t.name = name;
       t.projectId = input.projectId;
       t.description = assignSubtaskIds(input.description, t.description, () => newId(s, 'sub'));
+      clearMissingActive(t);
       // Like the backend, an empty list here leaves the tags alone; clearing goes through patch_task.
       if (input.tags && input.tags.length > 0) t.tags = input.tags;
       return snapshot(s);
@@ -944,7 +1096,7 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     case 'patch_task': {
       const patch = a.patch as TaskPatch;
       const t = task(s, a.id as string);
-      if (patch.name !== undefined && !patch.name.trim()) throw err('validation', 'Task name is required');
+      const patchName = patch.name === undefined ? undefined : cleanTaskName(patch.name);
       if (patch.tags !== undefined) checkTagIds(s, patch.tags);
       if (patch.projectId !== undefined && patch.projectId !== t.projectId) {
         const project = s.projects.find((p) => p.id === patch.projectId);
@@ -952,8 +1104,11 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
         if (project.archived) throw err('validation', 'this project is archived; restore it first');
         t.projectId = patch.projectId;
       }
-      if (patch.name !== undefined) t.name = patch.name.trim();
-      if (patch.description !== undefined) t.description = assignSubtaskIds(patch.description, t.description, () => newId(s, 'sub'));
+      if (patchName !== undefined) t.name = patchName;
+      if (patch.description !== undefined) {
+        t.description = assignSubtaskIds(patch.description, t.description, () => newId(s, 'sub'));
+        clearMissingActive(t);
+      }
       if (patch.tags !== undefined) t.tags = patch.tags;
       return snapshot(s);
     }
@@ -973,7 +1128,6 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       if (t.runningElsewhere) throw err('running_elsewhere', `this task is running on another device (${t.runningElsewhere}); pause it there`);
       closeOwn(s, t.id);
       setState(t, 'paused', { kind: 'user' });
-      s.lastWorked = t.id;
       return snapshot(s);
     }
     case 'stop_task': {
@@ -982,7 +1136,6 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       closeOwn(s, t.id);
       setState(t, 'stopped', null);
       t.stoppedAt = toIso(s.now);
-      s.lastWorked = t.id;
       return snapshot(s);
     }
     case 'save_shift': {

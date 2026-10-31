@@ -8,8 +8,9 @@ import { api } from '../../lib/api';
 import { dayOf } from '../../lib/tz';
 import type { PdfRequest } from '../../lib/types';
 import { spanDays, type RangeSpec } from '../analysis/range';
-import { PeriodPicker, defaultPeriod, messageOf, zoneChoices } from '../billing/parts';
+import { PeriodPicker, defaultPeriod, zoneChoices } from '../billing/parts';
 import '../billing/billing.css';
+import { errorMessage } from '../../lib/errorMessage';
 
 export const PDF_CHARACTER_NOTE = 'Text outside Western European characters prints as ?';
 
@@ -70,7 +71,7 @@ export function usePdfForm(): PdfForm {
       const path = await api.exportPdf(request);
       setDone({ key, path });
     } catch (e) {
-      setFailed({ key, text: messageOf(e) });
+      setFailed({ key, text: errorMessage(e) });
     } finally {
       setBusy(false);
     }
@@ -82,7 +83,7 @@ export function usePdfForm(): PdfForm {
     try {
       adopt(await call());
     } catch (e) {
-      setLogoError(messageOf(e));
+      setLogoError(errorMessage(e));
     } finally {
       setLogoBusy(false);
     }

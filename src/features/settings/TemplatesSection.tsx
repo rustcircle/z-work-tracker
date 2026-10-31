@@ -1,6 +1,6 @@
 // Templates: list, create from scratch, edit, delete. (Using one is on the new-task form; "Save as
 // template" is on a task.) A template's task-list items are saved unticked by the backend.
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { useApp } from '../../app/store';
 import { api } from '../../lib/api';
@@ -22,6 +22,11 @@ function TemplateEditor({ template, onDone }: { template: Template | null; onDon
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null);
+  // The editor opens with the cursor in the name. (`data-autofocus` only works inside a Modal.)
+  const nameInput = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    nameInput.current?.focus();
+  }, []);
 
   const nameError = validateTemplateName(name);
   const tooManyTags = tags.length > MAX_TEMPLATE_TAGS ? `A template can have at most ${MAX_TEMPLATE_TAGS} tags.` : null;
@@ -62,7 +67,7 @@ function TemplateEditor({ template, onDone }: { template: Template | null; onDon
             aria-invalid={(touched && nameError) || nameRefusal ? true : undefined}
             aria-describedby={describedBy}
             autoComplete="off"
-            data-autofocus
+            ref={nameInput}
           />
         )}
       </Field>

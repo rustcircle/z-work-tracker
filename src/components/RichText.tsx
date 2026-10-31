@@ -59,10 +59,27 @@ function Toolbar({ editor }: { editor: Editor }) {
     { label: 'Numbered list', text: '1.≡', on: s.ordered, run: () => editor.chain().focus().toggleOrderedList().run(), title: 'Numbered list' },
     { label: 'Task list', text: '☑≡', on: s.task, run: () => editor.chain().focus().toggleTaskList().run(), title: 'Task list' },
   ];
+  // The editor must hold the caret before the command runs. TipTap's own `focus()` takes it on a later
+  // animation frame, and keys typed in that gap would land on the button (a Space would press it).
+  const press = (run: () => void): void => {
+    if (!editor.view.hasFocus()) editor.view.focus();
+    run();
+  };
   return (
     <div className="rt-toolbar" role="toolbar" aria-label="Formatting">
       {items.map((i) => (
-        <button key={i.label} type="button" className={`rt-btn ${i.on ? 'on' : ''}`} aria-label={i.label} aria-pressed={i.on} title={i.title} onClick={i.run}>
+        <button
+          key={i.label}
+          type="button"
+          className={`rt-btn ${i.on ? 'on' : ''}`}
+          aria-label={i.label}
+          aria-pressed={i.on}
+          title={i.title}
+          // A mouse press must not move focus to the button: that blurs the editor (and ends an inline edit's
+          // session) for the length of the click. The keyboard still reaches the buttons with Tab.
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => press(i.run)}
+        >
           <span aria-hidden="true" className={i.label === 'Bold' ? 'rt-b' : i.label === 'Italic' ? 'rt-i' : ''}>
             {i.text}
           </span>

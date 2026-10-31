@@ -190,7 +190,8 @@ export function rowsOf(data: BillingData, pieces: readonly Piece[], zone: string
   const spans: SpanLike[] = [];
   for (const p of pieces) {
     const projectId = project.get(p.taskId);
-    if (projectId !== undefined && p.end > p.start) spans.push({ taskId: p.taskId, projectId, start: p.start, end: p.end, kind: p.kind });
+    // A piece of zero seconds still makes its row, like `task_days_of`: it lists and bills (as zero).
+    if (projectId !== undefined) spans.push({ taskId: p.taskId, projectId, start: p.start, end: p.end, kind: p.kind });
   }
   const book = new RateBook(data.projects, data.rates);
   return taskDays(spans, zone, book, data.rounding);

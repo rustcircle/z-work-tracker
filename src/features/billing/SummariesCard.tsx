@@ -8,7 +8,8 @@ import { api } from '../../lib/api';
 import { dayOf, parseIso } from '../../lib/tz';
 import type { BillingSummary, Project } from '../../lib/types';
 import { FIXED_FEE_TEXT, centsText, feeText, hasCents, noAmountReason, pauseNote, periodText, sumRows, summaryText } from './billingText';
-import { CopyButton, GuidanceLabel, RowsTable, messageOf } from './parts';
+import { CopyButton, GuidanceLabel, RowsTable } from './parts';
+import { errorMessage } from '../../lib/errorMessage';
 
 type Note = { id: string; kind: 'saved' | 'cancelled' | 'error'; text: string };
 
@@ -28,6 +29,8 @@ export function SummariesCard() {
   const [voidBusy, setVoidBusy] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
   const focusAfter = useRef<string | null>(null);
+  // A second press before the first answer has come back would void the same summary twice.
+  const voidRunning = useRef(false);
 
   // After the dialog closes, put focus on the voided summary: the button that opened it is gone.
   useEffect(() => {
@@ -38,7 +41,8 @@ export function SummariesCard() {
   });
 
   async function confirmVoid(): Promise<void> {
-    if (!voiding) return;
+    if (!voiding || voidRunning.current) return;
+    voidRunning.current = true;
     setVoidBusy(true);
     setVoidError(null);
     try {
@@ -46,8 +50,9 @@ export function SummariesCard() {
       focusAfter.current = voiding.id;
       setVoiding(null);
     } catch (e) {
-      setVoidError(messageOf(e));
+      setVoidError(errorMessage(e));
     } finally {
+      voidRunning.current = false;
       setVoidBusy(false);
     }
   }
@@ -58,7 +63,7 @@ export function SummariesCard() {
       const path = await api.exportSummaryCsv(b.id);
       setNote(path ? { id: b.id, kind: 'saved', text: `Saved to ${path}` } : { id: b.id, kind: 'cancelled', text: 'Cancelled. Nothing was saved.' });
     } catch (e) {
-      setNote({ id: b.id, kind: 'error', text: messageOf(e) });
+      setNote({ id: b.id, kind: 'error', text: errorMessage(e) });
     }
   }
 
@@ -76,7 +81,8 @@ export function SummariesCard() {
             const project = projects.get(b.projectId);
             const noAmount = noAmountReason(project);
             const f = sumRows(b.rows);
-            const amount = centsText(b.totals, hide);
+            // A fixed fee or a non-billable project has no hourly amount, whatever the summary's totals hold.
+            const amount = noAmount === null ? centsText(b.totals, hide) : '';
             const mine = note && note.id === b.id ? note : null;
             return (
               <li key={b.id} id={`summary-${b.id}`} tabIndex={-1} className={`bl-summary ${b.voided ? 'voided' : ''}`} aria-label={`${b.reference}, ${b.voided ? 'voided' : 'live'}`}>
@@ -103,7 +109,7 @@ export function SummariesCard() {
                     {FIXED_FEE_TEXT}.{feeText(project, hide) ? ` Fee: ${feeText(project, hide)}.` : ''}
                   </p>
                 )}
-                {b.voided && <p className="bl-hint">Voided: this time is unbilled again. The number {b.reference} is not reused.</p>}
+                {b.voided && <p className="bl-hint">Voided: this time is unbilled again. The number {b.reference} is not reused. A CSV of it says Voided.</p>}
                 <details className="bl-details">
                   <summary>
                     {b.rows.length} {b.rows.length === 1 ? 'row' : 'rows'}
@@ -157,12 +163,13 @@ export function SummariesCard() {
           })}
         </ul>
       )}
-      {hide && list.length > 0 && <p className="field-hint">Hide earnings is on: copied text leaves out amounts. A CSV file is written by the app and does contain them.</p>}
+      {hide && list.length > 0 && <p className="field-hint">Hide earnings is on: copied text and CSV files leave out amounts.</p>}
       <ConfirmDialog
         open={voiding !== null}
         title={voiding ? `Void ${voiding.reference}?` : 'Void summary?'}
         confirmLabel={voidBusy ? 'Voiding…' : 'Void summary'}
         danger
+        disabled={voidBusy}
         onConfirm={() => void confirmVoid()}
         onCancel={() => setVoiding(null)}
       >

@@ -10,7 +10,8 @@ import { dayOf } from '../../lib/tz';
 import type { Snapshot, SummaryPreview } from '../../lib/types';
 import { spanDays, type RangeSpec } from '../analysis/range';
 import { FIXED_FEE_TEXT, centsText, feeText, hasCents, noAmountReason, periodText, summaryText } from './billingText';
-import { CopyButton, GuidanceLabel, PeriodPicker, RowsTable, defaultPeriod, messageOf, zoneChoices } from './parts';
+import { CopyButton, GuidanceLabel, PeriodPicker, RowsTable, defaultPeriod, zoneChoices } from './parts';
+import { errorMessage } from '../../lib/errorMessage';
 
 interface Loaded {
   key: string;
@@ -31,6 +32,7 @@ export function UnbilledCard() {
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState(false);
   const outcomeRef = useRef<HTMLParagraphElement | null>(null);
+  const creating = useRef(false);
 
   const projects = useMemo(() => [...snapshot.projects].sort((a, b) => Number(a.archived) - Number(b.archived)), [snapshot.projects]);
   // Unbilled and billed time over all periods, per project: the first project with unbilled time is the default.
@@ -72,7 +74,7 @@ export function UnbilledCard() {
         if (alive) setLoaded({ key, snapshot, data, error: null });
       },
       (e: unknown) => {
-        if (alive) setLoaded({ key, snapshot, data: null, error: messageOf(e) });
+        if (alive) setLoaded({ key, snapshot, data: null, error: errorMessage(e) });
       },
     );
     return () => {
@@ -91,6 +93,9 @@ export function UnbilledCard() {
   const mine = outcome && outcome.key === key ? outcome : null;
   const hasRows = data !== null && data.rows.length > 0;
   const stats = projectId ? perProject.get(projectId) : undefined;
+  // Right after a summary is created the list below still shows the time it just billed, until the preview
+  // is read again: pressing Create then would only be refused, and the refusal would replace the answer.
+  const settling = mine?.kind === 'created' && current !== null && current.snapshot !== snapshot;
 
   const text = (): string =>
     data && project
@@ -98,7 +103,12 @@ export function UnbilledCard() {
       : '';
 
   async function create(): Promise<void> {
-    if (!projectId) return;
+    if (!projectId || creating.current) return;
+    creating.current = true;
+    // Pin what is being billed. Left on its default, the project would move on to whichever has the most
+    // unbilled time once this one has none, and the message below would be lost with it.
+    setProjectChoice(projectId);
+    setZoneChoice(zone);
     setBusy(true);
     setOutcome(null);
     try {
@@ -107,8 +117,9 @@ export function UnbilledCard() {
       const made = r.snapshot.billing.summaries.find((s) => s.id === r.id);
       setOutcome({ key, kind: 'created', reference: made?.reference ?? '', rows: made?.rows.length ?? 0 });
     } catch (e) {
-      setOutcome({ key, kind: 'error', text: messageOf(e) });
+      setOutcome({ key, kind: 'error', text: errorMessage(e) });
     } finally {
+      creating.current = false;
       setBusy(false);
     }
   }
@@ -199,7 +210,7 @@ export function UnbilledCard() {
 
       <div className="form-actions" aria-label="Summary actions" role="group">
         <CopyButton key={key} label="Copy" getText={text} disabled={!hasRows} />
-        <Button variant="primary" disabled={!hasRows || busy} onClick={() => void create()}>
+        <Button variant="primary" disabled={!hasRows || busy || settling} onClick={() => void create()}>
           {busy ? 'Creating…' : 'Create summary'}
         </Button>
       </div>

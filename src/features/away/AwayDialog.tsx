@@ -1,4 +1,4 @@
-// Time away: a dialog on return that asks about each stretch the computer was idle or asleep, and a
+// Time away: a dialog on return that asks about each stretch the computer was idle, asleep or locked, and a
 // banner that stays until every one is answered. Unanswered time counts nowhere.
 import { useMemo, useState } from 'react';
 
@@ -11,9 +11,10 @@ import { formatDuration } from '../../components/format';
 import { cityOf, dayOf, parseIso } from '../../lib/tz';
 import type { GapDecision, IdleGap, Project, Task } from '../../lib/types';
 import { rangeText } from '../timeline/DayCard';
-import { UNCONFIRMED, gapSecs, gapWord, lengthText, pendingGaps, taskNames, totalSecs } from './awayLogic';
+import { UNCONFIRMED, gapSecs, gapTitle, gapWord, lengthText, pendingGaps, taskNames, totalSecs } from './awayLogic';
 import { getAwayRequests, openAway, useAwayRequests } from './awayStore';
 import './away.css';
+import { errorMessage } from '../../lib/errorMessage';
 
 interface Choice {
   decision: GapDecision;
@@ -28,7 +29,6 @@ const CHOICES: readonly Choice[] = [
   { decision: 'thinking', label: 'Mark as thinking', all: 'Mark all as thinking', done: 'marked as thinking' },
 ];
 
-const errorText = (e: unknown): string => (e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
 
 function GapRow({ gap, task, project, zone, today, busy, onDecide }: { gap: IdleGap; task: Task | undefined; project: Project | undefined; zone: string; today: string; busy: boolean; onDecide: (g: IdleGap, c: Choice) => void }) {
   const name = task?.name ?? 'Unknown task';
@@ -38,7 +38,7 @@ function GapRow({ gap, task, project, zone, today, busy, onDecide }: { gap: Idle
       <div className="away-gap-head">
         <strong>{name}</strong>
         {project && <ProjectChip name={project.name} color={project.color} archived={project.archived} />}
-        <Badge tone="warning" title={gap.kind === 'sleep' ? 'The computer was asleep' : 'No keyboard or mouse activity'}>
+        <Badge tone="warning" title={gapTitle(gap)}>
           {gapWord(gap)}
         </Badge>
       </div>
@@ -100,7 +100,7 @@ export function AwayDialog() {
         secs += gapSecs(g);
       }
     } catch (e) {
-      setError(`${errorText(e)}${done > 0 ? ` (${done} of ${list.length} answered)` : ''}`);
+      setError(`${errorMessage(e)}${done > 0 ? ` (${done} of ${list.length} answered)` : ''}`);
     } finally {
       setBusy(false);
     }

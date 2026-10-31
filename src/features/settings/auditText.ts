@@ -4,7 +4,8 @@ import { clock } from '../../components/format';
 import { dayOf, parseIso } from '../../lib/tz';
 import type { AuditEntry } from '../../lib/types';
 
-const ENTITY: Record<string, string> = { segment: 'Time entry', gap: 'Time away', pause: 'Billable pause', summary: 'Billing summary' };
+const ENTITY: Record<string, string> = { segment: 'Time entry', gap: 'Time away', pause: 'Billable pause', summary: 'Billing summary', backup: 'Backup' };
+const GAP_KIND: Record<string, string> = { sleep: 'sleep', idle: 'idle', lock: 'screen locked' };
 const ACTION: Record<string, string> = {
   manualEntry: 'added by hand',
   correct: 'corrected',
@@ -76,10 +77,12 @@ export function summarize(value: unknown, zone: string): string {
   if (decision !== null) return DECISION[decision] ?? decision;
   const reference = str(value.reference);
   if (reference !== null) return reference;
+  const safetyCopy = str(value.safetyCopy);
+  if (safetyCopy !== null) return `the data from just before is kept as ${safetyCopy}`;
   const start = str(value.start);
   if (start !== null && 'end' in value) {
     const kind = str(value.kind);
-    return `${spanText(start, str(value.end), zone)}${kind ? ` (${kind})` : ''}`;
+    return `${spanText(start, str(value.end), zone)}${kind ? ` (${GAP_KIND[kind] ?? kind})` : ''}`;
   }
   return pairs(value, zone);
 }
@@ -92,10 +95,12 @@ export interface AuditLine {
 }
 
 export function auditLine(e: AuditEntry, zone: string, deviceId: string, deviceName: string): AuditLine {
+  // A restore names the backup in its entity id; its before and after are not about that backup.
+  const restore = e.entity === 'backup' && e.action === 'restore';
   return {
     when: whenText(e.at, zone),
     by: e.by === deviceId ? (deviceName ? `this computer (${deviceName})` : 'this computer') : 'another computer',
-    before: summarize(e.before, zone),
-    after: summarize(e.after, zone),
+    before: restore ? 'the data in use' : summarize(e.before, zone),
+    after: restore ? `${e.entityId}; ${summarize(e.after, zone)}` : summarize(e.after, zone),
   };
 }

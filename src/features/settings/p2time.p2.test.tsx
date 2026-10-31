@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { boot as bootApp, polyfillDom } from '../../components/testKit';
+import { api } from '../../lib/api';
 import { demoP2State, demoState } from '../../mocks/demoSeed';
 import type { MockState } from '../../mocks/ipcMock';
 import { bytesText, parseKeep } from './BackupsSection';
@@ -181,5 +182,66 @@ describe('history of changes', () => {
     expect(await s.findByRole('alert')).toHaveTextContent('Could not load the history: mock: get_audit failed');
     await user.click(s.getByRole('button', { name: 'Load' }));
     expect(await s.findByTestId('audit-empty')).toHaveTextContent('Nothing has been recorded yet');
+  });
+});
+
+describe('saving keeps the form where it is', () => {
+  it('the backup count: "Saved." stays and the cursor stays in the field after Enter', async () => {
+    const user = userEvent.setup();
+    const s = await settings(user, demoP2State(), 'Backups');
+    const keep = s.getByLabelText('Daily backups to keep');
+    await user.clear(keep);
+    await user.type(keep, '20{Enter}');
+    await waitFor(() => expect(s.getByTestId('backup-keep-now')).toHaveTextContent('Now: 20'));
+    expect(s.getByText('Saved.')).toBeVisible();
+    expect(s.getByLabelText('Daily backups to keep')).toBe(keep);
+    expect(keep).toHaveFocus();
+    expect(keep).toHaveValue('20');
+    // Typing again clears the answer and starts a new draft.
+    await user.type(keep, '1');
+    expect(s.queryByText('Saved.')).toBeNull();
+    expect(keep).toHaveValue('201');
+  });
+
+  it('a reminder field: "Saved." stays, the cursor stays, and the other field is untouched', async () => {
+    const user = userEvent.setup();
+    const s = await settings(user, demoP2State(), 'Time away and reminders');
+    const idle = s.getByLabelText('Treat no activity as time away after (minutes)');
+    const long = s.getByLabelText('Remind me when a task has run for (minutes)');
+    await user.type(long, '5');
+    await user.clear(idle);
+    await user.type(idle, '25{Enter}');
+    await waitFor(() => expect(s.getByTestId('current-idleMinutes')).toHaveTextContent('Now: 25 minutes'));
+    expect(s.getAllByText('Saved.')).toHaveLength(1);
+    expect(s.getByLabelText('Treat no activity as time away after (minutes)')).toBe(idle);
+    expect(idle).toHaveFocus();
+    expect(idle).toHaveValue('25');
+    expect(long).toHaveValue('2405');
+  });
+
+  it('a failure with no message is shown in a generic sentence, never as [object Object]', async () => {
+    const user = userEvent.setup();
+    const s = await settings(user, demoP2State(), 'Backups');
+    vi.spyOn(api, 'restoreBackup').mockRejectedValue({ code: 'io' });
+    await user.click(await s.findByRole('button', { name: 'Restore z-work-data-2026-03-12.json' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Restore this backup?' })).getByRole('button', { name: 'Restore this backup' }));
+    const alert = await s.findByRole('alert');
+    expect(alert).toHaveTextContent('Could not restore z-work-data-2026-03-12.json: Something went wrong.');
+    expect(alert.textContent).not.toContain('[object Object]');
+  });
+
+  it('the history says a restore in words, with the backup it came from', async () => {
+    const user = userEvent.setup();
+    const seed = demoP2State();
+    const history = await settings(user, seed, 'Backups');
+    await user.click(await history.findByRole('button', { name: 'Restore z-work-data-2026-03-11.json' }));
+    await user.click(within(await screen.findByRole('dialog', { name: 'Restore this backup?' })).getByRole('button', { name: 'Restore this backup' }));
+    await history.findByTestId('backup-result');
+    const audit = within(screen.getByRole('region', { name: 'History of changes' }));
+    await user.click(audit.getByRole('button', { name: 'Load' }));
+    await user.selectOptions(await audit.findByLabelText('Show'), 'backup');
+    const entry = await audit.findByTestId('audit-entry');
+    expect(entry).toHaveTextContent('Backup restored');
+    expect(entry).toHaveTextContent('After: z-work-data-2026-03-11.json; the data from just before is kept as pre-restore-');
   });
 });

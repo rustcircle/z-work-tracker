@@ -1,3 +1,4 @@
+import { listen } from '@tauri-apps/api/event';
 import { clearMocks } from '@tauri-apps/api/mocks';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -6,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { boot as bootApp, polyfillDom } from '../../components/testKit';
 import { demoState, DEMO_NOW } from '../../mocks/demoSeed';
 import type { MockState } from '../../mocks/ipcMock';
+import type { MoveProgress } from '../../lib/types';
 import { parseIso, toIso } from '../../lib/tz';
 
 beforeEach(polyfillDom);
@@ -69,7 +71,8 @@ describe('change the sync folder', () => {
     await user.click(screen.getByLabelText(`Google Drive folder (${NEW})`));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
 
-    expect(await screen.findByTestId('move-from')).toHaveTextContent(`${OLD}2 devices (Office PC, Mock PC): 4 projects, 12 tasks, 300 time segments`);
+    // Like the backend, the device list names the OTHER devices: this computer's own file is not one of them.
+    expect(await screen.findByTestId('move-from')).toHaveTextContent(`${OLD}1 device (Office PC): 4 projects, 12 tasks, 300 time segments`);
     expect(screen.getByTestId('move-to')).toHaveTextContent(`${NEW}Nothing there yet`);
     expect(screen.getByTestId('move-local')).toHaveTextContent(/\d+ projects?, \d+ tasks?, \d+ time segments?/);
     expect(screen.queryByTestId('move-merge')).toBeNull();
@@ -83,10 +86,11 @@ describe('change the sync folder', () => {
     const progress = await screen.findByTestId('move-progress');
     expect(progress).toHaveAttribute('aria-live', 'polite');
     expect(screen.getByText(/Time tracking carries on/)).toBeVisible();
-    await waitFor(() => expect(progress).toHaveTextContent(/of \d+/));
+    // The step text is the backend's own, not a label of ours.
+    await waitFor(() => expect(progress).toHaveTextContent(/^(Reading the folders|Copying device files|Writing this device's data|Checking the copy|Done): \d+ of \d+$/));
 
     const summary = await screen.findByTestId('move-summary');
-    expect(summary).toHaveTextContent('Copied 6 files, 0 already there, 0 ignored. The folder now holds');
+    expect(summary).toHaveTextContent("This device's data was written and checked. Copied 1 file from other devices, 0 already there. The folder now holds");
     expect(summary).toHaveTextContent('4 projects, 12 tasks, 300 time segments');
     expect(screen.getByText(/Checked by reading the copy back/)).toBeVisible();
     expect(calls('move_sync_target')).toEqual([{ from: OLD, to: NEW, provider: 'googleDrive', replacing: true }]);
@@ -94,6 +98,41 @@ describe('change the sync folder', () => {
     expect(await screen.findByRole('heading', { name: 'Google Drive folder' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Done' }));
     expect(screen.queryByTestId('sync-move')).toBeNull();
+  });
+
+  it('reads truthfully on a single PC: this device is written and checked, and no other file needed copying', async () => {
+    const { user } = await setup((s) => {
+      s.folders[OLD] = { devices: ['Mock PC'], counts: { projects: 4, tasks: 12, segments: 300 }, available: true };
+    });
+    await toConfirm(user);
+    expect(screen.getByTestId('move-from')).toHaveTextContent(`${OLD}no other devices: 4 projects, 12 tasks, 300 time segments`);
+    await user.click(screen.getByRole('button', { name: 'Copy and switch' }));
+    const summary = await screen.findByTestId('move-summary');
+    expect(summary).toHaveTextContent("This device's data was written and checked. There were no files from other devices to copy. The folder now holds");
+    expect(summary.textContent).not.toMatch(/Copied 0/);
+  });
+
+  it('counts a device file the new folder already has as already there, and says nothing needed copying', async () => {
+    const { user } = await setup((s) => {
+      s.folders[NEW] = { devices: ['Office PC'], counts: { projects: 4, tasks: 12, segments: 300 }, available: true };
+    });
+    await toConfirm(user);
+    await user.click(screen.getByRole('button', { name: 'Copy and switch' }));
+    expect(await screen.findByTestId('move-summary')).toHaveTextContent("This device's data was written and checked. No files from other devices needed copying: 1 already there.");
+  });
+
+  it('reports the backend\'s own steps in order, ends on Done, and prints a plain 16-digit checksum', async () => {
+    const { user } = await setup();
+    const steps: string[] = [];
+    const stop = await listen<MoveProgress>('sync-move-progress', (e) => steps.push(e.payload.step));
+    await toConfirm(user);
+    await user.click(screen.getByRole('button', { name: 'Copy and switch' }));
+    await screen.findByTestId('move-summary');
+    stop();
+    expect(steps).toEqual(['Reading the folders', 'Copying device files', "Writing this device's data", 'Checking the copy', 'Done']);
+    const text = document.body.textContent ?? '';
+    expect(text).toMatch(/Checksum [0-9a-f]{16}(?![0-9a-f])/);
+    expect(text).not.toContain('sha256');
   });
 
   it('says existing data in the new folder is merged, not overwritten', async () => {
@@ -104,7 +143,7 @@ describe('change the sync folder', () => {
     expect(screen.getByTestId('move-merge')).toHaveTextContent('Existing data there will be merged, not overwritten.');
     expect(screen.getByTestId('move-to')).toHaveTextContent('1 device (Home PC): 2 projects, 5 tasks, 90 time segments');
     await user.click(screen.getByRole('button', { name: 'Copy and switch' }));
-    expect(await screen.findByTestId('move-summary')).toHaveTextContent('Copied 6 files, 0 already there');
+    expect(await screen.findByTestId('move-summary')).toHaveTextContent('Copied 1 file from other devices, 0 already there');
     expect(state.folders[NEW]?.devices.sort()).toEqual(['Home PC', 'Mock PC', 'Office PC']);
   });
 
@@ -125,7 +164,7 @@ describe('change the sync folder', () => {
     // The drive is back: the retry copies from the previous folder into the target that is already in use.
     state.folders[OLD] = { devices: ['Office PC'], counts: { projects: 4, tasks: 12, segments: 300 }, available: true };
     await user.click(within(pending).getByRole('button', { name: 'Retry copy' }));
-    expect(await screen.findByTestId('move-summary')).toHaveTextContent('Copied 3 files');
+    expect(await screen.findByTestId('move-summary')).toHaveTextContent('Copied 1 file from other devices, 0 already there');
     expect(calls('move_sync_target').at(-1)).toEqual({ from: OLD, to: NEW, provider: 'googleDrive', replacing: false });
     await waitFor(() => expect(screen.queryByTestId('sync-pending')).toBeNull());
     expect(state.pendingCopy).toBeNull();
@@ -139,7 +178,7 @@ describe('change the sync folder', () => {
     await toConfirm(user);
     await user.click(screen.getByRole('button', { name: 'Copy and switch' }));
     const error = await screen.findByTestId('move-error');
-    expect(error).toHaveTextContent('Could not write to G:\\My Drive: the folder is read-only.');
+    expect(error).toHaveTextContent("Could not write this device's file: the folder is read-only.");
     expect(screen.getByText('Sync is still using the old folder. Your data is safe.')).toBeVisible();
     expect(state.targets.map((t) => t.root)).toEqual([OLD]);
     expect(state.pendingCopy).toBeNull();

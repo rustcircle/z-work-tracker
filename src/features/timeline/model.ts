@@ -17,7 +17,7 @@ export interface TlSeg extends Seg {
   kind: SegKind;
   /** The recorded segment this came from, to find its correction. */
   segmentId: string;
-  /** Sleep or idle, for time away. */
+  /** Sleep, idle or a locked screen, for time away. */
   gapKind?: GapKind;
 }
 

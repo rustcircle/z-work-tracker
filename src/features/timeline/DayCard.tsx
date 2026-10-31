@@ -10,6 +10,7 @@ import { repeatedPass } from './axisGeometry';
 import { amountText, clock, clockWithAbbr, dayLabel, formatDuration, formatHMS, hasAmount, relativeDay, shortDay } from '../../components/format';
 import { IconEdit, IconWarn } from '../../components/icons';
 import { Badge, IconButton, ProjectChip } from '../../components/ui';
+import { gapSentence } from '../away/awayLogic';
 import { openAway } from '../away/awayStore';
 import { blocksOf, differs, entriesOf, isAway, kindOf, overlapSecs, projectTotals, totalsOf, workWindows, type Block, type DayData, type Entry, type SegKind } from './model';
 
@@ -190,7 +191,7 @@ function DayCardImpl(p: DayCardProps) {
         {b.kind === 'billablePause' && <span>Billable pause: counts in Billable, not in Exact.</span>}
         {b.kind === 'pending' && <span>Unconfirmed: not counted until you confirm.</span>}
         {b.kind === 'dropped' && <span>Dropped: not counted.</span>}
-        {b.gapKind && <span>{b.gapKind === 'sleep' ? 'The computer was asleep' : 'No activity'}</span>}
+        {b.gapKind && <span>{gapSentence(b.gapKind)}</span>}
         {raw && <span>{rawNote(raw, zone, day)}</span>}
         {isAway(b.kind) ? null : hasAmount(clean) ? (
           <span className="tabular">{b.kind === 'billablePause' ? 'Billable earnings' : 'Exact earnings'} {amountText(clean, p.hide)}</span>
@@ -418,13 +419,13 @@ function DayCardImpl(p: DayCardProps) {
                     )}
                     {e.kind === 'pending' && (
                       <p className="entry-note">
-                        Unconfirmed: not counted until you confirm. {e.gapKind === 'sleep' ? 'The computer was asleep.' : 'No activity.'}{' '}
+                        Unconfirmed: not counted until you confirm. {e.gapKind ? `${gapSentence(e.gapKind)}.` : ''}{' '}
                         <button type="button" className="link" onClick={openAway}>
                           Decide
                         </button>
                       </p>
                     )}
-                    {e.kind === 'dropped' && <p className="entry-note muted">Dropped: removed from your time. {e.gapKind === 'sleep' ? 'The computer was asleep.' : 'No activity.'}</p>}
+                    {e.kind === 'dropped' && <p className="entry-note muted">Dropped: removed from your time. {e.gapKind ? `${gapSentence(e.gapKind)}.` : ''}</p>}
                     {raw && <p className="entry-note raw-note">{rawNote(raw, zone, day)}</p>}
                     <ChainLinks task={p.tasks.get(e.taskId)} tasks={p.tasks} chain={p.chain} onOpenTask={p.onOpenTask} />
                   </td>

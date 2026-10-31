@@ -7,6 +7,7 @@ import { api } from '../../lib/api';
 import { Button, Field, Switch } from '../../components/ui';
 import { plural } from '../../components/format';
 import './p2time.css';
+import { errorMessage } from '../../lib/errorMessage';
 
 export const MAX_MINUTES = 10_080;
 
@@ -19,19 +20,21 @@ export function parseMinutes(text: string): { ok: true; minutes: number } | { ok
   return { ok: true, minutes };
 }
 
-const errorText = (e: unknown): string => (e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
 const current = (m: number): string => (m === 0 ? 'Off' : plural(m, 'minute'));
 
 function MinutesField({ settingKey, label, hint, value }: { settingKey: 'idleMinutes' | 'longRunMinutes'; label: string; hint: string; value: number }) {
   const { adopt } = useApp();
-  const [draft, setDraft] = useState(String(value));
+  // What is typed, or null while the field just shows the saved value: a save keeps this form mounted,
+  // so "Saved." and the focus stay.
+  const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
+  const shown = draft ?? String(value);
 
   const save = async (): Promise<void> => {
     setSaved(false);
-    const parsed = parseMinutes(draft);
+    const parsed = parseMinutes(shown);
     if (!parsed.ok) {
       setError(parsed.message);
       return;
@@ -40,9 +43,10 @@ function MinutesField({ settingKey, label, hint, value }: { settingKey: 'idleMin
     setBusy(true);
     try {
       adopt(await api.setSetting(settingKey, parsed.minutes));
+      setDraft(null);
       setSaved(true);
     } catch (e) {
-      setError(errorText(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -59,7 +63,7 @@ function MinutesField({ settingKey, label, hint, value }: { settingKey: 'idleMin
       <Field label={label} hint={hint} error={error}>
         {({ id, describedBy }) => (
           <div className="inline-actions">
-            <input id={id} className="input input-narrow" type="text" inputMode="numeric" value={draft} onChange={(e) => {
+            <input id={id} className="input input-narrow" type="text" inputMode="numeric" value={shown} onChange={(e) => {
               setDraft(e.target.value);
               setSaved(false);
             }} aria-describedby={describedBy} aria-invalid={error ? true : undefined} />
@@ -89,7 +93,7 @@ export function RemindersSection() {
     try {
       adopt(await api.setSetting('remindPastShift', v));
     } catch (e) {
-      setError(errorText(e));
+      setError(errorMessage(e));
     }
   };
 
@@ -99,14 +103,12 @@ export function RemindersSection() {
         While a task runs, zWorkTracker watches for time away from the computer and for a timer that may have been left running. The app sends the system notification itself, and the same reminder shows at the top of this window with a Pause button.
       </p>
       <MinutesField
-        key={`idle-${s.idleMinutes}`}
         settingKey="idleMinutes"
         label="Treat no activity as time away after (minutes)"
         hint="Default 10. 0 turns it off. When you come back, you decide what happens to that time. Unconfirmed: not counted until you confirm."
         value={s.idleMinutes}
       />
       <MinutesField
-        key={`long-${s.longRunMinutes}`}
         settingKey="longRunMinutes"
         label="Remind me when a task has run for (minutes)"
         hint="Default 240, which is 4 hours. 0 turns it off."

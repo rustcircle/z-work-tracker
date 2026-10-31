@@ -6,6 +6,7 @@ import { formatDuration } from '../../../components/format';
 import { Badge, Button } from '../../../components/ui';
 import { api } from '../../../lib/api';
 import { parseIso } from '../../../lib/tz';
+import { gapTitle, gapWord } from '../../away/awayLogic';
 import type { GapDecision, IdleGap, Task } from '../../../lib/types';
 import { attempt, sentence } from './attempt';
 import { BILLED_REASON } from './CorrectionsList';
@@ -83,7 +84,7 @@ function AwayItem({ gap, zone, billed, onNotice }: { gap: IdleGap; zone: string;
         <strong>{dayText(span, zone)}</strong>
         <span className="tabular">{timesText(span, zone)}</span>
         <span className="muted tabular">{formatDuration(span.end - span.start)}</span>
-        <Badge>{gap.kind === 'sleep' ? 'Sleep' : 'Idle'}</Badge>
+        <Badge title={gapTitle(gap)}>{gapWord(gap)}</Badge>
         <Badge tone={state.tone}>{state.text}</Badge>
       </div>
       {billed ? (

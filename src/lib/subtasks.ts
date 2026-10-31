@@ -1,5 +1,5 @@
 // Task-list items of a TipTap document, the unit that can carry its own tracked time. Mirrors
-// `subtasks.rs`: the backend assigns missing ids, a copy keeps the text but forgets ids and ticks.
+// `subtasks.rs`: the backend assigns missing or repeated ids, a copy keeps the text but forgets ids and ticks.
 import type { RichDoc } from './types';
 
 type Json = Record<string, unknown>;
@@ -77,16 +77,22 @@ export function assignSubtaskIds(doc: RichDoc, previous: RichDoc | undefined, fr
   const used = subtaskItems(doc).map((i) => i.id).filter((i) => i !== '');
   const out = structuredClone(doc) as Json;
   let position = 0;
+  const seen = new Set<string>();
   mapItems(out, (attrs, text) => {
     const here = position;
     position += 1;
     const current = attrs.subtaskId;
-    if (typeof current === 'string' && current !== '') return;
+    // An id that an earlier item already holds (a pasted or duplicated item) is reassigned.
+    if (typeof current === 'string' && current !== '' && !seen.has(current)) {
+      seen.add(current);
+      return;
+    }
     const byText = old.find((o) => o.text === text && o.id !== '' && !used.includes(o.id));
     const placed = old[here];
     const byPlace = placed && placed.id !== '' && !used.includes(placed.id) ? placed : undefined;
     const id = (byText ?? byPlace)?.id ?? fresh();
     used.push(id);
+    seen.add(id);
     attrs.subtaskId = id;
   });
   return out;

@@ -1,7 +1,7 @@
 // Pure helpers for time away: which gaps are pending, how long, and the words for them.
 import { formatDuration } from '../../components/format';
 import { parseIso } from '../../lib/tz';
-import type { IdleGap, Task } from '../../lib/types';
+import type { GapKind, IdleGap, Task } from '../../lib/types';
 
 export const UNCONFIRMED = 'Unconfirmed: not counted until you confirm';
 
@@ -18,7 +18,21 @@ export function taskNames(gaps: readonly IdleGap[], tasks: ReadonlyMap<string, T
   return `${names.slice(0, 2).join(', ')} and ${names.length - 2} more`;
 }
 
-export const gapWord = (g: Pick<IdleGap, 'kind'>): string => (g.kind === 'sleep' ? 'Sleep' : 'Idle');
+/** The words for each kind of time away. A `Record` keeps every screen in step when a kind is added. */
+const GAP_TEXT: Record<GapKind, { word: string; title: string; sentence: string }> = {
+  sleep: { word: 'Sleep', title: 'The computer was asleep', sentence: 'The computer was asleep' },
+  idle: { word: 'Idle', title: 'No keyboard or mouse activity', sentence: 'No activity' },
+  lock: { word: 'Screen locked', title: 'The session was locked', sentence: 'The screen was locked' },
+};
+
+/** The badge word: "Sleep", "Idle", "Screen locked". */
+export const gapWord = (g: Pick<IdleGap, 'kind'>): string => GAP_TEXT[g.kind].word;
+
+/** A tooltip saying what happened. */
+export const gapTitle = (g: Pick<IdleGap, 'kind'>): string => GAP_TEXT[g.kind].title;
+
+/** A short sentence for a day card: "The computer was asleep", "No activity", "The screen was locked". */
+export const gapSentence = (kind: GapKind): string => GAP_TEXT[kind].sentence;
 
 /** "4 h 05 min", "35 min": the length of a run in words, to the nearest minute. */
 export function longRunText(secs: number): string {

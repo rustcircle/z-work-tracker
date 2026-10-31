@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
-import { SHOTS, card, expectClean, open, tab } from './support';
+import { SHOTS, advance, card, expectClean, open, tab } from './support';
 
 // Time away, billable pauses and the timeline marks, reminders, backups and the audit log. Every figure
 // below is hand-computed from the `?seed=p2` data (see src/mocks/demoSeed.ts) and checked against the
@@ -87,6 +87,24 @@ test.describe('time away: the dialog on return', () => {
     await expect(d.getByRole('button', { name: /^Mark as thinking: Logo concepts/ })).toBeVisible();
     // One stretch: no "apply to all".
     await expect(d.getByRole('group', { name: /Apply one answer to all/ })).toHaveCount(0);
+    await expectClean(page, found);
+  });
+
+  test('a locked screen is worded as such, in the dialog and on the day card, not as idle', async ({ page }) => {
+    const found = await openP2(page);
+    await page.evaluate(() => {
+      const gap = window.__mock.gaps.find((g) => g.id === 'gap-pending');
+      if (!gap) throw new Error('no pending gap in the seed');
+      gap.kind = 'lock';
+    });
+    await resync(page);
+    await expect(today(page).getByTestId('day-unconfirmed')).toContainText(UNCONFIRMED);
+    await expect(today(page).getByText(/The screen was locked\./)).toBeVisible();
+    await expect(today(page).getByText(/No activity\./)).toHaveCount(0);
+    await banner(page).getByRole('button', { name: 'Review time away' }).click();
+    const row = dialog(page).getByTestId('away-gap');
+    await expect(row.getByText('Screen locked', { exact: true })).toBeVisible();
+    await expect(row.getByText('Idle', { exact: true })).toHaveCount(0);
     await expectClean(page, found);
   });
 
@@ -436,6 +454,88 @@ test.describe('backups', () => {
     await expect(form.getByRole('textbox', { name: 'Task name' })).toHaveValue('');
     await expect(form.getByTestId('copy-note')).toHaveCount(0);
     await expect(form.getByRole('button', { name: 'Start', exact: true })).toBeDisabled();
+    await expectClean(page, found);
+  });
+
+  test('a restore rolls data and shared settings back, keeps the prefix and the history, never reuses a number, and says the task was running in the backup', async ({ page }) => {
+    const found = await openP2(page);
+    // After the backup was taken: a setting changed, a summary made (A-003), then the prefix changed.
+    await tab(page, 'Settings');
+    const reminders = page.getByRole('region', { name: 'Settings' }).getByRole('region', { name: 'Time away and reminders' });
+    await reminders.getByLabel('Treat no activity as time away after (minutes)').fill('25');
+    await reminders.getByRole('button', { name: 'Save' }).first().click();
+    await expect(reminders.getByTestId('current-idleMinutes')).toContainText('Now: 25 minutes');
+    await advance(page, 60);
+    await tab(page, 'Billing');
+    await page.getByRole('region', { name: 'Unbilled time' }).getByLabel('Project').selectOption({ label: 'Website' });
+    await page.getByRole('region', { name: 'Unbilled time' }).getByRole('button', { name: 'Create summary' }).click();
+    await expect(page.getByTestId('billing-created')).toContainText('Created A-003');
+    await tab(page, 'Settings');
+    const prefix = page.getByRole('region', { name: 'Billing references' });
+    await prefix.getByLabel('Prefix of this device').fill('zz');
+    await prefix.getByRole('button', { name: 'Save prefix' }).click();
+    await expect(prefix.getByText('Prefix saved: ZZ.')).toBeVisible();
+    const auditBefore = await page.evaluate(() => window.__mock.audit.length);
+
+    const s = section(page);
+    await s.scrollIntoViewIfNeeded();
+    await s.getByRole('button', { name: 'Restore z-work-data-2026-03-11.json' }).click();
+    await page.getByRole('dialog', { name: 'Restore this backup?' }).getByRole('button', { name: 'Restore this backup' }).click();
+    await expect(s.getByTestId('backup-result')).toContainText('Restored z-work-data-2026-03-11.json');
+
+    // The task the backup held running is paused at the backup's moment, with its own notice: it did not crash.
+    const notices = page.getByTestId('notice');
+    await expect(notices.filter({ hasText: 'Restored z-work-data-2026-03-11.json' })).toHaveCount(1);
+    const running = notices.filter({ hasText: 'was running when this backup was taken' });
+    await expect(running).toHaveCount(1);
+    await expect(running).toContainText('Logo concepts was running when this backup was taken. It is paused at the last moment the backup knows about (2026-03-12T15:20:00Z).');
+    await expect(page.getByText('did not shut down cleanly')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__mock.tasks.find((t) => t.id === 't-logo')?.pauseReason)).toEqual({ kind: 'backupRestored' });
+
+    // Shared settings went back to what the backup held; the prefix on this computer did not.
+    await expect(reminders.getByTestId('current-idleMinutes')).toContainText('Now: 10 minutes');
+    await expect(prefix.getByLabel('Prefix of this device')).toHaveValue('ZZ');
+    expect(await page.evaluate(() => window.__mock.settings.idleMinutes)).toBeUndefined();
+
+    // The history only grows: every earlier entry is still there, and the restore is one more.
+    expect(await page.evaluate(() => window.__mock.audit.length)).toBe(auditBefore + 1);
+    const history = page.getByRole('region', { name: 'Settings' }).getByRole('region', { name: 'History of changes' });
+    await history.getByRole('button', { name: 'Load' }).click();
+    await history.getByLabel('Show').selectOption('summary');
+    await expect(history.getByTestId('audit-entry').filter({ hasText: 'A-003' })).toHaveCount(1);
+    await history.getByLabel('Show').selectOption('backup');
+    const restored = history.getByTestId('audit-entry');
+    await expect(restored).toHaveCount(1);
+    await expect(restored).toContainText('Backup restored');
+    await expect(restored).toContainText('After: z-work-data-2026-03-11.json; the data from just before is kept as pre-restore-');
+
+    // A-003 is gone with the restore, but its number is spent: the next summary is A-004.
+    await prefix.getByLabel('Prefix of this device').fill('a');
+    await prefix.getByRole('button', { name: 'Save prefix' }).click();
+    await expect(prefix.getByText('Prefix saved: A.')).toBeVisible();
+    await advance(page, 60);
+    await tab(page, 'Billing');
+    await expect(page.getByRole('listitem', { name: /^A-003/ })).toHaveCount(0);
+    await page.getByRole('region', { name: 'Unbilled time' }).getByLabel('Project').selectOption({ label: 'Website' });
+    await page.getByRole('region', { name: 'Unbilled time' }).getByRole('button', { name: 'Create summary' }).click();
+    await expect(page.getByTestId('billing-created')).toContainText('Created A-004');
+    await expectClean(page, found);
+  });
+
+  test('backups are listed newest first by the date in the name, whatever the kind', async ({ page }) => {
+    const found = await openP2(page);
+    await page.evaluate(() => {
+      window.__mock.backups.push({ name: 'pre-restore-2026-03-11T08-00-00.json', bytes: 1000, safety: true });
+    });
+    await tab(page, 'Settings');
+    const rows = section(page).getByTestId('backup-row');
+    await expect(rows).toHaveCount(4);
+    await expect(rows.locator('.backup-name')).toHaveText([
+      'z-work-data-2026-03-12.json',
+      'pre-restore-2026-03-11T08-00-00.json',
+      'z-work-data-2026-03-11.json',
+      'pre-restore-2026-03-05T10-00-00.json',
+    ]);
     await expectClean(page, found);
   });
 

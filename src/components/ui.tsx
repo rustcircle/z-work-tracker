@@ -1,5 +1,5 @@
 // Small design-system primitives: buttons, fields, chips, switches, a modal with a focus trap.
-import { useEffect, useId, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ButtonHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import { readableText } from '../lib/color';
@@ -195,6 +195,24 @@ export function Modal({
   );
 }
 
+/**
+ * Arrow keys for a group of `role="radio"` buttons, as native radios behave: Right/Down and Left/Up move to
+ * the next or previous choice (wrapping) and choose it, Home and End go to the first and the last. Put it on
+ * the `role="radiogroup"` element, with a roving tab stop (`tabIndex` 0 on the chosen radio, -1 on the rest).
+ */
+export function onRadioKeyDown(e: ReactKeyboardEvent<HTMLElement>): void {
+  if (!['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+  const radios = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]:not([disabled])')];
+  const at = radios.findIndex((r) => r === document.activeElement);
+  if (at < 0 || radios.length === 0) return;
+  e.preventDefault();
+  const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1;
+  const to = e.key === 'Home' ? 0 : e.key === 'End' ? radios.length - 1 : (at + step + radios.length) % radios.length;
+  const radio = radios[to];
+  radio?.focus();
+  radio?.click();
+}
+
 /** A group of mutually exclusive choices drawn as segmented buttons. */
 export function Segmented<T extends string | number>({
   value,
@@ -208,9 +226,9 @@ export function Segmented<T extends string | number>({
   label: string;
 }) {
   return (
-    <div className="segmented" role="radiogroup" aria-label={label}>
+    <div className="segmented" role="radiogroup" aria-label={label} onKeyDown={onRadioKeyDown}>
       {options.map((o) => (
-        <button key={String(o.value)} type="button" role="radio" aria-checked={o.value === value} className={o.value === value ? 'on' : ''} onClick={() => onChange(o.value)}>
+        <button key={String(o.value)} type="button" role="radio" aria-checked={o.value === value} tabIndex={o.value === value ? 0 : -1} className={o.value === value ? 'on' : ''} onClick={() => onChange(o.value)}>
           {o.label}
         </button>
       ))}
@@ -226,6 +244,7 @@ export function ConfirmDialog({
   confirmLabel,
   cancelLabel = 'Cancel',
   danger = false,
+  disabled = false,
   onConfirm,
   onCancel,
 }: {
@@ -235,6 +254,8 @@ export function ConfirmDialog({
   confirmLabel: string;
   cancelLabel?: string;
   danger?: boolean;
+  /** True while the action is under way: the confirm button cannot be pressed again. */
+  disabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -246,7 +267,7 @@ export function ConfirmDialog({
       footer={
         <>
           <Button onClick={onCancel}>{cancelLabel}</Button>
-          <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>
+          <Button variant={danger ? 'danger' : 'primary'} disabled={disabled} onClick={onConfirm}>
             {confirmLabel}
           </Button>
         </>

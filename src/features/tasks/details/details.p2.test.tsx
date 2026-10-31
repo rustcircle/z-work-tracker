@@ -462,6 +462,19 @@ describe('Time away', () => {
     expect(within(row).getAllByRole('button').map((b) => b.textContent)).toEqual(['Keep', 'Drop', 'Mark as thinking']);
   });
 
+  it('words a locked screen in the task details', async () => {
+    const user = userEvent.setup();
+    const s = demoP2State();
+    const locked = s.gaps.find((g) => g.id === 'gap-pending');
+    if (!locked) throw new Error('no pending gap in the seed');
+    locked.kind = 'lock';
+    boot(s);
+    const dialog = await openDetails(user, 'Logo concepts', 'Time away');
+    const row = rowWith(dialog, '14:20 to 14:50');
+    expect(row).toHaveTextContent('Screen locked');
+    expect(row).not.toHaveTextContent('Idle');
+  });
+
   it('changes a decision later: unconfirmed drops to zero and thinking time grows', async () => {
     const user = userEvent.setup();
     boot(demoP2State());

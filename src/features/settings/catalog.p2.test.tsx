@@ -290,3 +290,23 @@ describe('Settings: templates', () => {
     expect(await templates.findByText('No templates yet.')).toBeVisible();
   });
 });
+
+describe('the editors open with the cursor in the name', () => {
+  it('a new tag, an edited tag, a new template and an edited template', async () => {
+    const user = await settings(demoP2State());
+    const tags = section('Tags');
+    await user.click(tags.getByRole('button', { name: 'Add tag' }));
+    expect(tags.getByRole('textbox', { name: 'Tag name' })).toHaveFocus();
+    await user.click(tags.getByRole('button', { name: 'Cancel' }));
+    await user.click(tags.getByRole('button', { name: /^Edit tag Concept/ }));
+    expect(tags.getByRole('textbox', { name: 'Tag name' })).toHaveFocus();
+    await user.click(tags.getByRole('button', { name: 'Cancel' }));
+
+    const templates = section('Templates');
+    await user.click(templates.getByRole('button', { name: 'New template' }));
+    expect(templates.getByRole('textbox', { name: 'Template name' })).toHaveFocus();
+    await user.click(templates.getByRole('button', { name: 'Cancel' }));
+    await user.click(templates.getByRole('button', { name: /^Edit template Logo job/ }));
+    expect(templates.getByRole('textbox', { name: 'Template name' })).toHaveFocus();
+  });
+});

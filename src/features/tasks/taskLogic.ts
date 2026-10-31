@@ -130,6 +130,8 @@ export function pauseReasonText(reason: PauseReason | null, tasks: ReadonlyMap<s
       return 'Paused after the app closed unexpectedly. Time counts up to the last moment the app was seen running.';
     case 'syncReconciled':
       return 'Paused while merging with another device.';
+    case 'backupRestored':
+      return 'Paused: the restored backup held this running. Time stopped at the last moment the backup knows about.';
   }
 }
 

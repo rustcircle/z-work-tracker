@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { IdleGap } from '../../lib/types';
 import { fullTask } from '../../mocks/factories';
-import { gapSecs, longRunText, pendingGaps, taskNames, totalSecs } from './awayLogic';
+import { gapSecs, gapSentence, gapTitle, gapWord, longRunText, pendingGaps, taskNames, totalSecs } from './awayLogic';
 
 const stamp = { at: '2026-01-01T00:00:00Z', by: 'd' };
 const gap = (id: string, taskId: string, start: string, end: string, decision: IdleGap['decision'] = 'pending'): IdleGap => ({ id, segmentId: 's', taskId, deviceId: 'd', start, end, kind: 'idle', decision, decisionStamp: stamp });
@@ -22,6 +22,14 @@ describe('time away helpers', () => {
     expect(taskNames([g('A'), g('B')], tasks)).toBe('A and B');
     expect(taskNames([g('A'), g('B'), g('C'), g('D')], tasks)).toBe('A, B and 2 more');
     expect(taskNames([gap('x', 'missing', '2026-03-12T09:00:00Z', '2026-03-12T09:10:00Z')], tasks)).toBe('a task');
+  });
+
+  it('words every kind of time away, a locked screen included', () => {
+    expect(['sleep', 'idle', 'lock'].map((kind) => gapWord({ kind: kind as IdleGap['kind'] }))).toEqual(['Sleep', 'Idle', 'Screen locked']);
+    expect(gapTitle({ kind: 'lock' })).toBe('The session was locked');
+    expect(gapSentence('lock')).toBe('The screen was locked');
+    expect(gapSentence('sleep')).toBe('The computer was asleep');
+    expect(gapSentence('idle')).toBe('No activity');
   });
 
   it('writes the length of a run in words', () => {

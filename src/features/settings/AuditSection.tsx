@@ -8,12 +8,12 @@ import { IconRefresh } from '../../components/icons';
 import type { AuditEntry } from '../../lib/types';
 import { actionWords, auditLine, entityLabel } from './auditText';
 import './p2time.css';
+import { errorMessage } from '../../lib/errorMessage';
 
 const PAGE = 50;
 
 type Load = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; entries: AuditEntry[] };
 
-const errorText = (e: unknown): string => (e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
 
 export function AuditSection() {
   const { snapshot, zones } = useApp();
@@ -28,7 +28,7 @@ export function AuditSection() {
       // Newest first, whatever order the backend used.
       return { status: 'ready', entries: [...entries].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? -1 : 1)) };
     } catch (e) {
-      return { status: 'error', message: errorText(e) };
+      return { status: 'error', message: errorMessage(e) };
     }
   }, []);
 

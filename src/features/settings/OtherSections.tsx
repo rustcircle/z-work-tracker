@@ -7,6 +7,7 @@ import { version as APP_VERSION } from '../../../package.json';
 import { Button, Field, Switch } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { ZoneDataAttribution } from '../zones';
+import { errorMessage } from '../../lib/errorMessage';
 
 function parseHours(text: string): { ok: true; value: number | null } | { ok: false } {
   const t = text.trim();
@@ -74,7 +75,7 @@ export function AutostartSection() {
         setOn(v);
         api.setAutostart(v).then(setOn, (e: unknown) => {
           setOn(!v);
-          showError(e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
+          showError(errorMessage(e));
         });
       }}
     />

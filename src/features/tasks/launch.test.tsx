@@ -283,6 +283,23 @@ describe('cold resume', () => {
     expect(calls('resume_task')).toEqual([]);
   });
 
+  it('words a task the restored backup held running, and continuing it is also a new linked task', async () => {
+    const user = userEvent.setup();
+    const s = demoState();
+    const logo = s.tasks.find((t) => t.id === 't-logo');
+    if (logo) {
+      logo.state = 'paused';
+      logo.pauseReason = { kind: 'backupRestored' };
+    }
+    s.warm = false;
+    s.lastWorked = null;
+    boot(s);
+    const c = within(await screen.findByRole('article', { name: 'Logo concepts' }));
+    expect(c.getByText('Paused: the restored backup held this running. Time stopped at the last moment the backup knows about.')).toBeVisible();
+    await user.click(c.getByRole('button', { name: 'Resume' }));
+    expect(screen.getByRole('form', { name: 'Continue Logo concepts' })).toBeVisible();
+  });
+
   it('the tray\'s cold-resume event opens the form and starts nothing', async () => {
     boot(coldDemo());
     await screen.findByRole('article', { name: 'Logo concepts' });

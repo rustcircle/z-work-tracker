@@ -10,6 +10,7 @@ import { IconDownload } from '../../components/icons';
 import { buildAnalyticsSheets } from '../analysis/sheets';
 import { PdfFields, usePdfForm } from './PdfExport';
 import { segmentShiftText } from './segmentShifts';
+import { errorMessage } from '../../lib/errorMessage';
 
 type Kind = 'xlsx' | 'csv' | 'pdf';
 
@@ -53,7 +54,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
       const path = await (kind === 'xlsx' ? api.exportXlsx(request) : api.exportCsv(request));
       setResult({ path });
     } catch (e) {
-      showError(e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
+      showError(errorMessage(e));
     } finally {
       setBusy(false);
     }

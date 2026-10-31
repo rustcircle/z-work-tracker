@@ -179,6 +179,24 @@ test.describe('billing tab', () => {
     expect((await snapshotOf(page)).billing.summaries).toHaveLength(2);
   });
 
+  test('creating without touching the selectors keeps the project and zone, and shows what was created', async ({ page }) => {
+    const found = await openBilling(page);
+    const card = unbilled(page);
+    // Nothing is chosen: Brand refresh has the most unbilled time, so it is the default, with its client zone.
+    await expect(card.getByLabel('Project')).toHaveValue('p-brand');
+    await expect(card.getByLabel('Days are cut in')).toHaveValue('America/New_York');
+    await card.getByRole('button', { name: 'Create summary' }).click();
+    const created = card.getByTestId('billing-created');
+    await expect(created).toContainText('Created A-003');
+    await expect(card.getByText('There is no unbilled time in that period.')).toBeVisible();
+    await expect(card.getByLabel('Project')).toHaveValue('p-brand');
+    await expect(card.getByLabel('Days are cut in')).toHaveValue('America/New_York');
+    await expect(created).toContainText('Created A-003');
+    await expect(created).toBeFocused();
+    expect((await calls(page, 'create_summary')).map((c) => (c as { request: { projectId: string } }).request.projectId)).toEqual(['p-brand']);
+    await expectClean(page, found);
+  });
+
   test('Create summary marks the time billed, gives the next reference, and Void returns it without reusing the number', async ({ page }) => {
     const found = await openBilling(page);
     await pickProject(page, 'Website');
@@ -508,7 +526,7 @@ test.describe('device prefix', () => {
     const section = page.getByRole('region', { name: 'Billing references' });
     await expect(section.getByTestId('prefix-clash')).toHaveCount(0);
     await page.evaluate(() => {
-      window.__mock.prefixClashes = ['Office PC', 'Laptop'];
+      window.__mock.otherPrefixes = { 'Office PC': 'A', Laptop: 'A' };
     });
     await refresh(page);
     const clash = section.getByTestId('prefix-clash');
@@ -662,7 +680,7 @@ test.describe('screenshots', () => {
     await open(page, 'seed=p2');
     await tab(page, 'Settings');
     await page.evaluate(() => {
-      window.__mock.prefixClashes = ['Office PC'];
+      window.__mock.otherPrefixes = { 'Office PC': 'A' };
     });
     await refresh(page);
     const section = page.getByRole('region', { name: 'Billing references' });

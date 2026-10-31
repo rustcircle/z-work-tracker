@@ -9,6 +9,7 @@ import { Button } from '../../components/ui';
 import { IconFolder } from '../../components/icons';
 import { plural } from '../../components/format';
 import { useCommands } from '../../components/useCommands';
+import { errorMessage } from '../../lib/errorMessage';
 
 export const providerName = (p: SyncProvider): string => (p === 'oneDrive' ? 'OneDrive' : p === 'googleDrive' ? 'Google Drive' : 'Chosen');
 export const folderLabel = (d: { provider: SyncProvider; root: string }): string => (d.provider === 'custom' ? `Folder (${d.root})` : `${providerName(d.provider)} folder (${d.root})`);
@@ -68,7 +69,7 @@ export function SyncChooser({ detected, existing, onConnected, onSkip, skipLabel
     setPreviews((m) => new Map(m).set(root, { state: 'loading' }));
     api.previewSyncFolder(root).then(
       (preview) => setPreviews((m) => new Map(m).set(root, { state: 'ready', preview })),
-      (e: unknown) => setPreviews((m) => new Map(m).set(root, { state: 'error', message: e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e) })),
+      (e: unknown) => setPreviews((m) => new Map(m).set(root, { state: 'error', message: errorMessage(e) })),
     );
   }
 

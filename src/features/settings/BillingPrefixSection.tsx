@@ -4,8 +4,8 @@ import { useState } from 'react';
 import { useApp } from '../../app/store';
 import { Button, Field } from '../../components/ui';
 import { api } from '../../lib/api';
-import { messageOf } from '../billing/parts';
 import '../billing/billing.css';
+import { errorMessage } from '../../lib/errorMessage';
 
 /** The reference the next summary would get under `prefix`: numbers count up per prefix and a voided one still counts. */
 export function nextReference(prefix: string, taken: readonly { prefix: string; number: number }[]): string {
@@ -37,7 +37,7 @@ export function BillingPrefixSection() {
       setDraft(null);
       setSaved(next.billing.prefix);
     } catch (e) {
-      setError(messageOf(e));
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }

@@ -1,5 +1,5 @@
 // Manage tags: list, add, rename, recolour with the picker, delete.
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { useApp } from '../../app/store';
 import { api } from '../../lib/api';
@@ -31,6 +31,11 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null);
+  // The editor opens with the cursor in the name. (`data-autofocus` only works inside a Modal.)
+  const nameInput = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    nameInput.current?.focus();
+  }, []);
 
   const nameError = validateTagName(name, snapshot.tags, tag?.id ?? null);
   const others = snapshot.tags.filter((t) => t.id !== tag?.id).map((t) => ({ name: t.name, color: t.color }));
@@ -74,7 +79,7 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
             aria-invalid={(touched && nameError) || nameRefusal ? true : undefined}
             aria-describedby={describedBy}
             autoComplete="off"
-            data-autofocus
+            ref={nameInput}
           />
         )}
       </Field>

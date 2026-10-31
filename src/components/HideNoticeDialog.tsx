@@ -1,13 +1,14 @@
 import { useApp } from '../app/store';
 import { api } from '../lib/api';
 import { Button, Modal } from './ui';
+import { errorMessage } from '../lib/errorMessage';
 
 /** Shown the first time the window is hidden: the app keeps running in the system tray. */
 export function HideNoticeDialog() {
   const { hideNotice, clearHideNotice, showError } = useApp();
   const done = (): void => {
     clearHideNotice();
-    api.ackHideNotice().catch((e: unknown) => showError(e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e)));
+    api.ackHideNotice().catch((e: unknown) => showError(errorMessage(e)));
   };
   return (
     <Modal open={hideNotice !== null} title="zWorkTracker is still running" onClose={done} footer={<Button variant="primary" onClick={done}>OK</Button>}>

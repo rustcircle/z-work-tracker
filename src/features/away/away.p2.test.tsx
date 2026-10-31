@@ -41,6 +41,19 @@ describe('the time away dialog', () => {
     expect(screen.queryByTestId('away-banner')).toBeNull();
   });
 
+  it('words a locked screen as "Screen locked", not as idle', async () => {
+    const s = demoP2State();
+    const locked = s.gaps.find((g) => g.id === 'gap-pending');
+    if (!locked) throw new Error('no pending gap in the seed');
+    locked.kind = 'lock';
+    boot(s);
+    const d = await dialog();
+    const badge = within(d).getByText('Screen locked');
+    expect(badge).toBeVisible();
+    expect(badge).toHaveAttribute('title', 'The session was locked');
+    expect(within(d).queryByText('Idle')).toBeNull();
+  });
+
   it('can be dismissed, leaves the banner, and the banner opens it again', async () => {
     const user = userEvent.setup();
     boot(demoP2State());

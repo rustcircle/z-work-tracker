@@ -16,6 +16,7 @@ import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { useEditStore, type EditField, type EditSession } from './editStore';
+import { errorMessage } from '../../lib/errorMessage';
 
 export const AUTOSAVE_MS = 600;
 const RETRY_BASE_MS = 2000;
@@ -156,7 +157,7 @@ export function TaskEditor({ task }: { task: Task }) {
       adopt(saved.snapshot);
       setTemplateState(`Saved as template “${name}”. Task-list items start unticked, with no time.`);
     } catch (e) {
-      showError(e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
+      showError(errorMessage(e));
       setTemplateState(null);
     } finally {
       setTemplateBusy(false);

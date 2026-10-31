@@ -10,7 +10,8 @@ export type PauseReason =
   | { kind: 'autoPaused'; byTaskId: string }
   | { kind: 'appQuit' }
   | { kind: 'crashRecovery' }
-  | { kind: 'syncReconciled' };
+  | { kind: 'syncReconciled' }
+  | { kind: 'backupRestored' };
 
 export type BillingType = 'hourly' | 'fixedFee';
 
@@ -146,7 +147,7 @@ export interface RawSegment {
   billed: boolean;
 }
 
-export type GapKind = 'sleep' | 'idle';
+export type GapKind = 'sleep' | 'idle' | 'lock';
 export type GapDecision = 'pending' | 'keep' | 'drop' | 'thinking';
 
 /** Time away detected inside a running segment. The segment's recorded times don't change. */
@@ -441,7 +442,8 @@ export interface MoveResult {
 
 /** Payload of the `sync-move-progress` event. */
 export interface MoveProgress {
-  step: string | number;
+  /** The backend's own words for the step, such as "Copying device files". Shown as it is. */
+  step: string;
   done: number;
   total: number;
 }

@@ -9,6 +9,7 @@ import type { DataCounts, Detected, MovePreview, MoveProgress, MoveResult, Pendi
 import { Button } from '../../components/ui';
 import { plural } from '../../components/format';
 import { SyncChooser } from './SyncChooser';
+import { errorMessage } from '../../lib/errorMessage';
 
 interface Params {
   from: string | null;
@@ -26,13 +27,20 @@ export type Flow =
   | { phase: 'done'; params: Params; result: MoveResult; retry: boolean }
   | { phase: 'failed'; params: Params; message: string; retry: boolean };
 
-const messageOf = (e: unknown): string => (e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
 
 export const countsText = (c: DataCounts): string => `${plural(c.projects, 'project')}, ${plural(c.tasks, 'task')}, ${plural(c.segments, 'time segment')}`;
 const devicesText = (names: readonly string[]): string => (names.length === 0 ? 'no other devices' : `${plural(names.length, 'device')} (${names.join(', ')})`);
 
-const STEP_LABELS: Record<string, string> = { copy: 'Copying files', verify: 'Checking the copy by reading it back' };
-const stepLabel = (step: string | number): string => (typeof step === 'number' ? `Step ${step}` : (STEP_LABELS[step] ?? step));
+/**
+ * What a move did, in words. This device's own file is always written, so a single PC copies no files
+ * and that is a success; the numbers are about the files of other devices only.
+ */
+export function copiedText(r: Pick<MoveResult, 'filesCopied' | 'filesAlreadyThere' | 'filesIgnored'>): string {
+  const ignored = r.filesIgnored > 0 ? ` ${plural(r.filesIgnored, 'file')} ignored.` : '';
+  if (r.filesCopied === 0 && r.filesAlreadyThere === 0) return `There were no files from other devices to copy.${ignored}`;
+  if (r.filesCopied === 0) return `No files from other devices needed copying: ${r.filesAlreadyThere} already there.${ignored}`;
+  return `Copied ${plural(r.filesCopied, 'file')} from other devices, ${r.filesAlreadyThere} already there.${ignored}`;
+}
 
 export interface MoveActions {
   flow: Flow;
@@ -90,7 +98,7 @@ export function useMoveFlow(restoreRoot: RefObject<HTMLElement | null>): MoveAct
         }
         setFlow({ phase: 'done', params, result, retry });
       } catch (e) {
-        setFlow({ phase: 'failed', params, message: messageOf(e), retry });
+        setFlow({ phase: 'failed', params, message: errorMessage(e), retry });
       } finally {
         unlisten?.();
       }
@@ -114,7 +122,7 @@ export function useMoveFlow(restoreRoot: RefObject<HTMLElement | null>): MoveAct
           if (seq.current === id) setFlow((f) => (f.phase === 'confirm' ? { ...f, preview: { state: 'ready', preview } } : f));
         },
         (e: unknown) => {
-          if (seq.current === id) setFlow((f) => (f.phase === 'confirm' ? { ...f, preview: { state: 'error', message: messageOf(e) } } : f));
+          if (seq.current === id) setFlow((f) => (f.phase === 'confirm' ? { ...f, preview: { state: 'error', message: errorMessage(e) } } : f));
         },
       );
     },
@@ -256,7 +264,7 @@ export function MovePanel({ actions, detected, existing }: { actions: MoveAction
           <div role="status" aria-live="polite" data-testid="move-progress">
             {p ? (
               <p>
-                {stepLabel(p.step)}: {p.done} of {p.total}
+                {p.step}: {p.done} of {p.total}
               </p>
             ) : (
               <p>Starting…</p>
@@ -274,7 +282,7 @@ export function MovePanel({ actions, detected, existing }: { actions: MoveAction
       body = (
         <>
           <p data-testid="move-summary">
-            Copied {plural(r.filesCopied, 'file')}, {r.filesAlreadyThere} already there, {r.filesIgnored} ignored. The folder now holds {countsText(r.counts)}.
+            This device&apos;s data was written and checked. {copiedText(r)} The folder now holds {countsText(r.counts)}.
           </p>
           <p>
             Checked by reading the copy back. <span className="muted">Checksum {r.checksum}</span>
