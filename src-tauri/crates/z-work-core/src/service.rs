@@ -1568,11 +1568,12 @@ mod tests {
             .sum::<i64>()
             / 60
     }
-    fn beats(s: &mut Service, clock: &ManualClock, count: usize) {
-        for _ in 0..count {
-            clock.advance(600);
-            s.heartbeat().unwrap();
-        }
+    /// Time passing with a task running, in two beats: each one waits for a real disk flush.
+    fn beats(s: &mut Service, clock: &ManualClock, minutes: i64) {
+        clock.advance(minutes * 60 - 30);
+        s.heartbeat().unwrap();
+        clock.advance(30);
+        s.heartbeat().unwrap();
     }
 
     #[test]
@@ -1580,12 +1581,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, a) = running(dir.path(), &clock);
-        beats(&mut s, &clock, 6);
+        beats(&mut s, &clock, 60);
         let b = s
             .create_task(&tinput("B", &s.file().data.tasks[&a].project_id.clone()))
             .unwrap();
         s.start_task(&b).unwrap();
-        beats(&mut s, &clock, 42);
+        beats(&mut s, &clock, 420);
         drop(s);
         damage_main(dir.path());
         let again = open(dir.path(), &clock);
@@ -1598,7 +1599,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, a) = running(dir.path(), &clock);
-        beats(&mut s, &clock, 18);
+        beats(&mut s, &clock, 180);
         clock.advance(10);
         s.pause_task(&a).unwrap();
         drop(s);
@@ -1612,7 +1613,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, a) = running(dir.path(), &clock);
-        beats(&mut s, &clock, 48);
+        beats(&mut s, &clock, 480);
         s.on_exit().unwrap();
         drop(s);
         damage_main(dir.path());
@@ -1625,9 +1626,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, a) = running(dir.path(), &clock);
-        beats(&mut s, &clock, 1);
+        beats(&mut s, &clock, 10);
         let project = s.create_project(&pinput("Later")).unwrap();
-        beats(&mut s, &clock, 2);
+        beats(&mut s, &clock, 20);
         drop(s);
         damage_main(dir.path());
         let again = open(dir.path(), &clock);
