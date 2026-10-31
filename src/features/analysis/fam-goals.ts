@@ -3,8 +3,8 @@
 import { centsFromNumerator, exactNumeratorsOf, numeratorsOf, type Numerators } from '../../lib/billing';
 import { budgetDaily, liveDaily } from './engine';
 import { activeDayNums, rowIndex, type Ctx } from './mctx';
+import { bucketsOf, type Bucket, type Series } from './fam-volume';
 import { dayNum, weekdayIndex } from './range';
-import type { Series } from './fam-volume';
 import { ratio } from './stats';
 import type { Currency } from '../../lib/types';
 
@@ -139,6 +139,8 @@ export interface Money {
   earnings: Partial<Record<Currency, EarningsPoint[]>>;
   byProject: Map<string, Numerators>;
   missingRate: string[];
+  /** Buckets the earnings and flag series are laid out in: the chart's, or one per day for a single day. */
+  buckets: Bucket[];
   flagSeries: { key: string; label: string; billable: number; nonBillable: number }[];
 }
 
@@ -162,6 +164,7 @@ export function moneyOf(ctx: Ctx, series: Series): Money {
     earnings: {},
     byProject: new Map(),
     missingRate: [],
+    buckets: [],
     flagSeries: [],
   };
   if (!ctx.billableAvailable) return empty;
@@ -172,16 +175,17 @@ export function moneyOf(ctx: Ctx, series: Series): Money {
   for (const c of ['EUR', 'USD'] as const) {
     if (numerators[c] !== undefined) roundingMoney[c] = (numerators[c] as number) - (exactNumerators[c] as number);
   }
-  // Bucket lookup by day number for the earnings series.
+  // Hour buckets have no Billable figure, so a single day is laid out as one bucket.
+  const buckets: Bucket[] = series.unit === 'hour' ? bucketsOf(cur.period, 'day') : series.points;
   const bucketOf = new Map<number, number>();
-  series.points.forEach((p, i) => {
+  buckets.forEach((p, i) => {
     for (let n = p.fromDay; n <= p.toDay; n += 1) bucketOf.set(n, i);
   });
   const earnings: Partial<Record<Currency, EarningsPoint[]>> = {};
   const byProject = new Map<string, Numerators>();
   const exactSecs: Partial<Record<Currency, number>> = {};
   const dayCache = new Map<string, number>();
-  const flag = series.points.map(() => ({ billable: 0, nonBillable: 0 }));
+  const flag = buckets.map(() => ({ billable: 0, nonBillable: 0 }));
   let flagged = 0;
   let nonFlagged = 0;
   const billableOf = new Map<string, boolean>(ctx.snapshot.projects.map((p) => [p.id, p.billable]));
@@ -207,7 +211,7 @@ export function moneyOf(ctx: Ctx, series: Series): Money {
       if (bi === undefined) continue;
       let list = earnings[b.currency];
       if (!list) {
-        list = series.points.map((p) => ({ key: p.key, label: p.label, numerator: 0, byProject: new Map<string, number>() }));
+        list = buckets.map((p) => ({ key: p.key, label: p.label, numerator: 0, byProject: new Map<string, number>() }));
         earnings[b.currency] = list;
       }
       const pt = list[bi] as EarningsPoint;
@@ -242,7 +246,8 @@ export function moneyOf(ctx: Ctx, series: Series): Money {
     earnings,
     byProject,
     missingRate: missing,
-    flagSeries: series.points.map((p, i) => ({ key: p.key, label: p.label, ...(flag[i] as { billable: number; nonBillable: number }) })),
+    buckets,
+    flagSeries: buckets.map((p, i) => ({ key: p.key, label: p.label, ...(flag[i] as { billable: number; nonBillable: number }) })),
   };
 }
 
