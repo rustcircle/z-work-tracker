@@ -272,18 +272,39 @@ fn main() -> Res<()> {
         "parse + check store",
         time(20, || persist::parse_checked(&main_bytes).unwrap()),
     );
+    // Each save differs from the last one, as real ones do: an unchanged store is not written at all.
+    let mut changing = file.clone();
+    let mut beat = 0i64;
     record(
         "persist::save",
-        time(20, || persist::save(&paths, &file, now).unwrap()),
+        time(20, || {
+            beat += 1;
+            changing.last_heartbeat = Some(now.later(beat));
+            persist::save(&paths, &changing, now).unwrap();
+        }),
+    );
+    record(
+        "persist::save, unchanged",
+        time(20, || persist::save(&paths, &changing, now).unwrap()),
     );
     record(
         "heartbeat (running)",
-        time(20, || svc.heartbeat().unwrap()),
+        time(20, || {
+            clock.advance(1);
+            svc.heartbeat().unwrap();
+        }),
     );
+    let mut keep = 30;
     record(
-        "mutate (no-op setting)",
-        time(20, || svc.set_backup_keep(30).unwrap()),
+        "mutate (one setting)",
+        time(20, || {
+            keep = if keep == 30 { 31 } else { 30 };
+            svc.set_backup_keep(keep).unwrap();
+        }),
     );
+    svc.set_backup_keep(30)?;
+    clock.set(&now.iso());
+    svc.heartbeat()?;
     record("snapshot build", time(20, || svc.snapshot()));
     let snap = svc.snapshot();
     let snap_json = serde_json::to_vec(&snap)?;
