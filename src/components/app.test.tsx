@@ -1,27 +1,20 @@
 import { clearMocks } from '@tauri-apps/api/mocks';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import App from '../App';
 import { MASK } from '../lib/billing';
 import { demoState } from '../mocks/demoSeed';
-import { emptyState, installMock, type MockState } from '../mocks/ipcMock';
+import { emptyState, type MockState } from '../mocks/ipcMock';
+import { boot as bootApp, polyfillDom } from './testKit';
 
-// jsdom has no layout, which ProseMirror asks for when it scrolls the selection into view.
-beforeEach(() => {
-  const rect = { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, toJSON: () => ({}) } as DOMRect;
-  Range.prototype.getBoundingClientRect = () => rect;
-  document.elementFromPoint = () => null;
-  Range.prototype.getClientRects = () => ({ length: 0, item: () => null, [Symbol.iterator]: function* () {} }) as unknown as DOMRectList;
-});
+beforeEach(polyfillDom);
 afterEach(() => clearMocks());
 
 let state: MockState;
 function boot(s: MockState) {
   state = s;
-  installMock(s);
-  return render(<App />);
+  return bootApp(s);
 }
 const card = (name: string) => within(screen.getByRole('article', { name }));
 const live = (c: ReturnType<typeof card>) =>

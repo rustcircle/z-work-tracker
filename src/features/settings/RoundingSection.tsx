@@ -55,7 +55,7 @@ export function RoundingSection() {
                   {r.incrementMinutes > 0 && `, ${METHOD_LABEL[r.method]}`}
                 </span>
                 <Button small variant="ghost" onClick={() => setRemoving(r.id)}>
-                  Remove<span className="visually-hidden"> the rule from {r.effectiveFrom}</span>
+                  Remove <span className="visually-hidden">the rule from {r.effectiveFrom}</span>
                 </Button>
               </li>
             ))}

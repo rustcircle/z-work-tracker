@@ -38,7 +38,7 @@ export function SyncSection() {
                   <p className="muted sync-path">{t.folder}</p>
                 </div>
                 <Button small variant="danger" onClick={() => setRemoving(t)}>
-                  Remove<span className="visually-hidden"> {t.root}</span> (keeps files)
+                  Remove <span className="visually-hidden">{t.root}</span> (keeps files)
                 </Button>
               </div>
               <p data-testid="sync-written">{writtenText(t, nowSec)}</p>

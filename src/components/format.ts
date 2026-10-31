@@ -59,8 +59,10 @@ export function relativeDay(day: string, today: string): string {
 export function ago(sec: number, nowSec: number): string {
   const d = Math.max(0, nowSec - sec);
   if (d < 45) return 'just now';
-  if (d < 3600) return `${Math.max(1, Math.round(d / 60))} min ago`;
-  if (d < 86400) return `${Math.round(d / 3600)} h ago`;
+  const minutes = Math.max(1, Math.round(d / 60));
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(d / 3600);
+  if (hours < 24) return `${hours} h ago`;
   return `${Math.round(d / 86400)} d ago`;
 }
 

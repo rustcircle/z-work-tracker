@@ -17,7 +17,6 @@
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--surface); color: var(--text);
   font-weight: 500; line-height: 1.2; cursor: pointer; white-space: nowrap;
-  transition: background-color 120ms, border-color 120ms;
 }
 .btn:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, var(--surface)); }
 .btn:active:not(:disabled) { background: color-mix(in srgb, var(--text) 12%, var(--surface)); }
@@ -74,7 +73,6 @@ select.input { appearance: auto; }
 .switch {
   appearance: none; flex: none; position: relative; width: 38px; height: 20px; margin: 0;
   border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-alt); cursor: pointer;
-  transition: background-color 120ms;
 }
 .switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-muted); transition: transform 120ms; }
 .switch:checked { background: var(--accent); border-color: var(--accent); }

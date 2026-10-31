@@ -61,3 +61,4 @@
 .entries tbody .band-row th { background: var(--surface-alt); font-size: 12.5px; border-bottom: 0; border-radius: 4px; }
 .entries tbody tr:last-child td { border-bottom: 0; }
 .entries tbody:last-of-type tr:last-child td { border-bottom: 0; }
+.entries .badge { margin-left: 8px; }

@@ -172,19 +172,19 @@ export function ShiftsSection() {
               </div>
               <div className="project-actions">
                 <Button small onClick={() => edit(g.current)}>
-                  Edit<span className="visually-hidden"> {g.current.name}</span>
+                  Edit <span className="visually-hidden">{g.current.name}</span>
                 </Button>
                 {g.retired ? (
                   <Button small onClick={() => setRetired(g.current, false)}>
-                    Reactivate<span className="visually-hidden"> {g.current.name}</span>
+                    Reactivate <span className="visually-hidden">{g.current.name}</span>
                   </Button>
                 ) : (
                   <Button small onClick={() => setRetired(g.current, true)}>
-                    Retire<span className="visually-hidden"> {g.current.name}</span>
+                    Retire <span className="visually-hidden">{g.current.name}</span>
                   </Button>
                 )}
                 <Button small variant="danger" onClick={() => setDeleting(g.shiftId)}>
-                  Delete<span className="visually-hidden"> {g.current.name}</span>
+                  Delete <span className="visually-hidden">{g.current.name}</span>
                 </Button>
               </div>
             </div>

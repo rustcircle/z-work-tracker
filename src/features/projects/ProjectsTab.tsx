@@ -68,19 +68,19 @@ export function ProjectsTab() {
           </div>
           <div className="project-actions">
             <Button small icon={<IconEdit />} aria-expanded={editing === p.id} onClick={() => setEditing(editing === p.id ? null : p.id)}>
-              Edit<span className="visually-hidden"> {p.name}</span>
+              Edit <span className="visually-hidden">{p.name}</span>
             </Button>
             {p.archived ? (
               <Button small icon={<IconRestore />} onClick={() => void act(() => api.setProjectArchived(p.id, false))}>
-                Restore<span className="visually-hidden"> {p.name}</span>
+                Restore <span className="visually-hidden">{p.name}</span>
               </Button>
             ) : p.hasTasks ? (
               <Button small icon={<IconArchive />} onClick={() => void act(() => api.setProjectArchived(p.id, true))}>
-                Archive<span className="visually-hidden"> {p.name}</span>
+                Archive <span className="visually-hidden">{p.name}</span>
               </Button>
             ) : (
               <Button small variant="danger" icon={<IconTrash />} onClick={() => setDeleting(p)}>
-                Delete<span className="visually-hidden"> {p.name}</span>
+                Delete <span className="visually-hidden">{p.name}</span>
               </Button>
             )}
           </div>
