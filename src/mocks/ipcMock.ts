@@ -7,14 +7,26 @@ import { mockIPC } from '@tauri-apps/api/mocks';
 import { PROJECT_PALETTE } from '../lib/color';
 import { isCurrency } from '../lib/billing';
 import { docHasText } from '../lib/docText';
+import { assignSubtaskIds, resetSubtasks, subtaskItems } from '../lib/subtasks';
 import { isZone, parseIso, toIso } from '../lib/tz';
+import { computePieces, effective, projectFigures, summaryPreview, taskTotals, unconfirmedSecs, type MockSegment, type PieceInput } from './pieces';
 import type {
+  AuditEntry,
+  BackupInfo,
+  BillablePause,
+  BillingSummary,
   CopySource,
+  CorrectionInput,
   DataCounts,
   ExportRequest,
+  GapDecision,
+  IdleGap,
+  ManualEntryInput,
   MovePreview,
   MoveResult,
+  PauseInput,
   PauseReason,
+  PdfRequest,
   PendingCopy,
   Project,
   ProjectInput,
@@ -23,15 +35,20 @@ import type {
   RequiredField,
   RoundingInput,
   RoundingVersion,
-  Segment,
+  Reminder,
   Settings,
   ShiftInput,
   ShiftVersion,
   Snapshot,
+  SummaryRequest,
+  Tag,
+  TagInput,
   Task,
   TaskInput,
   TaskPatch,
   TaskState,
+  Template,
+  TemplateInput,
   Theme,
 } from '../lib/types';
 
@@ -48,11 +65,48 @@ export interface MockFolder {
   failNext?: boolean;
 }
 
+/** A project as the mock stores it: the backend's derived fields are computed when a snapshot is taken. */
+export type MockProject = Omit<Project, 'figures' | 'hasTasks' | 'billingType' | 'fixedFeeCents' | 'feeCurrency'> &
+  Partial<Pick<Project, 'billingType' | 'fixedFeeCents' | 'feeCurrency'>> & { hasTasks?: boolean };
+
+/** A task as the mock stores it. Subtask time, billed seconds and the like are derived at snapshot time. */
+export type MockTask = Omit<Task, 'tags' | 'activeSubtask' | 'subtasks' | 'billedSecs' | 'unbilledSecs' | 'thinkingSecs' | 'pauseSecs' | 'unconfirmedSecs'> &
+  Partial<Pick<Task, 'tags' | 'activeSubtask'>>;
+
+export type { MockSegment };
+
+/** The seeded starter tags, the same ids and colours the backend creates for a store that has none. */
+export const STARTER_TAGS: readonly [string, string, string][] = [
+  ['tag-concept', 'Concept', '#7c3aed'],
+  ['tag-revision', 'Revision', '#0f766e'],
+  ['tag-client-call', 'Client call', '#c2410c'],
+  ['tag-admin', 'Admin', '#475569'],
+];
+
 export interface MockState {
   now: number;
-  projects: Project[];
-  tasks: Task[];
-  segments: Segment[];
+  projects: MockProject[];
+  tasks: MockTask[];
+  /** Recorded segments with their corrections. The snapshot's `segments` are pieces computed from these. */
+  segments: MockSegment[];
+  gaps: IdleGap[];
+  pauses: BillablePause[];
+  tags: Tag[];
+  templates: Template[];
+  summaries: BillingSummary[];
+  /** This device's reference prefix, and names of other devices using the same one. */
+  prefix: string;
+  prefixClashes: string[];
+  audit: AuditEntry[];
+  backups: BackupInfo[];
+  /** Test hook: the data a backup holds, by name, as JSON. Restoring a backup without any only pauses and goes cold. */
+  backupData: Record<string, string>;
+  backupKeep: number;
+  hasPdfLogo: boolean;
+  /** Test hook: a reminder the real backend would raise for reasons the mock does not model, such as past shift end. */
+  reminderOverride: Reminder | null;
+  /** The reminder is quiet until this time (epoch seconds), after Keep running. */
+  reminderQuietUntil: number | null;
   shifts: ShiftVersion[];
   rates: RateVersion[];
   rounding: RoundingVersion[];
@@ -89,6 +143,20 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     projects: [],
     tasks: [],
     segments: [],
+    gaps: [],
+    pauses: [],
+    tags: STARTER_TAGS.map(([id, name, color]) => ({ id, name, color, deleted: false, stamp: { at: '0001-01-01T00:00:00Z', by: '' } })),
+    templates: [],
+    summaries: [],
+    prefix: 'A',
+    prefixClashes: [],
+    audit: [],
+    backups: [],
+    backupData: {},
+    backupKeep: 30,
+    hasPdfLogo: false,
+    reminderOverride: null,
+    reminderQuietUntil: null,
     shifts: [],
     rates: [],
     rounding: [],
@@ -212,6 +280,10 @@ async function moveSyncTarget(s: MockState, a: Record<string, unknown>): Promise
 
 const COLD_REQUIRED: RequiredField[] = ['name', 'project', 'description'];
 
+/** What a cold start needs. Tags join the list as soon as any exist. */
+const coldRequired = (s: MockState): RequiredField[] => (s.tags.some((t) => !t.deleted) ? [...COLD_REQUIRED, 'tags'] : COLD_REQUIRED);
+const liveTag = (s: MockState, id: string): boolean => s.tags.some((t) => t.id === id && !t.deleted);
+
 function copySource(s: MockState): CopySource | null {
   const t = s.tasks.find((x) => x.id === s.lastWorked);
   if (!t) return null;
@@ -221,16 +293,21 @@ function copySource(s: MockState): CopySource | null {
     name: t.name,
     projectId: t.projectId,
     projectArchived: s.projects.find((p) => p.id === t.projectId)?.archived ?? true,
-    description: t.description,
+    // A copy keeps subtask text, with ticks cleared and no time carried over.
+    description: resetSubtasks(t.description),
     lastWorkedAt: ends.at(-1) ?? null,
+    tags: (t.tags ?? []).filter((id) => liveTag(s, id)),
   };
 }
 
-function checkColdFields(s: MockState, t: Task): void {
+function checkColdFields(s: MockState, t: MockTask): void {
   if (s.warm) return;
-  if (!t.name.trim()) throw err('validation', 'Task name is required for the first start after launch');
-  if (!t.projectId) throw err('validation', 'Project is required for the first start after launch');
-  if (!docHasText(t.description)) throw err('validation', 'Description is required for the first start after launch');
+  for (const field of coldRequired(s)) {
+    if (field === 'name' && !t.name.trim()) throw err('validation', 'Task name is required for the first start after launch');
+    if (field === 'project' && !t.projectId) throw err('validation', 'Project is required for the first start after launch');
+    if (field === 'description' && !docHasText(t.description)) throw err('validation', 'Description is required for the first start after launch');
+    if (field === 'tags' && !(t.tags ?? []).some((id) => liveTag(s, id))) throw err('validation', 'A tag is required for the first start after launch');
+  }
 }
 
 /** A real launch after a clean quit: the running task pauses, and the launch is cold. */
@@ -267,17 +344,118 @@ function closeAllAndPause(s: MockState, reason: PauseReason): string[] {
   return names;
 }
 
+/** Open segments end now on this device, and at their last known moment on another. */
+const endOf = (s: MockState) => (seg: MockSegment): number => (seg.provisionalEnd ? parseIso(seg.provisionalEnd) : s.now);
+
+const liveTaskIds = (s: MockState): Set<string> => new Set(s.tasks.map((t) => t.id));
+
+function pieceInput(s: MockState): PieceInput {
+  return { segments: s.segments, gaps: s.gaps, pauses: s.pauses, liveTasks: liveTaskIds(s) };
+}
+
+function billedSets(s: MockState): { segments: Set<string>; pauses: Set<string> } {
+  const segments = new Set<string>();
+  const pauses = new Set<string>();
+  for (const b of s.summaries.filter((x) => !x.voided)) {
+    for (const id of b.segmentIds) segments.add(id);
+    for (const id of b.pauseIds) pauses.add(id);
+  }
+  return { segments, pauses };
+}
+
+const billingData = (s: MockState) => ({
+  projects: s.projects.map((p) => ({ id: p.id, billable: p.billable, billingType: p.billingType ?? 'hourly', budgetHours: p.budgetHours, fixedFeeCents: p.fixedFeeCents ?? null, feeCurrency: p.feeCurrency ?? null })),
+  tasks: s.tasks.map((t) => ({ id: t.id, projectId: t.projectId })),
+  rates: s.rates.filter((r) => !r.deleted),
+  rounding: s.rounding.filter((r) => !r.deleted),
+});
+
+const minutesSetting = (s: MockState, key: 'idleMinutes' | 'longRunMinutes', fallback: number): number => {
+  const v = s.settings[key];
+  return v === undefined ? fallback : Math.max(0, typeof v === 'number' ? v : 0);
+};
+
+/** The reminder the backend would raise: a long run on this device, or one the test planted. */
+function currentReminder(s: MockState): Reminder | null {
+  if (s.reminderQuietUntil !== null && s.reminderQuietUntil > s.now) return null;
+  const open = s.segments.find((x) => x.end === null && x.deviceId === DEVICE_ID);
+  if (!open) return null;
+  if (s.reminderOverride) return s.reminderOverride;
+  const minutes = minutesSetting(s, 'longRunMinutes', 240);
+  if (minutes > 0 && s.now - parseIso(open.start) >= minutes * 60) return { kind: 'longRun', taskId: open.taskId, since: open.start };
+  return null;
+}
+
 function snapshot(s: MockState): Snapshot {
   const withTasks = new Set(s.tasks.map((t) => t.projectId));
+  const input = pieceInput(s);
+  const all = computePieces(input, endOf(s));
+  const billed = billedSets(s);
+  const totals = taskTotals(all, billed.segments, billed.pauses);
+  const unconfirmed = unconfirmedSecs(s.gaps.filter((g) => input.liveTasks.has(g.taskId)));
+  const figures = projectFigures(billingData(s), input, s.systemZone, endOf(s));
+  const segments = all
+    .map((p) => ({
+      id: p.id,
+      taskId: p.taskId,
+      deviceId: p.deviceId ?? '',
+      start: toIso(p.start),
+      end: p.open ? null : toIso(p.end),
+      provisionalEnd: p.open && p.deviceId !== DEVICE_ID ? toIso(p.end) : null,
+      segmentId: p.sourceId,
+      kind: p.kind,
+      subtaskId: p.subtaskId,
+    }))
+    .sort((x, y) => (x.start < y.start ? -1 : x.start > y.start ? 1 : x.id < y.id ? -1 : 1));
+  const rawSegments = s.segments
+    .filter((x) => input.liveTasks.has(x.taskId))
+    .map((x) => {
+      const eff = effective(x);
+      return {
+        id: x.id,
+        taskId: x.taskId,
+        deviceId: x.deviceId,
+        rawStart: x.start,
+        rawEnd: x.end,
+        start: eff ? toIso(eff[0]) : x.start,
+        end: eff ? (eff[1] === null ? null : toIso(eff[1])) : x.end,
+        voided: eff === null,
+        corrected: !!x.edit && !x.edit.voided,
+        manual: x.manual === true,
+        reason: x.edit?.reason ?? '',
+        billed: billed.segments.has(x.id),
+      };
+    });
+  const tags = s.tags.filter((t) => !t.deleted);
   return structuredClone({
     now: toIso(s.now),
     deviceId: DEVICE_ID,
     deviceName: 'Mock PC',
     systemZone: s.systemZone,
     tzdbVersion: 'mock',
-    projects: s.projects.map((p) => ({ ...p, hasTasks: withTasks.has(p.id) })),
-    tasks: s.tasks,
-    segments: s.segments,
+    projects: s.projects.map((p) => ({
+      ...p,
+      hasTasks: withTasks.has(p.id),
+      billingType: p.billingType ?? 'hourly',
+      fixedFeeCents: p.fixedFeeCents ?? null,
+      feeCurrency: p.feeCurrency ?? null,
+      figures: figures.get(p.id) ?? { exactSecs: 0, pauseSecs: 0, billableSecs: 0, thinkingSecs: 0, effectiveHourlyCents: null, timeValueCents: {}, budget: null },
+    })),
+    tasks: s.tasks.map((t) => {
+      const tt = totals.get(t.id);
+      return {
+        ...t,
+        tags: t.tags ?? [],
+        activeSubtask: t.activeSubtask ?? null,
+        subtasks: subtaskItems(t.description).map((i) => ({ id: i.id, text: i.text, checked: i.checked, secs: tt?.subtaskSecs.get(i.id) ?? 0 })),
+        billedSecs: tt?.billedSecs ?? 0,
+        unbilledSecs: tt?.unbilledSecs ?? 0,
+        thinkingSecs: tt?.thinkingSecs ?? 0,
+        pauseSecs: tt?.pauseSecs ?? 0,
+        unconfirmedSecs: unconfirmed.get(t.id) ?? 0,
+      };
+    }),
+    segments,
     shifts: s.shifts.filter((x) => !x.deleted),
     rates: s.rates.filter((x) => !x.deleted),
     rounding: s.rounding.filter((x) => !x.deleted),
@@ -289,9 +467,23 @@ function snapshot(s: MockState): Snapshot {
       clientZonePromptDone: s.clientZonePromptDone,
     },
     notices: s.notices,
-    warnings: s.warnings,
+    warnings: [...s.warnings, ...(s.prefixClashes.length ? [`Another device uses the same reference prefix: ${s.prefixClashes.join(', ')}. Choose a different prefix, or references can repeat.`] : [])],
     sync: { targets: s.targets, detected: s.detected, promptPending: !s.syncPromptDone && s.targets.length === 0, pendingCopy: s.pendingCopy },
-    launch: { warm: s.warm, coldRequired: COLD_REQUIRED, copySource: s.warm ? copySource(s) : null },
+    launch: { warm: s.warm, coldRequired: coldRequired(s), copySource: s.warm ? copySource(s) : null },
+    rawSegments,
+    gaps: s.gaps.filter((g) => input.liveTasks.has(g.taskId)),
+    pauses: s.pauses.filter((x) => !x.deleted),
+    tags,
+    templates: s.templates.filter((x) => !x.deleted),
+    billing: { prefix: s.prefix, clashes: s.prefixClashes, summaries: s.summaries },
+    reminder: currentReminder(s),
+    reminderSettings: {
+      idleMinutes: minutesSetting(s, 'idleMinutes', 10),
+      longRunMinutes: minutesSetting(s, 'longRunMinutes', 240),
+      remindPastShift: s.settings.remindPastShift ?? true,
+    },
+    backupKeep: s.backupKeep,
+    hasPdfLogo: s.hasPdfLogo,
   });
 }
 
@@ -303,18 +495,32 @@ function newId(s: MockState, prefix: string): string {
   return id;
 }
 
-function cleanProject(s: MockState, input: ProjectInput, except: string | null): ProjectInput {
+/** The backend's `clean_color`: exactly `#rrggbb`, stored lowercase. */
+function cleanColor(raw: string): string {
+  if (!/^#[0-9a-fA-F]{6}$/.test(raw)) throw err('validation', 'a color must look like #1a2b3c');
+  return raw.toLowerCase();
+}
+
+function cleanProject(s: MockState, input: ProjectInput, except: string | null): ProjectInput & { billingType: 'hourly' | 'fixedFee'; fixedFeeCents: number | null; feeCurrency: 'EUR' | 'USD' | null } {
   const name = input.name.trim();
   if (!name) throw err('validation', 'Project name is required');
   if (s.projects.some((p) => p.id !== except && p.name.toLowerCase() === name.toLowerCase())) {
     throw err('conflict', `a project named "${name}" already exists`);
   }
-  if (!/^#[0-9a-fA-F]{6}$/.test(input.color)) throw err('validation', 'project color must look like #1a2b3c');
+  const color = cleanColor(input.color);
   if (input.clientZone && !isZone(input.clientZone)) throw err('validation', `unknown time zone: ${input.clientZone}`);
-  return { ...input, name, color: input.color.toLowerCase() };
+  const billingType = input.billingType ?? 'hourly';
+  let fixedFeeCents: number | null = null;
+  if (billingType === 'fixedFee') {
+    if (input.fixedFeeCents === null || input.fixedFeeCents === undefined) throw err('validation', 'enter the fixed fee');
+    if (input.fixedFeeCents < 0 || input.fixedFeeCents > 1_000_000_000_000) throw err('validation', 'that fee is out of range');
+    if (!input.feeCurrency || !isCurrency(input.feeCurrency)) throw err('validation', "the fee's currency must be EUR or USD");
+    fixedFeeCents = input.fixedFeeCents;
+  }
+  return { ...input, name, color, billingType, fixedFeeCents, feeCurrency: billingType === 'fixedFee' ? (input.feeCurrency ?? null) : null };
 }
 
-function task(s: MockState, id: string): Task {
+function task(s: MockState, id: string): MockTask {
   const t = s.tasks.find((x) => x.id === id);
   if (!t) throw err('not_found', 'task not found');
   return t;
@@ -328,7 +534,7 @@ function closeOwn(s: MockState, taskId: string): void {
   }
 }
 
-function setState(t: Task, state: TaskState, reason: PauseReason | null): void {
+function setState(t: MockTask, state: TaskState, reason: PauseReason | null): void {
   t.state = state;
   t.pauseReason = reason;
 }
@@ -351,11 +557,331 @@ function begin(s: MockState, id: string, required: TaskState, action: string) {
       autoPausedTaskName = other.name;
     }
   }
-  s.segments.push({ id: newId(s, 'seg'), taskId: id, deviceId: DEVICE_ID, start: toIso(s.now), end: null, provisionalEnd: null });
+  s.segments.push({ id: newId(s, 'seg'), taskId: id, deviceId: DEVICE_ID, start: toIso(s.now), end: null, provisionalEnd: null, subtaskId: t.activeSubtask ?? null });
   setState(t, 'running', null);
   s.warm = true;
   s.lastWorked = id;
   return { autoPausedTaskId, autoPausedTaskName, snapshot: snapshot(s) };
+}
+
+// ---- phase 2: corrections, time away, billable pauses, subtasks, tags, templates, billing summaries,
+// PDF, backups and reminders. Rules and error codes follow adjust.rs, catalog.rs, summary.rs and service.rs.
+
+const NOT_HANDLED = Symbol('not handled');
+const MAX_REASON = 500;
+const MAX_SEGMENT_SECS = 366 * 86_400;
+
+function checkTagIds(s: MockState, ids: readonly string[]): void {
+  if (ids.length > 32) throw err('validation', 'too many tags');
+  for (const id of ids) if (!liveTag(s, id)) throw err('not_found', 'tag not found');
+}
+
+function addAudit(s: MockState, entity: string, entityId: string, action: string, reason: string, before: unknown, after: unknown): void {
+  s.audit.push({ id: newId(s, 'audit'), at: toIso(s.now), by: DEVICE_ID, entity, entityId, action, reason, before, after });
+}
+
+function cleanReason(raw: string | undefined): string {
+  const reason = (raw ?? '').trim();
+  if ([...reason].length > MAX_REASON) throw err('validation', 'the reason is too long');
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(reason)) throw err('validation', "the reason has characters that can't be stored");
+  return reason;
+}
+
+function cleanText(raw: string, field: string, max: number): string {
+  const text = raw.trim();
+  if (!text) throw err('validation', `${field} is required`);
+  if ([...text].length > max) throw err('validation', `${field} is longer than ${max} characters`);
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(text)) throw err('validation', `${field} contains control characters`);
+  return text;
+}
+
+function checkRange(s: MockState, startIso: string, endIso: string): [number, number] {
+  const start = parseIso(startIso);
+  const end = parseIso(endIso);
+  if (end <= start) throw err('validation', 'the end must be after the start');
+  if (end > s.now) throw err('validation', "the end can't be in the future");
+  if (end - start > MAX_SEGMENT_SECS) throw err('validation', 'that span is too long');
+  return [start, end];
+}
+
+/** Other time logged on this device that the span overlaps. Segments on other PCs may overlap. */
+function overlapping(s: MockState, device: string, except: string | null, start: number, end: number): string[] {
+  const names: string[] = [];
+  for (const seg of s.segments) {
+    if (seg.deviceId !== device || seg.id === except) continue;
+    const eff = effective(seg);
+    if (!eff || !(eff[0] < end && (eff[1] === null || eff[1] > start))) continue;
+    const t = s.tasks.find((x) => x.id === seg.taskId);
+    if (t) names.push(t.name);
+  }
+  return names;
+}
+
+function refuseOverlap(names: string[]): void {
+  if (names.length > 0) throw err('overlap', `this overlaps time already logged on: ${names.join(', ')}`);
+}
+
+const BILLED = 'this time is on a billing summary; void that summary first';
+
+function correctable(s: MockState, id: string): MockSegment {
+  const seg = s.segments.find((x) => x.id === id);
+  if (!seg) throw err('not_found', 'work segment not found');
+  if (seg.end === null) throw err('conflict', 'this segment is still running; pause the task first');
+  if (billedSets(s).segments.has(id)) throw err('conflict', BILLED);
+  task(s, seg.taskId);
+  return seg;
+}
+
+const segJson = (seg: MockSegment) => ({ rawStart: seg.start, rawEnd: seg.end, edit: seg.edit ?? null, subtaskId: seg.subtaskId ?? null });
+
+function applyEdit(s: MockState, seg: MockSegment, edit: MockSegment['edit'], action: string, reason: string): void {
+  const before = segJson(seg);
+  seg.edit = edit;
+  addAudit(s, 'segment', seg.id, action, reason, before, segJson(seg));
+}
+
+function summaryInput(s: MockState) {
+  const live = liveTaskIds(s);
+  return {
+    ...billingData(s),
+    segments: s.segments,
+    gaps: s.gaps,
+    pauses: s.pauses,
+    tasksLive: s.tasks.filter((t) => live.has(t.id)).map((t) => ({ id: t.id, projectId: t.projectId, name: t.name })),
+    billedSegments: billedSets(s).segments,
+    billedPauses: billedSets(s).pauses,
+  };
+}
+
+function checkSummaryRequest(s: MockState, req: SummaryRequest): void {
+  if (!isZone(req.zone)) throw err('validation', `unknown time zone: ${req.zone}`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(req.from)) throw err('validation', 'the start date is not a date');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(req.to)) throw err('validation', 'the end date is not a date');
+  if (req.to < req.from) throw err('validation', 'the end date must not be before the start date');
+  if (!s.projects.some((p) => p.id === req.projectId)) throw err('not_found', 'project not found');
+}
+
+/** Everything a restore replaces, as JSON. Settings of this device, such as sync folders, stay as they are. */
+const dataKeys = ['projects', 'tasks', 'segments', 'gaps', 'pauses', 'tags', 'templates', 'summaries', 'rates', 'rounding', 'shifts'] as const;
+export const captureData = (s: MockState): string => JSON.stringify(Object.fromEntries(dataKeys.map((k) => [k, s[k]])));
+
+function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown {
+  switch (cmd) {
+    case 'add_manual_entry': {
+      const input = a.input as ManualEntryInput;
+      task(s, input.taskId);
+      const [start, end] = checkRange(s, input.start, input.end);
+      const reason = cleanReason(input.reason);
+      if (!input.allowOverlap) refuseOverlap(overlapping(s, DEVICE_ID, null, start, end));
+      const id = newId(s, 'seg');
+      const seg: MockSegment = { id, taskId: input.taskId, deviceId: DEVICE_ID, start: toIso(start), end: toIso(end), provisionalEnd: null, manual: true, subtaskId: input.subtaskId ?? null, edit: null };
+      s.segments.push(seg);
+      addAudit(s, 'segment', id, 'manualEntry', reason, null, segJson(seg));
+      return { id, snapshot: snapshot(s) };
+    }
+    case 'correct_segment': {
+      const input = a.input as CorrectionInput;
+      const [start, end] = checkRange(s, input.start, input.end);
+      const reason = cleanReason(input.reason);
+      const seg = correctable(s, input.segmentId);
+      if (!input.allowOverlap) refuseOverlap(overlapping(s, seg.deviceId, seg.id, start, end));
+      applyEdit(s, seg, { start: toIso(start), end: toIso(end), voided: false, reason }, 'correct', reason);
+      return snapshot(s);
+    }
+    case 'void_segment': {
+      const reason = cleanReason(a.reason as string);
+      const seg = correctable(s, a.id as string);
+      applyEdit(s, seg, { start: seg.start, end: seg.end ?? seg.start, voided: true, reason }, 'void', reason);
+      return snapshot(s);
+    }
+    case 'restore_segment': {
+      const reason = cleanReason(a.reason as string);
+      const seg = correctable(s, a.id as string);
+      applyEdit(s, seg, null, 'restore', reason);
+      return snapshot(s);
+    }
+    case 'decide_gap': {
+      const gap = s.gaps.find((g) => g.id === a.id);
+      if (!gap) throw err('not_found', 'time away not found');
+      if (billedSets(s).segments.has(gap.segmentId)) throw err('conflict', BILLED);
+      const before = { decision: gap.decision };
+      gap.decision = a.decision as GapDecision;
+      addAudit(s, 'gap', gap.id, 'decide', '', before, { decision: gap.decision });
+      return snapshot(s);
+    }
+    case 'mark_billable_pause': {
+      const input = a.input as PauseInput;
+      task(s, input.taskId);
+      const [start, end] = checkRange(s, input.start, input.end);
+      const note = cleanReason(input.note);
+      const id = newId(s, 'pause');
+      s.pauses.push({ id, taskId: input.taskId, start: toIso(start), end: toIso(end), note, deleted: false, stamp: stamp(s) });
+      addAudit(s, 'pause', id, 'markBillable', note, null, { start: toIso(start), end: toIso(end) });
+      return { id, snapshot: snapshot(s) };
+    }
+    case 'unmark_billable_pause': {
+      if (s.summaries.some((b) => !b.voided && b.pauseIds.includes(a.id as string))) throw err('conflict', BILLED);
+      const pause = s.pauses.find((p) => p.id === a.id);
+      if (!pause) throw err('not_found', 'billable pause not found');
+      pause.deleted = true;
+      addAudit(s, 'pause', pause.id, 'unmarkBillable', '', { start: pause.start, end: pause.end }, null);
+      return snapshot(s);
+    }
+    case 'set_active_subtask': {
+      const t = task(s, a.taskId as string);
+      const id = (a.subtaskId as string | null) ?? null;
+      if (id !== null && !subtaskItems(t.description).some((i) => i.id === id)) throw err('not_found', 'subtask not found');
+      const changed = (t.activeSubtask ?? null) !== id;
+      t.activeSubtask = id;
+      if (changed) {
+        // The running segment closes now and a new one starts, so each segment belongs to exactly one subtask.
+        const open = s.segments.filter((x) => x.taskId === t.id && x.deviceId === DEVICE_ID && x.end === null);
+        for (const seg of open) seg.end = toIso(Math.max(s.now, parseIso(seg.start)));
+        if (open.length > 0) s.segments.push({ id: newId(s, 'seg'), taskId: t.id, deviceId: DEVICE_ID, start: toIso(s.now), end: null, provisionalEnd: null, subtaskId: id });
+      }
+      return snapshot(s);
+    }
+    case 'save_tag': {
+      const input = a.input as TagInput;
+      const name = cleanText(input.name, 'Tag name', 40);
+      const color = cleanColor(input.color);
+      if (s.tags.some((t) => !t.deleted && t.id !== (input.id ?? null) && t.name.toLowerCase() === name.toLowerCase())) throw err('conflict', `a tag named "${name}" already exists`);
+      if (input.id) {
+        const old = s.tags.find((t) => t.id === input.id);
+        if (!old) throw err('not_found', 'tag not found');
+        Object.assign(old, { name, color, deleted: false, stamp: stamp(s) });
+        return { id: old.id, snapshot: snapshot(s) };
+      }
+      const id = newId(s, 'tag');
+      s.tags.push({ id, name, color, deleted: false, stamp: stamp(s) });
+      return { id, snapshot: snapshot(s) };
+    }
+    case 'delete_tag': {
+      const tag = s.tags.find((t) => t.id === a.id);
+      if (!tag) throw err('not_found', 'tag not found');
+      tag.deleted = true;
+      return snapshot(s);
+    }
+    case 'save_template': {
+      const input = a.input as TemplateInput;
+      const name = cleanText(input.name, 'Template name', 120);
+      checkTagIds(s, input.tags);
+      if (input.projectId && !s.projects.some((p) => p.id === input.projectId)) throw err('not_found', 'project not found');
+      const doc = resetSubtasks(input.description);
+      if (input.id) {
+        const old = s.templates.find((t) => t.id === input.id);
+        if (!old) throw err('not_found', 'template not found');
+        Object.assign(old, { name, projectId: input.projectId, description: doc, tags: input.tags, deleted: false, stamp: stamp(s) });
+        return { id: old.id, snapshot: snapshot(s) };
+      }
+      const id = newId(s, 'template');
+      s.templates.push({ id, name, projectId: input.projectId, description: doc, tags: input.tags, deleted: false, stamp: stamp(s) });
+      return { id, snapshot: snapshot(s) };
+    }
+    case 'delete_template': {
+      const t = s.templates.find((x) => x.id === a.id);
+      if (!t) throw err('not_found', 'template not found');
+      t.deleted = true;
+      return snapshot(s);
+    }
+    case 'task_from_template': {
+      const t = s.templates.find((x) => x.id === a.id && !x.deleted);
+      if (!t) throw err('not_found', 'template not found');
+      const projectId = (a.projectId as string | null) ?? t.projectId;
+      if (!projectId) throw err('validation', 'Project is required');
+      const input: TaskInput = { name: t.name, projectId, description: resetSubtasks(t.description), continuedFrom: null, tags: t.tags.filter((id) => liveTag(s, id)) };
+      return handle(s, 'create_task', { input });
+    }
+    case 'summary_preview': {
+      const req = a.request as SummaryRequest;
+      checkSummaryRequest(s, req);
+      return summaryPreview(summaryInput(s), req);
+    }
+    case 'create_summary': {
+      const req = a.request as SummaryRequest;
+      checkSummaryRequest(s, req);
+      const preview = summaryPreview(summaryInput(s), req);
+      if (preview.rows.length === 0) throw err('validation', 'there is no unbilled time in that period');
+      const number = Math.max(0, ...s.summaries.filter((b) => b.prefix === s.prefix).map((b) => b.number)) + 1;
+      const id = newId(s, 'summary');
+      const reference = `${s.prefix}-${String(number).padStart(3, '0')}`;
+      s.summaries.push({
+        id, reference, prefix: s.prefix, number, deviceId: DEVICE_ID, projectId: req.projectId, from: req.from, to: req.to, zone: req.zone, createdAt: toIso(s.now),
+        segmentIds: preview.segmentIds, pauseIds: preview.pauseIds, rows: preview.rows, totals: preview.totals, voided: false, stamp: stamp(s),
+      });
+      addAudit(s, 'summary', id, 'create', '', null, { reference });
+      return { id, snapshot: snapshot(s) };
+    }
+    case 'void_summary': {
+      const b = s.summaries.find((x) => x.id === a.id);
+      if (!b) throw err('not_found', 'billing summary not found');
+      b.voided = true;
+      addAudit(s, 'summary', b.id, 'void', '', { reference: b.reference }, null);
+      return snapshot(s);
+    }
+    case 'set_device_prefix': {
+      const prefix = String(a.prefix ?? '').trim().toUpperCase();
+      if (!/^[A-Z0-9]{1,4}$/.test(prefix)) throw err('validation', 'a prefix is 1 to 4 letters or digits');
+      s.prefix = prefix;
+      return snapshot(s);
+    }
+    case 'export_summary_csv': {
+      const b = s.summaries.find((x) => x.id === a.id);
+      if (!b) throw err('not_found', 'billing summary not found');
+      return `/mock/${b.reference}.csv`;
+    }
+    case 'export_pdf': {
+      const req = a.request as PdfRequest;
+      return `/mock/timesheet-${req.from}-to-${req.to}.pdf`;
+    }
+    case 'pick_pdf_logo':
+      s.hasPdfLogo = true;
+      return snapshot(s);
+    case 'clear_pdf_logo':
+      s.hasPdfLogo = false;
+      return snapshot(s);
+    case 'list_backups':
+      return s.backups;
+    case 'set_backup_keep': {
+      const keep = a.keep as number;
+      if (!Number.isInteger(keep) || keep < 1 || keep > 365) throw err('validation', 'keep between 1 and 365 backups');
+      s.backupKeep = keep;
+      return snapshot(s);
+    }
+    case 'restore_backup': {
+      const name = a.name as string;
+      if (!s.backups.some((b) => b.name === name)) throw err('not_found', 'backup not found');
+      closeAllAndPause(s, { kind: 'appQuit' });
+      const safety = `pre-restore-${toIso(s.now).replace(/:/g, '-').replace('Z', '')}.json`;
+      s.backupData[safety] = captureData(s);
+      s.backups.unshift({ name: safety, bytes: s.backupData[safety].length, safety: true });
+      const data = s.backupData[name];
+      if (data) Object.assign(s, JSON.parse(data) as Partial<MockState>);
+      // What the backup held as running is paused, like a task found open after a crash.
+      closeAllAndPause(s, { kind: 'crashRecovery' });
+      // Settings of this device, such as sync folders, stay as they are. The launch counts as cold afterwards.
+      s.warm = false;
+      s.lastWorked = null;
+      s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'info', message: `Restored ${name}. The data just before it is kept as ${safety}.` });
+      if (s.targets.length > 0) {
+        s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'warning', message: 'Sync is on, so newer records in your sync folders will merge back in at the next sync.' });
+      }
+      return snapshot(s);
+    }
+    case 'snooze_reminder': {
+      const minutes = Math.min(Math.max(Math.trunc(a.minutes as number), 1), 24 * 60);
+      s.reminderQuietUntil = s.now + minutes * 60;
+      return snapshot(s);
+    }
+    case 'get_audit': {
+      const id = (a.entityId as string | null | undefined) ?? null;
+      return s.audit
+        .filter((e) => id === null || e.entityId === id)
+        .sort((x, y) => (x.at < y.at ? 1 : x.at > y.at ? -1 : x.id < y.id ? -1 : 1));
+    }
+    default:
+      return NOT_HANDLED;
+  }
 }
 
 export function handle(s: MockState, cmd: string, a: Record<string, unknown>): unknown {
@@ -365,7 +891,7 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     case 'create_project': {
       const input = cleanProject(s, a.input as ProjectInput, null);
       const id = newId(s, 'project');
-      s.projects.push({ id, ...input, archived: false, createdAt: toIso(s.now), hasTasks: false });
+      s.projects.push({ id, ...input, archived: false, createdAt: toIso(s.now) });
       return { id, snapshot: snapshot(s) };
     }
     case 'update_project': {
@@ -394,27 +920,32 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       if (!input.name.trim()) throw err('validation', 'Task name is required');
       if (!input.projectId) throw err('validation', 'Project is required');
       if (!s.projects.some((p) => p.id === input.projectId)) throw err('not_found', 'project not found');
+      checkTagIds(s, input.tags ?? []);
       const id = newId(s, 'task');
       s.tasks.push({
-        id, name: input.name.trim(), projectId: input.projectId, description: input.description, state: 'draft',
+        id, name: input.name.trim(), projectId: input.projectId, description: assignSubtaskIds(input.description, undefined, () => newId(s, 'sub')), state: 'draft',
         pauseReason: null, createdAt: toIso(s.now), stoppedAt: null, runningElsewhere: null,
-        continuedFrom: input.continuedFrom ?? null,
+        continuedFrom: input.continuedFrom ?? null, tags: input.tags ?? [], activeSubtask: null,
       });
       return { id, snapshot: snapshot(s) };
     }
     case 'update_task': {
       const input = a.input as TaskInput;
       if (!input.name.trim()) throw err('validation', 'Task name is required');
+      checkTagIds(s, input.tags ?? []);
       const t = task(s, a.id as string);
       t.name = input.name.trim();
       t.projectId = input.projectId;
-      t.description = input.description;
+      t.description = assignSubtaskIds(input.description, t.description, () => newId(s, 'sub'));
+      // Like the backend, an empty list here leaves the tags alone; clearing goes through patch_task.
+      if (input.tags && input.tags.length > 0) t.tags = input.tags;
       return snapshot(s);
     }
     case 'patch_task': {
       const patch = a.patch as TaskPatch;
       const t = task(s, a.id as string);
       if (patch.name !== undefined && !patch.name.trim()) throw err('validation', 'Task name is required');
+      if (patch.tags !== undefined) checkTagIds(s, patch.tags);
       if (patch.projectId !== undefined && patch.projectId !== t.projectId) {
         const project = s.projects.find((p) => p.id === patch.projectId);
         if (!project) throw err('not_found', 'project not found');
@@ -422,7 +953,8 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
         t.projectId = patch.projectId;
       }
       if (patch.name !== undefined) t.name = patch.name.trim();
-      if (patch.description !== undefined) t.description = patch.description;
+      if (patch.description !== undefined) t.description = assignSubtaskIds(patch.description, t.description, () => newId(s, 'sub'));
+      if (patch.tags !== undefined) t.tags = patch.tags;
       return snapshot(s);
     }
     case 'delete_draft': {
@@ -504,9 +1036,16 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     case 'delete_rounding':
       s.rounding = s.rounding.filter((r) => r.id !== a.id);
       return snapshot(s);
-    case 'set_setting':
-      (s.settings as Record<string, unknown>)[a.key as string] = a.value;
+    case 'set_setting': {
+      const key = a.key as string;
+      const value = a.value;
+      if ((key === 'idleMinutes' || key === 'longRunMinutes') && value !== null && !(Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 10_080)) {
+        throw err('validation', `invalid value for ${key}`);
+      }
+      if (key === 'remindPastShift' && typeof value !== 'boolean') throw err('validation', `invalid value for ${key}`);
+      (s.settings as Record<string, unknown>)[key] = value;
       return snapshot(s);
+    }
     case 'set_theme':
       s.theme = a.theme as Theme;
       return snapshot(s);
@@ -562,8 +1101,11 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       return 1;
     case 'plugin:event|unlisten':
       return null;
-    default:
-      throw err('unknown', `mock has no command ${cmd}`);
+    default: {
+      const out = phase2(s, cmd, a);
+      if (out === NOT_HANDLED) throw err('unknown', `mock has no command ${cmd}`);
+      return out;
+    }
   }
 }
 

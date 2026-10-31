@@ -16,6 +16,7 @@ import { analyze, type Basis, type Metrics } from './metrics';
 import { defaultRange, type RangeSpec } from './range';
 import { Consistency, Focus, Goals } from './SectionsB';
 import { Overview, Projects, Tasks, TimeOfDay } from './SectionsA';
+import { TagsSection } from './SectionsP2';
 import { ShiftsSection, ZonesSection } from './SectionsC';
 import type { SecEnv } from './secenv';
 import { Card, DrillPanel, GlossaryDialog, InfoButton, Invite } from './ui';
@@ -26,6 +27,7 @@ const SECTIONS = [
   ['time', 'Time of day'],
   ['projects', 'Projects'],
   ['tasks', 'Tasks'],
+  ['tags', 'Tags'],
   ['focus', 'Focus'],
   ['consistency', 'Consistency'],
   ['goals', 'Goals and money'],
@@ -66,6 +68,7 @@ export function AnalysisTab() {
   const openGlossary = useCallback((id: string) => setGlossary({ open: true, focus: id }), []);
   const projects = useMemo(() => new Map(snapshot.projects.map((p) => [p.id, p])), [snapshot.projects]);
   const tasks = useMemo(() => new Map(snapshot.tasks.map((t) => [t.id, t])), [snapshot.tasks]);
+  const tags = useMemo(() => new Map(snapshot.tags.map((t) => [t.id, t])), [snapshot.tags]);
   const drillSpanList = useMemo(() => (drill && computed.ok ? drillSpans(prepare(snapshot, params), clock) : []), [drill, computed, snapshot, params, clock]);
 
   if (!computed.ok) {
@@ -130,7 +133,7 @@ export function AnalysisTab() {
       {m.hasData ? null : (
         <Invite title="No logged time here">
           Nothing is logged in {m.period.label}
-          {filters.projectIds.length || filters.taskIds.length || filters.band !== null || filters.shiftKey !== null ? ' with these filters' : ''}. Pick another range, clear the filters, or start a task on the Timeline.
+          {filters.projectIds.length || filters.taskIds.length || filters.tagIds.length || filters.band !== null || filters.shiftKey !== null ? ' with these filters' : ''}. Pick another range, clear the filters, or start a task on the Timeline.
         </Invite>
       )}
       <article className="a-card a-insights" aria-labelledby="insights-h">
@@ -169,13 +172,14 @@ export function AnalysisTab() {
       <TimeOfDay env={env} />
       <Projects env={env} />
       <Tasks env={env} />
+      <TagsSection env={env} />
       <Focus env={env} />
       <Consistency env={env} />
       <Goals env={env} />
       <ShiftsSection env={env} />
       <ZonesSection env={env} />
       <GlossaryDialog open={glossary.open} focusId={glossary.focus} onClose={() => setGlossary({ open: false, focus: null })} />
-      {drill ? <DrillPanel sel={drill} ctx={{ spans: drillSpanList, zone, clientZone: zones.client, nowSec: clock, projects, tasks }} onClose={() => setDrill(null)} /> : null}
+      {drill ? <DrillPanel sel={drill} ctx={{ spans: drillSpanList, zone, clientZone: zones.client, nowSec: clock, projects, tasks, tags }} onClose={() => setDrill(null)} /> : null}
       <Card title="About these figures">
         <p className="muted">
           Everything here is computed on this device from your logged segments. Logged time measures logged time, not output. Raw UTC instants are the truth; the zone only affects display and grouping.

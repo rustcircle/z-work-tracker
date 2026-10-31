@@ -1,0 +1,41 @@
+/* Phase 2 task parts: tag chips and picker, subtask time, billed and unbilled figures. Theme tokens only. */
+.tag-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.tag-chip { display: inline-flex; align-items: center; max-width: 100%; padding: 1px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; line-height: 1.5; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 25%, transparent); }
+.tag-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.tag-picker { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.tag-picker legend { padding: 0; margin-bottom: 4px; }
+.tag-options { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-option { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px 2px 8px; min-height: 28px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; }
+.tag-option:hover { border-color: var(--text-muted); }
+.tag-option-on { border-color: color-mix(in srgb, var(--text) 40%, transparent); }
+.tag-option:has(.tag-option-box:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.tag-option-box { position: absolute; opacity: 0; inset: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.tag-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 35%, transparent); }
+.tag-option-on .tag-dot { display: none; }
+.tag-tick { font-size: 12px; line-height: 1; }
+
+.task-figures { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--text-muted); }
+.task-figures strong { color: var(--text); font-weight: 600; }
+.task-unconfirmed { color: var(--text); background: color-mix(in srgb, var(--warning) 12%, var(--surface)); border: 1px dashed color-mix(in srgb, var(--warning) 60%, var(--border)); border-radius: var(--radius-sm); padding: 4px 8px; }
+
+.subtasks { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
+.subtasks-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.subtasks-head h4 { font-size: 13px; }
+.subtask-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.subtask-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) 4.6em 7.6em; align-items: center; gap: 8px; padding: 3px 6px; border-radius: var(--radius-sm); border: 1px solid transparent; }
+.subtask-row:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.subtask-active { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.subtask-mark { font-size: 14px; line-height: 1; color: var(--text-muted); }
+.subtask-text { overflow-wrap: anywhere; font-size: 13px; }
+.subtask-done .subtask-text { text-decoration: line-through; color: var(--text-muted); }
+.subtask-time { font-size: 13px; font-weight: 600; white-space: nowrap; text-align: right; }
+.subtask-row > .btn, .subtask-row > .badge { justify-self: end; }
+.subtask-total { margin: 0; font-size: 13px; }
+.subtask-note { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+
+.template-pick { display: flex; flex-direction: column; gap: 4px; }
+.template-note { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+.editor-buttons { display: flex; gap: 6px; align-items: center; flex: none; }
+.subtask-saved-only { grid-column: 2 / -1; }
+.ticker-sub { font-size: 11.5px; font-weight: 400; display: block; }

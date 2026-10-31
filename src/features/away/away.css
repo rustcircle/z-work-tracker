@@ -1,0 +1,14 @@
+/* Time away: the dialog, its banner and the day cards' note. */
+.away-help { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; font-size: 13px; }
+.away-help dt { font-weight: 600; }
+.away-help dd { margin: 0; color: var(--text-muted); }
+.away-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.away-gap { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--surface); }
+.away-gap-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.away-gap-time { margin: 0; font-size: 13.5px; }
+.away-gap-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.away-all { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 4px; border-top: 1px solid var(--border); }
+.away-all strong { margin-right: 4px; }
+.away-error { margin: 0; color: var(--danger); font-weight: 600; }
+.banner-away strong { font-weight: 700; }
+.banner .banner-actions { flex: none; display: inline-flex; gap: 8px; }

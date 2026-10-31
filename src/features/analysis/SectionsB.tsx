@@ -9,6 +9,7 @@ import { fmtClock, fmtHM, fmtHMS, fmtLong, fmtPct } from './format';
 import { moneyText } from './insights';
 import { WEEKDAY_NAMES, WEEKDAY_SHORT, dayStr } from './range';
 import { projectLegend, segsOf, tipTime, type SecEnv } from './secenv';
+import { BudgetStatusCard, FixedFeeCard } from './SectionsP2';
 import { Card, Invite, Section, Stat, dayText } from './ui';
 
 const EMPTY = 'No time logged in this period. Try another range or clear the filters.';
@@ -245,7 +246,7 @@ export function Goals({ env }: { env: SecEnv }) {
     segs: [{ id: 'w', label: 'Worked', value: w.secs, concept: 'worked' as const }],
     tip: [`Week of ${dayText(dayStr(w.start))}`, tipTime('Logged (Exact)', w.secs), `${fmtPct(w.attainment)} of the weekly target`],
   }));
-  const nothing = !g.configured && m.budgets.length === 0 && !hasMoney;
+  const nothing = !g.configured && m.budgets.length === 0 && m.budgetStatus.length === 0 && m.fixedFee.length === 0 && !hasMoney;
   return (
     <Section id="goals" title="Goals and money" lede="Optional: targets, budgets, rates and rounding. Each part appears once it is set up.">
       {!m.billableAvailable ? (
@@ -276,6 +277,8 @@ export function Goals({ env }: { env: SecEnv }) {
           <Columns cols={weekCols} scale={timeScale(Math.max(g.weekly.target, ...weeks.map((w) => w.secs)))} yTitle="hours" ariaLabel="Weekly totals against the weekly target" lines={[{ id: 't', concept: 'target', label: 'Target', values: weeks.map(() => g.weekly?.target ?? null) }]} empty={EMPTY} />
         </Card>
       ) : null}
+      <BudgetStatusCard env={env} />
+      <FixedFeeCard env={env} />
       {m.budgets.length > 0 ? <BudgetCard env={env} /> : null}
       {mo.available && m.projects.length > 0 ? (
         <Card
@@ -333,6 +336,11 @@ export function Goals({ env }: { env: SecEnv }) {
           <p className="tabular">
             Billable time is {fmtHM(Math.abs(mo.roundingSecs))} {mo.roundingSecs >= 0 ? 'more' : 'less'} than Exact{Object.keys(mo.roundingMoney).length ? ` (${moneyText(mo.roundingMoney, hide)})` : ''}.
           </p>
+          {m.pieces.pauseSecs > 0 ? (
+            <p className="tabular muted">
+              Of that, {fmtHM(m.pieces.pauseSecs)} is billable pauses and {fmtHM(Math.abs(mo.roundingSecs - m.pieces.pauseSecs))} is {mo.roundingSecs - m.pieces.pauseSecs >= 0 ? 'rounding up' : 'rounding down'}.
+            </p>
+          ) : null}
           <HBars rows={adjRows} ariaLabel="Rounding adjustment per project" empty="Rounding changed nothing." />
         </Card>
       ) : null}

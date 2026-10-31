@@ -1,18 +1,23 @@
 // Pure rules for the task panel: form validation, which controls a card enables, and the wording of
 // pause reasons. Kept free of React so it is easy to test.
 import { docHasText } from '../../lib/docText';
-import type { LaunchState, PauseReason, Project, RequiredField, RichDoc, Task } from '../../lib/types';
+import type { LaunchState, PauseReason, Project, RequiredField, RichDoc, Tag, Task } from '../../lib/types';
 
 export interface TaskDraft {
   name: string;
   projectId: string;
   description: RichDoc;
+  /** Chosen tag ids. Missing means none. */
+  tags?: readonly string[];
 }
 
 export interface TaskErrors {
   name: string | null;
   project: string | null;
   description: string | null;
+  tags: string | null;
+  /** Required fields still empty, in the order the form shows them (name, project, description, tags). */
+  missing: RequiredField[];
   /** Everything needed to Start is present. */
   ok: boolean;
   /** Name and project are present, which is all a draft needs. */
@@ -24,7 +29,22 @@ export function requiredToStart(launch: Pick<LaunchState, 'warm' | 'coldRequired
   return launch.warm ? ['name', 'project'] : [...new Set<RequiredField>(['name', 'project', ...launch.coldRequired])];
 }
 
-export function validateTask(draft: TaskDraft, projects: readonly Project[], allowArchivedId: string | null = null, required: readonly RequiredField[] = ['name', 'project']): TaskErrors {
+/** The order the form lists its required fields in, which is also the order of the backend's list. */
+const REQUIRED_ORDER: readonly RequiredField[] = ['name', 'project', 'description', 'tags'];
+
+/** How a missing field reads in "To start, enter ...". */
+const FIELD_NOUN: Record<RequiredField, string> = { name: 'a task name', project: 'a project', description: 'a description', tags: 'at least one tag' };
+
+/** A tag counts only while it is live: a deleted tag is no tag. */
+const liveCount = (ids: readonly string[], tags: readonly Pick<Tag, 'id' | 'deleted'>[]): number => ids.filter((id) => tags.some((t) => t.id === id && !t.deleted)).length;
+
+export function validateTask(
+  draft: TaskDraft,
+  projects: readonly Project[],
+  allowArchivedId: string | null = null,
+  required: readonly RequiredField[] = ['name', 'project'],
+  tags: readonly Pick<Tag, 'id' | 'deleted'>[] = [],
+): TaskErrors {
   const name = draft.name.trim() === '' ? 'Enter a task name.' : null;
   let project: string | null = null;
   if (draft.projectId === '') project = 'Choose a project.';
@@ -34,20 +54,22 @@ export function validateTask(draft: TaskDraft, projects: readonly Project[], all
     else if (p.archived && p.id !== allowArchivedId) project = `Project "${p.name}" is archived. Restore it or pick another.`;
   }
   const description = required.includes('description') && !docHasText(draft.description) ? 'Describe the task. A blank or spaces-only description does not count.' : null;
-  return { name, project, description, ok: name === null && project === null && description === null, draftOk: name === null && project === null };
+  const tagError = required.includes('tags') && liveCount(draft.tags ?? [], tags) === 0 ? 'Choose at least one tag.' : null;
+  const missing = REQUIRED_ORDER.filter((f) => (f === 'name' ? name : f === 'project' ? project : f === 'description' ? description : tagError) !== null);
+  return { name, project, description, tags: tagError, missing, ok: missing.length === 0, draftOk: name === null && project === null };
 }
 
 /** Names of the fields still missing for Start, in the form's order. */
-export function missingText(e: TaskErrors): string {
-  const parts = [e.name ? 'a task name' : null, e.project ? 'a project' : null, e.description ? 'a description' : null].filter((x): x is string => x !== null);
+export function missingText(e: Pick<TaskErrors, 'missing'>): string {
+  const parts = e.missing.map((f) => FIELD_NOUN[f]);
   if (parts.length <= 1) return parts.join('');
   return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }
 
 /** Required fields a stored task still lacks, for a cold launch. */
-export function coldMissing(task: Task, launch: Pick<LaunchState, 'warm' | 'coldRequired'>): RequiredField[] {
+export function coldMissing(task: Task, launch: Pick<LaunchState, 'warm' | 'coldRequired'>, tags: readonly Pick<Tag, 'id' | 'deleted'>[] = []): RequiredField[] {
   if (launch.warm) return [];
-  return requiredToStart(launch).filter((f) => (f === 'name' ? task.name.trim() === '' : f === 'project' ? task.projectId === '' : f === 'description' ? !docHasText(task.description) : false));
+  return requiredToStart(launch).filter((f) => (f === 'name' ? task.name.trim() === '' : f === 'project' ? task.projectId === '' : f === 'description' ? !docHasText(task.description) : liveCount(task.tags, tags) === 0));
 }
 
 export interface Control {
@@ -66,13 +88,18 @@ const on: Control = { enabled: true, why: null };
 const off = (why: string): Control => ({ enabled: false, why });
 
 /** Exactly one of the four buttons set is live per state, as the spec lays out. */
-export function controlsFor(task: Task, project: Project | undefined, launch: Pick<LaunchState, 'warm' | 'coldRequired'> = { warm: true, coldRequired: [] }): Controls {
+export function controlsFor(
+  task: Task,
+  project: Project | undefined,
+  launch: Pick<LaunchState, 'warm' | 'coldRequired'> = { warm: true, coldRequired: [] },
+  tags: readonly Pick<Tag, 'id' | 'deleted'>[] = [],
+): Controls {
   const projectBlock = !project ? 'This task has no project.' : project.archived ? `Project "${project.name}" is archived. Restore it first.` : null;
   const wrongState = (needs: string) => off(`Only available when the task is ${needs}.`);
   switch (task.state) {
     case 'draft': {
-      const missing = coldMissing(task, launch);
-      const coldBlock = missing.length > 0 ? `The first start after launch needs ${missing.join(', ')}. Edit the task to add ${missing.length > 1 ? 'them' : 'it'}.` : null;
+      const missing = coldMissing(task, launch, tags);
+      const coldBlock = missing.length > 0 ? `The first start after launch needs ${missing.join(', ')}. Edit the task to add ${missing.length > 1 || missing[0] === 'tags' ? 'them' : 'it'}.` : null;
       return { start: projectBlock ? off(projectBlock) : coldBlock ? off(coldBlock) : on, pause: wrongState('running'), resume: wrongState('paused'), stop: off('Start the task first.') };
     }
     case 'running':

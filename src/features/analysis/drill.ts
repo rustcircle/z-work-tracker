@@ -15,6 +15,8 @@ export interface DrillSel {
   weekday?: number;
   projectId?: string;
   taskId?: string;
+  /** Tasks that carry this tag (a task with two tags is behind both marks). `null` means tasks with no tag. */
+  tagId?: string | null;
 }
 
 export interface DrillSegment {
@@ -47,13 +49,18 @@ function matches(sel: DrillSel, day: number, hour: number): boolean {
   return true;
 }
 
-export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel): DrillResult {
+/** `taskTags` maps a task to its tag ids; it is needed only for a `tagId` selection. */
+export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel, taskTags?: ReadonlyMap<string, readonly string[]>): DrillResult {
   const segments: DrillSegment[] = [];
   const byTask = new Map<string, DrillTask>();
   let total = 0;
   for (const sp of spans) {
     if (sel.projectId && sp.projectId !== sel.projectId) continue;
     if (sel.taskId && sp.taskId !== sel.taskId) continue;
+    if (sel.tagId !== undefined && taskTags) {
+      const tags = taskTags.get(sp.taskId) ?? [];
+      if (sel.tagId === null ? tags.length > 0 : !tags.includes(sel.tagId)) continue;
+    }
     let cur: DrillSegment | null = null;
     walkHours(sp.start, sp.end, zone, (s, e, day, hour) => {
       if (!matches(sel, day, hour)) {
@@ -84,6 +91,6 @@ export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel
 }
 
 export function drill(snapshot: Snapshot, params: Params, nowSec: number, sel: DrillSel): DrillResult {
-  return drillInto(drillSpans(prepare(snapshot, params), nowSec), params.zone, sel);
+  return drillInto(drillSpans(prepare(snapshot, params), nowSec), params.zone, sel, new Map(snapshot.tasks.map((t) => [t.id, t.tags])));
 }
 

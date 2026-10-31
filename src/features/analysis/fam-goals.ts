@@ -228,7 +228,8 @@ export function moneyOf(ctx: Ctx, series: Series): Money {
   const missing: string[] = [];
   for (const [id, secs] of cur.agg.byProject) {
     const p = ctx.projects.get(id);
-    if (p?.billable && secs > 0 && !byProject.has(id)) missing.push(id);
+    // A fixed-fee project earns its fee, so it never lacks an hourly rate.
+    if (p?.billable && p.billingType === 'hourly' && secs > 0 && !byProject.has(id)) missing.push(id);
   }
   let adj = 0;
   for (const v of idx.adjByProject.values()) adj += v;

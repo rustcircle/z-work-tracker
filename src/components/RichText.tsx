@@ -8,11 +8,28 @@ import { useEffect, useId, useImperativeHandle, useRef, type Ref } from 'react';
 
 import type { RichDoc } from '../lib/types';
 
+/**
+ * A task-list item that keeps its `subtaskId` through the JSON, so time logged on a subtask survives
+ * editing. The id is set by the backend and never shown; it only travels as a data attribute.
+ */
+export const SubtaskItem = TaskItem.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      subtaskId: {
+        default: null,
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-subtask-id'),
+        renderHTML: (attrs: Record<string, unknown>) => (typeof attrs.subtaskId === 'string' && attrs.subtaskId ? { 'data-subtask-id': attrs.subtaskId } : {}),
+      },
+    };
+  },
+});
+
 function extensions() {
   return [
     StarterKit.configure({ link: false, underline: false, blockquote: false, code: false, codeBlock: false, strike: false, horizontalRule: false }),
     TaskList,
-    TaskItem.configure({ nested: true }),
+    SubtaskItem.configure({ nested: true }),
   ];
 }
 

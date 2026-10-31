@@ -2,6 +2,7 @@
 import { RateBook } from '../../lib/billing';
 import { dayOfInstant, evaluate, hasTimeFilter, prepare, resolveZones, type Evaluated, type Params } from './engine';
 import { consistencyOf, focusOf, type Consistency, type Focus } from './fam-focus';
+import { budgetAlertsOf, fixedFeeOf, piecesOf, tagsOf, type BudgetAlert, type FixedFeeStat, type Pieces, type TagsView } from './fam-p2';
 import { budgetsOf, forecastOf, goalsOf, moneyOf, type BudgetBurn, type Forecast, type Goals, type Money } from './fam-goals';
 import { projectsOf, tasksOf, type ProjectStat, type Tasks } from './fam-projects';
 import { shiftsOf, zonesOf, type Shifts, type ZonesView } from './fam-shifts';
@@ -37,6 +38,14 @@ export interface Metrics {
   goals: Goals;
   budgets: BudgetBurn[];
   money: Money;
+  /** Billable pauses, thinking and unconfirmed time, reported apart from worked time. */
+  pieces: Pieces;
+  /** Time by tag. Rows overlap: never add them up. */
+  tags: TagsView;
+  /** Fixed-fee projects with their effective hourly rate. */
+  fixedFee: FixedFeeStat[];
+  /** Budget status per project as the project reports it. */
+  budgetStatus: BudgetAlert[];
   forecast: Forecast;
   shifts: Shifts;
   zonesView: ZonesView;
@@ -69,6 +78,7 @@ export function computeMetrics(snapshot: Snapshot, params: Params, ev: Evaluated
   const series = seriesOf(ctx);
   const time = timeOfDayOf(ctx);
   const money = moneyOf(ctx, series);
+  const tasks = tasksOf(ctx);
   return {
     period: ev.cur.period,
     prevPeriod: ev.prev ? ev.prev.period : null,
@@ -85,7 +95,7 @@ export function computeMetrics(snapshot: Snapshot, params: Params, ev: Evaluated
     dayBuckets: series.unit === 'hour' ? bucketsOf(ev.cur.period, 'day') : series.points,
     time,
     projects: projectsOf(ctx),
-    tasks: tasksOf(ctx),
+    tasks,
     focus: focusOf(ctx),
     consistency: consistencyOf(
       ctx,
@@ -94,6 +104,10 @@ export function computeMetrics(snapshot: Snapshot, params: Params, ev: Evaluated
     goals: goalsOf(ctx),
     budgets: budgetsOf(ctx),
     money,
+    pieces: piecesOf(ctx, series),
+    tags: tagsOf(ctx, tasks.list),
+    fixedFee: fixedFeeOf(ctx),
+    budgetStatus: budgetAlertsOf(ctx),
     forecast: forecastOf(ctx, volume.primary),
     shifts: shiftsOf(ctx),
     zonesView: zonesOf(ctx),

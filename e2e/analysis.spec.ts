@@ -51,14 +51,14 @@ async function expectClean(page: Page, found: Violations): Promise<void> {
   expect(found.errors, 'console errors').toEqual([]);
 }
 
-/** Opens the app with a frozen clock and shows the Analysis tab (clicking its tab when a shell exists). */
+/** Opens the app with a frozen clock and shows the Analysis tab (clicking its tab once the shell has rendered). */
 async function openAnalysis(page: Page, query = 'seed=demo'): Promise<Violations> {
   const found = await watch(page);
   await page.clock.install({ time: DEMO_NOW });
   await page.clock.pauseAt(new Date(DEMO_NOW.getTime() + 1000));
   await page.goto(`/?${query}`);
-  const tab = page.getByRole('tab', { name: 'Analysis' });
-  if (await tab.count()) await tab.click();
+  // The shell renders after the first snapshot arrives, so wait for the tab instead of counting it once.
+  await page.getByRole('tab', { name: 'Analysis' }).click();
   await expect(page.getByRole('heading', { name: 'Analysis', level: 1 })).toBeVisible();
   await expect(page.getByRole('list', { name: 'Key figures' })).toBeVisible();
   return found;

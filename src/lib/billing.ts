@@ -5,7 +5,7 @@
 // cents only at the total shown. Currencies are never added together. The rounding difference goes
 // to the last rate in force that day, moving back to earlier buckets if it would go below zero.
 import { addDays, dayOf, startOfDay } from './tz';
-import type { Currency, Project, RateVersion, RoundMethod, RoundingVersion, Stamp } from './types';
+import type { Currency, PieceKind, Project, RateVersion, RoundMethod, RoundingVersion, Stamp } from './types';
 import { parseIso } from './tz';
 
 export const DEFAULT_INCREMENT_MINUTES = 15;
@@ -76,8 +76,9 @@ interface CompiledRate {
 export class RateBook {
   private byProject = new Map<string, CompiledRate[]>();
 
-  constructor(projects: readonly Pick<Project, 'id' | 'billable'>[], rates: readonly RateVersion[]) {
-    const billable = new Set(projects.filter((p) => p.billable).map((p) => p.id));
+  /** A project earns hourly money only when it is billable and hourly: a fixed-fee project earns its fee. */
+  constructor(projects: readonly (Pick<Project, 'id' | 'billable'> & { billingType?: Project['billingType'] })[], rates: readonly RateVersion[]) {
+    const billable = new Set(projects.filter((p) => p.billable && (p.billingType ?? 'hourly') === 'hourly').map((p) => p.id));
     for (const r of rates) {
       if (r.deleted || !isCurrency(r.currency) || !billable.has(r.projectId)) continue;
       const list = this.byProject.get(r.projectId) ?? [];
@@ -142,6 +143,10 @@ export interface TaskDay {
   day: string;
   firstStart: number;
   exactSecs: number;
+  /** Pauses marked as still working. Part of billable, never of exact. */
+  pauseSecs: number;
+  /** Away time marked as thinking. Part of exact and billable, reported separately. */
+  thinkingSecs: number;
   billableSecs: number;
   rule: Rule;
   /** Real time rounded down to nothing (Nearest or Down only). The row stays. */
@@ -156,6 +161,8 @@ export interface SpanLike {
   projectId: string;
   start: number;
   end: number;
+  /** Missing means work. */
+  kind?: PieceKind;
 }
 
 function nextMidnight(day: string, zone: string, cache: Map<string, number>): number {
@@ -177,11 +184,15 @@ function allocate(buckets: Bucket[], diff: number): void {
   }
 }
 
-/** One row per task per day in `zone`, in no particular order. */
+/**
+ * One row per task per day in `zone`, in no particular order. A billable pause adds to billable only:
+ * the row's exact time plus its pauses is rounded once. Thinking counts in exact like any work.
+ */
 export function taskDays(spans: readonly SpanLike[], zone: string, book: RateBook, rounding: readonly RoundingVersion[]): TaskDay[] {
   const midnight = new Map<string, number>();
-  const acc = new Map<string, { taskId: string; projectId: string; day: string; first: number; pieces: RatePiece[] }>();
+  const acc = new Map<string, { taskId: string; projectId: string; day: string; first: number | null; pause: number; thinking: number; pieces: (RatePiece & { pause: boolean })[] }>();
   for (const s of spans) {
+    const isPause = s.kind === 'billablePause';
     let cur = s.start;
     for (;;) {
       const day = dayOf(cur, zone);
@@ -190,11 +201,13 @@ export function taskDays(spans: readonly SpanLike[], zone: string, book: RateBoo
       const key = `${s.taskId}|${day}`;
       let row = acc.get(key);
       if (!row) {
-        row = { taskId: s.taskId, projectId: s.projectId, day, first: cur, pieces: [] };
+        row = { taskId: s.taskId, projectId: s.projectId, day, first: null, pause: 0, thinking: 0, pieces: [] };
         acc.set(key, row);
       }
-      row.first = Math.min(row.first, cur);
-      for (const p of book.split(s.projectId, cur, stop)) row.pieces.push(p);
+      if (!isPause) row.first = row.first === null ? cur : Math.min(row.first, cur);
+      if (isPause) row.pause += stop - cur;
+      else if (s.kind === 'thinking') row.thinking += stop - cur;
+      for (const p of book.split(s.projectId, cur, stop)) row.pieces.push({ ...p, pause: isPause });
       if (stop >= s.end) break;
       cur = stop;
     }
@@ -205,28 +218,32 @@ export function taskDays(spans: readonly SpanLike[], zone: string, book: RateBoo
     const buckets: Bucket[] = [];
     for (const p of row.pieces) {
       const secs = p.end - p.start;
+      const exact = p.pause ? 0 : secs;
       const last = buckets[buckets.length - 1];
       if (last && last.rateCents === p.rateCents && last.currency === p.currency) {
-        last.exactSecs += secs;
+        last.exactSecs += exact;
         last.billableSecs += secs;
       } else {
-        buckets.push({ rateCents: p.rateCents, currency: p.currency, exactSecs: secs, billableSecs: secs });
+        buckets.push({ rateCents: p.rateCents, currency: p.currency, exactSecs: exact, billableSecs: secs });
       }
     }
     const exactSecs = buckets.reduce((n, b) => n + b.exactSecs, 0);
+    const counted = exactSecs + row.pause;
     const rule = ruleFor(rounding, row.projectId, row.day);
-    const billableSecs = roundSeconds(exactSecs, rule.incrementMinutes, rule.method);
-    allocate(buckets, billableSecs - exactSecs);
+    const billableSecs = roundSeconds(counted, rule.incrementMinutes, rule.method);
+    allocate(buckets, billableSecs - counted);
     rows.push({
       taskId: row.taskId,
       projectId: row.projectId,
       day: row.day,
-      firstStart: row.first,
+      firstStart: row.first ?? 0,
       exactSecs,
+      pauseSecs: row.pause,
+      thinkingSecs: row.thinking,
       billableSecs,
       rule,
-      roundedToZero: exactSecs > 0 && billableSecs === 0,
-      zeroExact: exactSecs === 0,
+      roundedToZero: counted > 0 && billableSecs === 0,
+      zeroExact: counted === 0,
       buckets,
     });
   }

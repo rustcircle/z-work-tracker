@@ -114,6 +114,69 @@
         { "day": "2026-02-28", "exact": 1200, "billable": 1800, "amounts": {}, "exactAmounts": {} },
         { "day": "2026-03-01", "exact": 2400, "billable": 1800, "amounts": {}, "exactAmounts": {} }
       ]
+    },
+    {
+      "name": "billable pause adds to billable only, rounded once with exact",
+      "note": "Work 1200 s, pause 900 s: exact stays 1200 and pause 900. Counted 2100 rounds up once to 2700 (15 min up). 2700 s at 6000 c/h = 4500 c. Exact amount 1200 s = 2000 c.",
+      "zone": "UTC",
+      "rounding": [],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" }],
+      "segments": [["2026-02-02T09:00:00Z", "2026-02-02T09:20:00Z"]],
+      "pauses": [["2026-02-02T09:20:00Z", "2026-02-02T09:35:00Z"]],
+      "rows": [{ "day": "2026-02-02", "exact": 1200, "pause": 900, "billable": 2700, "amounts": { "EUR": 4500 }, "exactAmounts": { "EUR": 2000 } }]
+    },
+    {
+      "name": "work and pause round together, not one by one",
+      "note": "420 s work plus 420 s pause is 840 s, up to 900 s once. Rounded separately it would be 900 + 900 = 1800. 900 s at 6000 c/h = 1500 c. Exact 420 s = 700 c.",
+      "zone": "UTC",
+      "rounding": [],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" }],
+      "segments": [["2026-02-02T09:00:00Z", "2026-02-02T09:07:00Z"]],
+      "pauses": [["2026-02-02T09:07:00Z", "2026-02-02T09:14:00Z"]],
+      "rows": [{ "day": "2026-02-02", "exact": 420, "pause": 420, "billable": 900, "amounts": { "EUR": 1500 }, "exactAmounts": { "EUR": 700 } }]
+    },
+    {
+      "name": "a pause on a day with no work still earns",
+      "note": "No work on the day, only a 1800 s pause (exact multiple of 15 min). Exact 0, pause 1800, billable 1800 = 3000 c at 6000 c/h. Exact amount 0.",
+      "zone": "UTC",
+      "rounding": [],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" }],
+      "segments": [],
+      "pauses": [["2026-02-04T10:00:00Z", "2026-02-04T10:30:00Z"]],
+      "rows": [{ "day": "2026-02-04", "exact": 0, "pause": 1800, "billable": 1800, "amounts": { "EUR": 3000 }, "exactAmounts": { "EUR": 0 } }]
+    },
+    {
+      "name": "a pause across midnight splits into two days",
+      "note": "23:50 to 00:10 UTC is 600 s on each day. Each day's 600 s of pause rounds up to 900 s (15 min up) = 1500 c at 6000 c/h.",
+      "zone": "UTC",
+      "rounding": [],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" }],
+      "segments": [],
+      "pauses": [["2026-02-04T23:50:00Z", "2026-02-05T00:10:00Z"]],
+      "rows": [
+        { "day": "2026-02-04", "exact": 0, "pause": 600, "billable": 900, "amounts": { "EUR": 1500 }, "exactAmounts": { "EUR": 0 } },
+        { "day": "2026-02-05", "exact": 0, "pause": 600, "billable": 900, "amounts": { "EUR": 1500 }, "exactAmounts": { "EUR": 0 } }
+      ]
+    },
+    {
+      "name": "thinking counts in exact and billable like work",
+      "note": "Work 09:00-09:30 and thinking 09:30-10:00 on one task: exact 3600 (thinking is part of it), exact minutes (no rounding), billable 3600 = 6000 c at 6000 c/h.",
+      "zone": "UTC",
+      "rounding": [{ "from": "2000-01-01", "minutes": 0, "method": "nearest" }],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" }],
+      "segments": [["2026-02-02T09:00:00Z", "2026-02-02T09:30:00Z"]],
+      "thinking": [["2026-02-02T09:30:00Z", "2026-02-02T10:00:00Z"]],
+      "rows": [{ "day": "2026-02-02", "exact": 3600, "pause": 0, "billable": 3600, "amounts": { "EUR": 6000 }, "exactAmounts": { "EUR": 6000 } }]
+    },
+    {
+      "name": "fixed-fee project earns no hourly money but still rounds",
+      "note": "fixedFee: true makes the project earn its fee, not time at a rate, so no amounts. 60 s still rounds up to 900 s billable (hours for the effective rate).",
+      "zone": "UTC",
+      "fixedFee": true,
+      "rounding": [],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" }],
+      "segments": [["2026-02-02T09:00:00Z", "2026-02-02T09:01:00Z"]],
+      "rows": [{ "day": "2026-02-02", "exact": 60, "pause": 0, "billable": 900, "amounts": {}, "exactAmounts": {} }]
     }
   ]
 }

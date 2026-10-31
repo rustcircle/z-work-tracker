@@ -67,3 +67,34 @@
 .chain { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: var(--text-muted); }
 .chain .link { font-size: 12.5px; }
 .chain-entry { margin-top: 2px; }
+
+/* Kinds of time. Work and thinking are solid in the project's colour; a billable pause and time away are
+   outlines in it. Each has its own pattern and border so no kind depends on colour alone. */
+.k-thinking { background-image: radial-gradient(circle, color-mix(in srgb, var(--bg) 55%, transparent) 1.2px, transparent 1.6px); background-size: 7px 7px; }
+.k-billablePause { background-color: transparent; border: 2px solid var(--border-strong); color: var(--text); background-image: repeating-linear-gradient(45deg, color-mix(in srgb, var(--text) 24%, transparent) 0 3px, transparent 3px 8px); }
+.k-pending { background-color: transparent; border: 2px dashed var(--border-strong); color: var(--text); background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--text) 14%, transparent) 0 2px, transparent 2px 6px); }
+.k-dropped { background-color: transparent; border: 2px dotted var(--border-strong); color: var(--text-muted); background-image: repeating-linear-gradient(0deg, color-mix(in srgb, var(--text) 10%, transparent) 0 1px, transparent 1px 5px); }
+.k-dropped .block-text { text-decoration: line-through; }
+.block.k-billablePause, .block.k-pending, .block.k-dropped { box-shadow: none; }
+.block-flag { position: absolute; top: -7px; right: -5px; min-width: 14px; height: 14px; padding: 0 2px; display: grid; place-items: center; border-radius: 7px; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); font-size: 10px; line-height: 1; font-weight: 700; pointer-events: none; }
+.mark-manual { outline: 1px dashed var(--text-muted); outline-offset: 1px; }
+.mark-corrected { outline: 1px solid var(--text-muted); outline-offset: 1px; }
+.block.mark-manual:focus-visible, .block.mark-corrected:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.legend { padding: 8px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.legend ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 12.5px; }
+.legend li { display: inline-flex; align-items: center; gap: 8px; }
+.legend-swatch { flex: none; display: inline-block; width: 26px; height: 14px; border-radius: 3px; background-color: var(--accent); box-sizing: border-box; }
+.legend-swatch.k-billablePause, .legend-swatch.k-pending, .legend-swatch.k-dropped { background-color: transparent; }
+.legend-flag { flex: none; min-width: 16px; height: 16px; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--border-strong); font-size: 11px; font-weight: 700; background: var(--surface); }
+
+.day-totals .day-includes { font-size: 12px; font-weight: 400; margin: 0; }
+.day-unconfirmed { display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 10px; font-size: 13px; background: color-mix(in srgb, var(--warning) 12%, var(--surface)); border-left: 4px solid var(--warning); border-radius: 4px; }
+.day-unconfirmed .icon { flex: none; color: var(--warning); }
+.day-unconfirmed span { flex: 1; }
+.entry-note { margin: 2px 0 0; font-size: 12.5px; }
+.raw-note { color: var(--text); font-style: italic; }
+.entries td.not-counted { color: var(--text-muted); text-decoration: line-through; }
+.fixed-fee { font-size: 13px; }
+.voided { font-size: 13px; }
+.voided h4 { margin: 4px 0; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }

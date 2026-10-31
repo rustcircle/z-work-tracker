@@ -1,7 +1,7 @@
 // Which tab is showing, and a way for any component to jump to a project's editor.
 import { createContext, useContext } from 'react';
 
-export type TabId = 'timeline' | 'analysis' | 'projects' | 'settings';
+export type TabId = 'timeline' | 'analysis' | 'billing' | 'projects' | 'settings';
 
 export interface Nav {
   tab: TabId;

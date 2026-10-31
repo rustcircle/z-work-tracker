@@ -1,16 +1,17 @@
 import { memo, useMemo, type ReactNode } from 'react';
 
-import type { RateBook } from '../../lib/billing';
+import { MASK, money as formatMoney, type RateBook } from '../../lib/billing';
 import { BANDS } from '../../lib/split';
 import { windowsFor, type ShiftWindow } from '../../lib/shifts';
-import { cityOf, dayBounds, dayOf, gapText, humanSpan, shiftText, shiftsBetween, zoneLabel } from '../../lib/tz';
-import type { Project, ShiftVersion, Task } from '../../lib/types';
-import { Axis } from './Axis';
+import { cityOf, dayBounds, dayOf, gapText, humanSpan, parseIso, shiftText, shiftsBetween, zoneLabel } from '../../lib/tz';
+import type { Project, RawSegment, ShiftVersion, Task } from '../../lib/types';
+import { Axis, KIND_WORD, MARK_WORD } from './Axis';
 import { repeatedPass } from './axisGeometry';
 import { amountText, clock, clockWithAbbr, dayLabel, formatDuration, formatHMS, hasAmount, relativeDay, shortDay } from '../../components/format';
-import { IconEdit } from '../../components/icons';
+import { IconEdit, IconWarn } from '../../components/icons';
 import { Badge, IconButton, ProjectChip } from '../../components/ui';
-import { blocksOf, entriesOf, overlapSecs, projectTotals, totalsOf, workWindows, type Block, type DayData, type Entry } from './model';
+import { openAway } from '../away/awayStore';
+import { blocksOf, differs, entriesOf, isAway, kindOf, overlapSecs, projectTotals, totalsOf, workWindows, type Block, type DayData, type Entry, type SegKind } from './model';
 
 const BAND_HOURS = ['00–06', '06–12', '12–18', '18–24'] as const;
 
@@ -34,6 +35,46 @@ export interface DayCardProps {
   chain: ReadonlyMap<string, readonly Task[]>;
   /** Bring a task into view in the rail, and open its editor if asked. */
   onOpenTask: (taskId: string, edit: boolean) => void;
+  /** Corrected and hand-entered segments by recorded id. */
+  marks: ReadonlyMap<string, RawSegment>;
+  /** Voided segments by the day they were recorded on. */
+  voided: ReadonlyMap<string, readonly RawSegment[]>;
+  /** Notes of billable pauses, by the pause's id. */
+  pauseNotes: ReadonlyMap<string, string>;
+}
+
+/** "09:00 to 11:20", with the dates where the span leaves `refDay`. Words, for sentences about raw time. */
+export function spanWords(start: number, end: number | null, zone: string, refDay: string): string {
+  if (end === null) return `${clock(start, zone)} (still running)`;
+  const sd = dayOf(start, zone);
+  const ed = dayOf(Math.max(start, end - 1), zone);
+  const a = clock(start, zone);
+  const b = clock(end, zone);
+  if (sd === ed) return `${sd !== refDay ? `${shortDay(sd)} ` : ''}${a} to ${b}`;
+  return `${shortDay(sd)} ${a} to ${shortDay(ed)} ${b}`;
+}
+
+/** A fixed-fee project's fee as text, masked while earnings are hidden; empty if it has none. */
+export function feeText(proj: Project | undefined, hide: boolean): string {
+  if (!proj || proj.fixedFeeCents === null || proj.feeCurrency === null) return '';
+  return hide ? MASK : formatMoney(proj.feeCurrency, proj.fixedFeeCents);
+}
+
+const secs = (iso: string | null): number | null => (iso === null ? null : parseIso(iso));
+
+/** Logged time the client's working hours are compared with: not time away, not a billable pause. */
+const countsAsWorked = (k: SegKind): boolean => !isAway(k) && k !== 'billablePause';
+
+/** "Recorded 09:00 to 11:20, corrected to 09:00 to 11:05", or for hand-entered time what was typed. */
+export function rawNote(raw: RawSegment, zone: string, refDay: string): string {
+  const rawStart = parseIso(raw.rawStart);
+  const recorded = spanWords(rawStart, secs(raw.rawEnd), zone, refDay);
+  const now = spanWords(parseIso(raw.start), secs(raw.end), zone, refDay);
+  // The backend keeps the reason typed with a hand-entered segment in the history of changes only.
+  const why = raw.reason ? ` Reason: ${raw.reason}` : raw.manual && !raw.corrected ? ' The reason is in the history of changes.' : '';
+  if (raw.manual && !raw.corrected) return `Added by hand, ${recorded}.${why}`;
+  if (raw.manual) return `Added by hand, ${recorded}, corrected to ${now}.${why}`;
+  return `Recorded ${recorded}, corrected to ${now}.${why}`;
 }
 
 /** "14:00–16:30", with a date prefix where the zone's date differs from the card's date. */
@@ -95,9 +136,10 @@ function DayCardImpl(p: DayCardProps) {
     const markers = shiftsBetween(start, end, zone);
     const clientMarkers = client ? shiftsBetween(start, end, client) : [];
     const work = client ? workWindows(start, end, client, p.clientWork.start, p.clientWork.end) : [];
-    const overlap = client ? overlapSecs(data.pieces, work) : 0;
+    const overlap = client ? overlapSecs(data.pieces.filter((x) => countsAsWorked(kindOf(x.seg))), work) : 0;
+    const pendingSecs = entries.filter((e) => e.kind === 'pending').reduce((n, e) => n + e.end - e.start, 0);
     const bands = BANDS.map((name, i) => ({ name, hours: BAND_HOURS[i] as string, entries: entries.filter((e) => e.band === i) })).filter((b) => b.entries.length > 0);
-    return { blocks, lanes, windows, entries, totals, perProject, markers, clientMarkers, work, overlap, bands };
+    return { blocks, lanes, windows, entries, totals, perProject, markers, clientMarkers, work, overlap, bands, pendingSecs };
   }, [data, p.shifts, p.book, p.clientWork.start, p.clientWork.end, start, end, zone, client]);
 
   const zoneFor = (projectId: string): string | null => (client ? (p.projects.get(projectId)?.clientZone ?? client) : null);
@@ -108,7 +150,18 @@ function DayCardImpl(p: DayCardProps) {
     return cz ? `${own} / ${rangeText(s, e, cz, day, false)} ${cityOf(cz)}` : own;
   };
 
-  const labelOf = (b: Block): string => `${taskName(b.taskId)}, ${p.projects.get(b.projectId)?.name ?? 'No project'}, ${rangeText(b.start, b.end, zone, day, long)}, ${formatDuration(b.end - b.start)}`;
+  const kindPhrase: Record<SegKind, string> = {
+    work: '',
+    thinking: ', thinking time',
+    billablePause: ', billable pause, billed but not worked',
+    pending: ', unconfirmed time away, not counted until you confirm',
+    dropped: ', dropped time away, not counted',
+  };
+  const markPhrase = (b: Block): string => {
+    const raw = p.marks.get(b.segmentId);
+    return raw ? `, ${rawNote(raw, zone, day).toLowerCase().replace(/\.$/, '')}` : '';
+  };
+  const labelOf = (b: Block): string => `${taskName(b.taskId)}, ${p.projects.get(b.projectId)?.name ?? 'No project'}, ${rangeText(b.start, b.end, zone, day, long)}, ${formatDuration(b.end - b.start)}${kindPhrase[b.kind]}${markPhrase(b)}`;
 
   const tipOf = (b: Block): ReactNode => {
     const proj = p.projects.get(b.projectId);
@@ -116,6 +169,7 @@ function DayCardImpl(p: DayCardProps) {
     const nums = e.reduce<Entry['numerators']>((acc, x) => ({ EUR: (acc.EUR ?? 0) + (x.numerators.EUR ?? 0), USD: (acc.USD ?? 0) + (x.numerators.USD ?? 0) }), {});
     const clean = { ...(nums.EUR ? { EUR: nums.EUR } : {}), ...(nums.USD ? { USD: nums.USD } : {}) };
     const cz = zoneFor(b.projectId);
+    const raw = p.marks.get(b.segmentId);
     return (
       <>
         <strong>{taskName(b.taskId)}</strong>
@@ -129,10 +183,24 @@ function DayCardImpl(p: DayCardProps) {
           </span>
         )}
         <span className="tabular" title={formatHMS(b.end - b.start)}>
-          Exact duration {formatDuration(b.end - b.start)}
+          {b.kind === 'work' || b.kind === 'thinking' ? 'Exact duration' : 'Duration'} {formatDuration(b.end - b.start)}
           {b.live ? ' (running)' : ''}
         </span>
-        {hasAmount(clean) ? <span className="tabular">Exact earnings {amountText(clean, p.hide)}</span> : proj?.billable ? <span>No rate set</span> : <span>Non-billable</span>}
+        {b.kind === 'thinking' && <span>Thinking time: counts in Exact and Billable.</span>}
+        {b.kind === 'billablePause' && <span>Billable pause: counts in Billable, not in Exact.</span>}
+        {b.kind === 'pending' && <span>Unconfirmed: not counted until you confirm.</span>}
+        {b.kind === 'dropped' && <span>Dropped: not counted.</span>}
+        {b.gapKind && <span>{b.gapKind === 'sleep' ? 'The computer was asleep' : 'No activity'}</span>}
+        {raw && <span>{rawNote(raw, zone, day)}</span>}
+        {isAway(b.kind) ? null : hasAmount(clean) ? (
+          <span className="tabular">{b.kind === 'billablePause' ? 'Billable earnings' : 'Exact earnings'} {amountText(clean, p.hide)}</span>
+        ) : !proj?.billable ? (
+          <span>Non-billable</span>
+        ) : proj.billingType === 'fixedFee' ? (
+          <span>Fixed fee{feeText(proj, p.hide) && ` ${feeText(proj, p.hide)}`}</span>
+        ) : (
+          <span>No rate set</span>
+        )}
       </>
     );
   };
@@ -142,7 +210,9 @@ function DayCardImpl(p: DayCardProps) {
   const t = view.totals;
   const money = amountText(t.billable, p.hide);
   const exactMoney = amountText(t.exact, p.hide);
+  const split = differs(t);
   const isToday = day === p.today;
+  const voidedToday = p.voided.get(day) ?? [];
 
   return (
     <article className="day" aria-label={dayLabel(day)} data-day={day}>
@@ -156,13 +226,23 @@ function DayCardImpl(p: DayCardProps) {
         </div>
         <dl className="day-totals">
           <div className="day-total-primary">
-            <dt>{t.rounded ? 'Billable' : 'Total'}</dt>
+            <dt>{split ? 'Billable' : 'Total'}</dt>
             <dd className="tabular" data-testid="day-billable">
               {formatDuration(t.billableSecs)}
               {money && <span className="day-money"> {money}</span>}
             </dd>
+            {t.pauseSecs > 0 && (
+              <dd className="day-includes muted" data-testid="day-pause">
+                includes {formatDuration(t.pauseSecs)} billable pauses
+              </dd>
+            )}
+            {t.thinkingSecs > 0 && (
+              <dd className="day-includes muted" data-testid="day-thinking">
+                includes {formatDuration(t.thinkingSecs)} thinking
+              </dd>
+            )}
           </div>
-          {t.rounded && (
+          {split && (
             <div>
               <dt>Exact</dt>
               <dd className="tabular" title={formatHMS(t.exactSecs)} data-testid="day-exact">
@@ -184,17 +264,22 @@ function DayCardImpl(p: DayCardProps) {
                 {proj ? <ProjectChip name={proj.name} color={proj.color} archived={proj.archived} /> : <Badge>Unknown project</Badge>}
                 <span className="tabular">
                   {formatDuration(pt.billableSecs)}
-                  {t.rounded && <span className="muted"> billable</span>}
+                  {split && <span className="muted"> billable</span>}
                 </span>
-                {t.rounded && (
+                {split && (
                   <span className="muted tabular" title={formatHMS(pt.exactSecs)}>
                     {formatDuration(pt.exactSecs)} exact
                   </span>
                 )}
+                {pt.pauseSecs > 0 && <span className="muted tabular">includes {formatDuration(pt.pauseSecs)} billable pauses</span>}
                 {amt ? (
                   <span className="tabular">{amt}</span>
                 ) : proj && !proj.billable ? (
                   <span className="muted">Non-billable</span>
+                ) : proj?.billingType === 'fixedFee' ? (
+                  <span className="fixed-fee" data-testid="fixed-fee">
+                    Fixed fee{feeText(proj, p.hide) && <strong className="tabular"> {feeText(proj, p.hide)}</strong>}
+                  </span>
                 ) : (
                   <span className="no-rate">
                     No rate set{' '}
@@ -207,6 +292,18 @@ function DayCardImpl(p: DayCardProps) {
             );
           })}
         </ul>
+      )}
+
+      {view.pendingSecs > 0 && (
+        <p className="day-unconfirmed" data-testid="day-unconfirmed">
+          <IconWarn />
+          <span>
+            <strong>Unconfirmed: not counted until you confirm.</strong> {formatDuration(view.pendingSecs)} of time away on this day is waiting for your answer.
+          </span>
+          <button type="button" className="link" onClick={openAway}>
+            Review time away
+          </button>
+        </p>
       )}
 
       <div className="axes">
@@ -226,6 +323,7 @@ function DayCardImpl(p: DayCardProps) {
           tipOf={tipOf}
           windowTitle={windowTitle}
           refDay={day}
+          marks={p.marks}
         />
         {client && (
           <>
@@ -277,7 +375,7 @@ function DayCardImpl(p: DayCardProps) {
       </div>
 
       <table className="entries">
-        <caption className="visually-hidden">Entries for {dayLabel(day)}, grouped by time of day. Durations and earnings are exact.</caption>
+        <caption className="visually-hidden">Entries for {dayLabel(day)}, grouped by time of day. Durations and earnings are exact. Time away that is unconfirmed or dropped is listed but counts nowhere.</caption>
         <thead>
           <tr>
             <th scope="col">Time{client ? ` (${cityOf(zone)} / ${cityOf(client)})` : ''}</th>
@@ -297,28 +395,65 @@ function DayCardImpl(p: DayCardProps) {
             {b.entries.map((e) => {
               const proj = p.projects.get(e.projectId);
               const amt = amountText(e.numerators, p.hide);
+              const raw = p.marks.get(e.segmentId);
+              const away = isAway(e.kind);
+              const fixed = proj?.billable && proj.billingType === 'fixedFee';
               return (
-                <tr key={e.key} data-testid="entry">
+                <tr key={e.key} data-testid="entry" data-kind={e.kind}>
                   <td className="tabular">{bothTimes(e.start, e.end, e.projectId, long)}</td>
                   <td>
                     <div className="entry-task">
                       <span>{taskName(e.taskId)}</span>
                       {e.live && <Badge tone="success">Running</Badge>}
-                      <IconButton label={`Edit task ${taskName(e.taskId)}`} icon={<IconEdit />} className="entry-edit" onClick={() => p.onOpenTask(e.taskId, true)} />
+                      {e.kind !== 'work' && <Badge tone={e.kind === 'pending' ? 'warning' : e.kind === 'dropped' ? 'danger' : 'accent'}>{KIND_WORD[e.kind]}</Badge>}
+                      {raw?.corrected && <Badge tone="neutral">{MARK_WORD.corrected}</Badge>}
+                      {raw?.manual && <Badge tone="neutral">{MARK_WORD.manual}</Badge>}
+                      {!away && <IconButton label={`Edit task ${taskName(e.taskId)}`} icon={<IconEdit />} className="entry-edit" onClick={() => p.onOpenTask(e.taskId, true)} />}
                     </div>
+                    {e.kind === 'thinking' && <p className="entry-note muted">Time away marked as thinking. Counts in Exact and Billable.</p>}
+                    {e.kind === 'billablePause' && (
+                      <p className="entry-note muted">
+                        Billable pause{p.pauseNotes.get(e.segmentId) ? `: ${p.pauseNotes.get(e.segmentId)}` : ''}. Billed, not worked: counts in Billable only.
+                      </p>
+                    )}
+                    {e.kind === 'pending' && (
+                      <p className="entry-note">
+                        Unconfirmed: not counted until you confirm. {e.gapKind === 'sleep' ? 'The computer was asleep.' : 'No activity.'}{' '}
+                        <button type="button" className="link" onClick={openAway}>
+                          Decide
+                        </button>
+                      </p>
+                    )}
+                    {e.kind === 'dropped' && <p className="entry-note muted">Dropped: removed from your time. {e.gapKind === 'sleep' ? 'The computer was asleep.' : 'No activity.'}</p>}
+                    {raw && <p className="entry-note raw-note">{rawNote(raw, zone, day)}</p>}
                     <ChainLinks task={p.tasks.get(e.taskId)} tasks={p.tasks} chain={p.chain} onOpenTask={p.onOpenTask} />
                   </td>
                   <td>{proj ? <ProjectChip name={proj.name} color={proj.color} archived={proj.archived} /> : '—'}</td>
-                  <td className="num tabular" title={formatHMS(e.end - e.start)}>
+                  <td className={`num tabular ${away ? 'not-counted' : ''}`} title={away ? `${formatHMS(e.end - e.start)}, not counted` : formatHMS(e.end - e.start)}>
                     {formatDuration(e.end - e.start)}
                   </td>
-                  <td className="num tabular">{amt || <span className="muted" title={proj?.billable ? 'No rate set for this project' : 'Non-billable'}>—</span>}</td>
+                  <td className="num tabular">
+                    {amt || <span className="muted" title={away ? 'Not counted' : fixed ? 'Fixed fee' : proj?.billable ? 'No rate set for this project' : 'Non-billable'}>—</span>}
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         ))}
       </table>
+
+      {voidedToday.length > 0 && (
+        <section className="voided" aria-label="Voided time" data-testid="voided">
+          <h4>Voided time</h4>
+          <ul className="plain-list">
+            {voidedToday.map((r) => (
+              <li key={r.id}>
+                <strong>{taskName(r.taskId)}</strong>: recorded {spanWords(parseIso(r.rawStart), secs(r.rawEnd), zone, day)}, voided and not counted.{r.reason ? ` Reason: ${r.reason}` : ''}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </article>
   );
 }

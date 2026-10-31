@@ -1,0 +1,72 @@
+/* Billing tab, device prefix and PDF export. Theme tokens only; no colour is hard-coded. */
+.billing .page-card { gap: 12px; }
+.bl-guidance { display: flex; align-items: center; gap: 10px; margin: 0; padding: 10px 14px; border: 2px solid var(--warning); border-radius: var(--radius); background: color-mix(in srgb, var(--warning) 10%, var(--surface)); color: var(--text); font-size: 15px; }
+.bl-guidance .icon { color: var(--warning); flex: none; }
+.bl-guidance-compact { padding: 0; border: 0; background: none; font-size: 13px; }
+.bl-guidance-compact .icon { width: 16px; height: 16px; }
+.bl-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.bl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.bl-period { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bl-period legend { padding: 0; margin-bottom: 4px; font-size: 13px; font-weight: 600; }
+.bl-period-label { min-width: 150px; text-align: center; font-size: 15px; }
+.bl-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.bl-inline .input { width: auto; }
+.bl-hint { margin: 0; font-size: 13px; color: var(--text-muted); }
+.bl-result { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.bl-empty { margin: 0; padding: 14px 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius); color: var(--text-muted); }
+.bl-notice { margin: 0; padding: 8px 12px; border: 1px solid var(--border-strong); border-left: 4px solid var(--warning); border-radius: var(--radius-sm); background: var(--surface-alt); }
+.bl-error { margin: 0; padding: 8px 12px; border: 1px solid var(--danger); border-radius: var(--radius-sm); color: var(--danger); font-weight: 600; }
+.bl-created { margin: 0; padding: 8px 12px; border: 1px solid var(--success); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--success) 10%, var(--surface)); }
+.bl-created:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.bl-total { margin: 0; font-size: 15px; }
+.bl-flash { font-size: 13px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
+.bl-flash .icon { color: var(--success); }
+.bl-copy-box { flex-basis: 100%; font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace; font-size: 12.5px; }
+
+.bl-table-wrap { overflow-x: auto; }
+.bl-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.bl-table th, .bl-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.bl-table thead th { font-size: 12.5px; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border-strong); }
+.bl-table tfoot th, .bl-table tfoot td { border-top: 2px solid var(--border-strong); border-bottom: 0; font-weight: 700; }
+.bl-table .num { text-align: right; white-space: nowrap; }
+.bl-note { display: block; font-size: 12px; font-weight: 400; color: var(--text-muted); }
+.bl-note-inline { color: var(--text-muted); }
+
+.bl-summaries { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.bl-summary { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.bl-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.bl-summary.voided { background: var(--surface-alt); }
+.bl-summary.voided .bl-ref { text-decoration: line-through; }
+.bl-summary-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.bl-ref { font-size: 16px; margin: 0; font-variant-numeric: tabular-nums; }
+.bl-figures { margin: 0; }
+.bl-details summary { cursor: pointer; color: var(--text-muted); font-size: 13px; }
+
+.bl-tags { margin: 0; padding: 0; border: 0; min-width: 0; }
+.bl-tags legend { padding: 0; margin-bottom: 6px; font-size: 13px; font-weight: 600; }
+.bl-tag-list { display: flex; flex-wrap: wrap; gap: 6px 8px; }
+.bl-tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--border-strong); border-radius: 999px; cursor: pointer; background: var(--surface); }
+.bl-tag.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); font-weight: 600; }
+.bl-tag input { accent-color: var(--accent); }
+.bl-quote { display: flex; flex-direction: column; gap: 10px; }
+.bl-estimate { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-alt); }
+.bl-estimate-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.bl-estimate p { margin: 0; }
+.bl-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 20px; margin: 0; }
+.bl-figs div { display: flex; flex-direction: column; gap: 2px; }
+.bl-figs dt { font-size: 12.5px; color: var(--text-muted); }
+.bl-figs dd { margin: 0; font-size: 16px; font-weight: 600; }
+.bl-comparables { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.bl-comparable { display: grid; grid-template-columns: minmax(140px, 2fr) minmax(90px, 1fr) 90px minmax(160px, 2fr); gap: 4px 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.bl-comparable:last-child { border-bottom: 0; }
+.bl-comparable-name { font-weight: 600; }
+.bl-comparable-hours { font-weight: 600; text-align: right; }
+
+.bl-prefix-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; }
+.bl-prefix-input { width: 8ch; text-transform: uppercase; font-variant-numeric: tabular-nums; letter-spacing: 0.05em; }
+.bl-clash { margin: 0; padding: 10px 14px; border: 2px solid var(--warning); border-radius: var(--radius); background: color-mix(in srgb, var(--warning) 10%, var(--surface)); }
+.bl-clash ul { margin: 6px 0 0; padding-left: 20px; }
+
+.pdf-fields { display: flex; flex-direction: column; gap: 12px; }
+.pdf-logo { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.pdf-note { margin: 0; padding: 8px 12px; border: 1px solid var(--border-strong); border-left: 4px solid var(--warning); border-radius: var(--radius-sm); background: var(--surface-alt); font-size: 13px; }

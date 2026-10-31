@@ -8,7 +8,7 @@ import { RateBook, taskDays, type TaskDay } from '../../lib/billing';
 import { attributeSpan, windowsFor, type ShiftWindow } from '../../lib/shifts';
 import { toSegs, type BandIndex, type Seg } from '../../lib/split';
 import { addDays, hhmmToMinutes, instantOfWall, isZone, offsetAt, startOfDay, weekdayOf } from '../../lib/tz';
-import type { Segment, Snapshot } from '../../lib/types';
+import type { PieceKind, Snapshot } from '../../lib/types';
 import { dayNum, dayStr, periodOf, previousRange, weekdayIndex, type Period, type RangeSpec } from './range';
 
 export const OUTSIDE = '__outside';
@@ -21,9 +21,12 @@ export interface Filters {
   band: BandIndex | null;
   /** A shift id, or OUTSIDE for time in no shift window. */
   shiftKey: string | null;
+  /** Empty means every task. Otherwise whole tasks that carry at least one of these tags. */
+  tagIds: readonly string[];
 }
 
-export const NO_FILTERS: Filters = { projectIds: [], taskIds: [], band: null, shiftKey: null };
+export const NO_FILTERS: Filters = { projectIds: [], taskIds: [], band: null, shiftKey: null, tagIds: [] };
+/** Band and shift filters cut sessions at the edge; project, task and tag filters keep whole tasks. */
 export const hasTimeFilter = (f: Filters): boolean => f.band !== null || f.shiftKey !== null;
 
 export interface Params {
@@ -45,6 +48,8 @@ export interface SpanRec {
   live: boolean;
   /** Local day number of `start` in the analysis zone. */
   day: number;
+  /** Work, thinking or a billable pause. Pauses are never worked time; they live only in the task-day rows. */
+  kind: PieceKind;
 }
 
 export interface Gap {
@@ -104,6 +109,8 @@ export interface Additive {
 }
 
 export interface Env {
+  /** Ids of the tasks that pass the tag filter, or null when there is none. */
+  tagTasks: ReadonlySet<string> | null;
   zone: string;
   myZone: string;
   clientZone: string | null;
@@ -223,25 +230,74 @@ export function clockFor(zone: string): DayClock {
 
 // ---------------------------------------------------------------- spans
 
-const segCache = new WeakMap<Snapshot, { closed: Seg[]; all: Seg[]; live: Segment[] }>();
+/** A piece of counted time. Adjacent pieces of one recorded segment and kind are joined into one stretch. */
+export interface KSeg extends Seg {
+  kind: PieceKind;
+}
 
-function segsOf(snapshot: Snapshot) {
+interface SegCache {
+  /** Every stretch, billable pauses included. */
+  all: KSeg[];
+  /** Worked stretches (work and thinking), billable pauses left out. */
+  work: KSeg[];
+  closedWork: KSeg[];
+  /** Closed stretches of every kind: the input of the task-day rows. */
+  closed: KSeg[];
+  /** Stretches running on this device; their end is `start` until `liveSegs` ticks them. */
+  live: KSeg[];
+}
+
+const segCache = new WeakMap<Snapshot, SegCache>();
+
+/**
+ * The snapshot's pieces as stretches. A subtask switch splits one recorded segment into several
+ * adjacent pieces; they are joined back so a session stays one session. A piece without `kind` is work.
+ */
+function stretchesOf(snapshot: Snapshot): KSeg[] {
+  const raw = new Map(snapshot.segments.map((p) => [p.id, p]));
+  const groups = new Map<string, KSeg[]>();
+  for (const s of toSegs(snapshot, 0)) {
+    const piece = raw.get(s.id);
+    const kind: PieceKind = piece?.kind ?? 'work';
+    const key = `${s.taskId}\u0000${piece?.segmentId ?? s.id}\u0000${kind}`;
+    const list = groups.get(key);
+    const k: KSeg = { ...s, kind };
+    if (list) list.push(k);
+    else groups.set(key, [k]);
+  }
+  const out: KSeg[] = [];
+  for (const list of groups.values()) {
+    list.sort((a, b) => a.start - b.start || a.end - b.end);
+    let cur = list[0] as KSeg;
+    for (let i = 1; i < list.length; i += 1) {
+      const next = list[i] as KSeg;
+      if (!cur.live && !cur.remoteOpen && next.start === cur.end) cur = { ...cur, end: next.end, live: next.live, remoteOpen: next.remoteOpen };
+      else {
+        out.push(cur);
+        cur = next;
+      }
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
+function segsOf(snapshot: Snapshot): SegCache {
   let c = segCache.get(snapshot);
   if (!c) {
-    const all = toSegs(snapshot, 0);
-    const known = new Set(snapshot.tasks.map((t) => t.id));
-    c = {
-      all,
-      closed: all.filter((s) => !s.live),
-      live: snapshot.segments.filter((s) => s.end === null && s.provisionalEnd === null && known.has(s.taskId)),
-    };
+    const all = stretchesOf(snapshot);
+    const work = all.filter((s) => s.kind !== 'billablePause');
+    c = { all, work, closedWork: work.filter((s) => !s.live), closed: all.filter((s) => !s.live), live: all.filter((s) => s.live) };
     segCache.set(snapshot, c);
   }
   return c;
 }
 
-export const closedSegs = (snapshot: Snapshot): Seg[] => segsOf(snapshot).closed;
-export const liveSegs = (snapshot: Snapshot, nowSec: number): Seg[] => toSegs({ segments: segsOf(snapshot).live, tasks: snapshot.tasks }, nowSec);
+/** Closed worked stretches (work and thinking): what Exact time, sessions and focus are made of. */
+export const closedSegs = (snapshot: Snapshot): KSeg[] => segsOf(snapshot).closedWork;
+/** Closed stretches of every kind, billable pauses included: what Billable and earnings are made of. */
+export const closedPieces = (snapshot: Snapshot): KSeg[] => segsOf(snapshot).closed;
+export const liveSegs = (snapshot: Snapshot, nowSec: number): KSeg[] => segsOf(snapshot).live.map((s) => ({ ...s, end: Math.max(nowSec, s.start) }));
 
 function sortSpans(out: SpanRec[]): SpanRec[] {
   for (let i = 1; i < out.length; i += 1) {
@@ -269,7 +325,7 @@ function windowsNear(windows: readonly ShiftWindow[], maxWindow: number, start: 
 }
 
 /** Segments clipped to `[from, to)` with the project, task, band and shift filters applied. */
-export function buildSpans(segs: readonly Seg[], from: number, to: number, env: Pick<Env, 'filters' | 'zone' | 'windows' | 'maxWindow'>): SpanRec[] {
+export function buildSpans(segs: readonly KSeg[], from: number, to: number, env: Pick<Env, 'filters' | 'zone' | 'windows' | 'maxWindow' | 'tagTasks'>): SpanRec[] {
   const f = env.filters;
   const proj = f.projectIds.length ? new Set(f.projectIds) : null;
   const task = f.taskIds.length ? new Set(f.taskIds) : null;
@@ -278,11 +334,12 @@ export function buildSpans(segs: readonly Seg[], from: number, to: number, env: 
   for (const s of segs) {
     if (proj && !proj.has(s.projectId)) continue;
     if (task && !task.has(s.taskId)) continue;
+    if (env.tagTasks && !env.tagTasks.has(s.taskId)) continue;
     const a = Math.max(s.start, from);
     const b = Math.min(s.end, to);
     if (b <= a) continue;
     if (!timeFilter) {
-      out.push({ taskId: s.taskId, projectId: s.projectId, start: a, end: b, os: s.start, oe: s.end, live: s.live, day: dayOfInstant(a, env.zone) });
+      out.push({ taskId: s.taskId, projectId: s.projectId, start: a, end: b, os: s.start, oe: s.end, live: s.live, day: dayOfInstant(a, env.zone), kind: s.kind });
       continue;
     }
     let parts: [number, number][] = [[a, b]];
@@ -311,7 +368,7 @@ export function buildSpans(segs: readonly Seg[], from: number, to: number, env: 
       }
       parts = next;
     }
-    for (const [x, y] of parts) out.push({ taskId: s.taskId, projectId: s.projectId, start: x, end: y, os: x, oe: y, live: s.live, day: dayOfInstant(x, env.zone) });
+    for (const [x, y] of parts) out.push({ taskId: s.taskId, projectId: s.projectId, start: x, end: y, os: x, oe: y, live: s.live, day: dayOfInstant(x, env.zone), kind: s.kind });
   }
   return sortSpans(out);
 }
@@ -597,8 +654,8 @@ function mergeAdditive(a: Additive, b: Additive): Additive {
  * every gap; `gapsFor` keeps only those that begin and end on one calendar day in the viewing zone.
  */
 export function pauseGaps(snapshot: Snapshot): Gap[] {
-  const byTask = new Map<string, Seg[]>();
-  for (const s of segsOf(snapshot).all) {
+  const byTask = new Map<string, KSeg[]>();
+  for (const s of segsOf(snapshot).work) {
     const list = byTask.get(s.taskId);
     if (list) list.push(s);
     else byTask.set(s.taskId, [s]);
@@ -635,6 +692,7 @@ function gapsFor(snapshot: Snapshot, env: Env): Gap[] {
     if (dayOfInstant(g.start, env.zone) !== dayOfInstant(g.end - 1, env.zone)) continue;
     if (proj && !proj.has(g.projectId)) continue;
     if (task && !task.has(g.taskId)) continue;
+    if (env.tagTasks && !env.tagTasks.has(g.taskId)) continue;
     if (f.band !== null) {
       let hour = 0;
       walkHours(g.start, g.start + 1, env.zone, (_s, _e, _d, h) => (hour = h));
@@ -669,7 +727,9 @@ function extWindow(period: Period, zone: string): { from: number; to: number } {
 function makeEnv(snapshot: Snapshot, params: Params, period: Period, full: boolean, my: string, client: string | null): Env {
   const ext = full ? extWindow(period, params.zone) : { from: period.from, to: period.to };
   const windows = windowsFor(snapshot.shifts, ext.from, ext.to);
+  const tags = new Set(params.filters.tagIds);
   return {
+    tagTasks: tags.size > 0 ? new Set(snapshot.tasks.filter((t) => t.tags.some((id) => tags.has(id))).map((t) => t.id)) : null,
     zone: params.zone,
     myZone: my,
     clientZone: client,
@@ -698,9 +758,14 @@ function groupBy<T extends { taskId: string }>(items: readonly T[]): Map<string,
 
 function prepareBase(snapshot: Snapshot, params: Params, period: Period, full: boolean, my: string, client: string | null): Base {
   const env = makeEnv(snapshot, params, period, full, my, client);
-  const ext = buildSpans(closedSegs(snapshot), env.ext.from, env.ext.to, env);
+  const every = buildSpans(closedPieces(snapshot), env.ext.from, env.ext.to, env);
+  const ext = every.filter((s) => s.kind !== 'billablePause');
+  const extPauses = every.filter((s) => s.kind === 'billablePause');
   const spans = full ? clipSpans(ext, period.from, period.to, params.zone) : ext;
-  const rows = taskDays(spans, params.zone, env.book, snapshot.rounding);
+  // Billable pauses are not worked time: they feed only the task-day rows, never the aggregates above.
+  const pauses = full ? clipSpans(extPauses, period.from, period.to, params.zone) : extPauses;
+  const rowSpans = pauses.length ? [...spans, ...pauses] : spans;
+  const rows = taskDays(rowSpans, params.zone, env.book, snapshot.rounding);
   const lens = Float64Array.from(spans, (s) => s.end - s.start).sort();
   return {
     env,
@@ -708,7 +773,7 @@ function prepareBase(snapshot: Snapshot, params: Params, period: Period, full: b
     lens,
     add: additiveOf(spans, ext, env),
     rowsByTask: groupBy(rows),
-    spansByTask: groupBy(spans),
+    spansByTask: groupBy(rowSpans),
     rowsFlat: rows,
     gaps: gapsFor(snapshot, env),
   };
@@ -835,7 +900,7 @@ export function taskFirstStarts(snapshot: Snapshot): Map<string, number> {
   let m = firstCache.get(snapshot);
   if (!m) {
     m = new Map();
-    for (const s of segsOf(snapshot).all) {
+    for (const s of segsOf(snapshot).work) {
       const cur = m.get(s.taskId);
       if (cur === undefined || s.start < cur) m.set(s.taskId, s.start);
     }

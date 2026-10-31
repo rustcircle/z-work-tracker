@@ -39,13 +39,15 @@ export function Controls(p: ControlsProps) {
   const activeProjects = useMemo(() => p.snapshot.projects.filter((x) => !x.archived || filters.projectIds.includes(x.id)), [p.snapshot.projects, filters.projectIds]);
   const tasks = useMemo(() => p.snapshot.tasks.filter((t) => t.state !== 'draft'), [p.snapshot.tasks]);
   const shifts = useMemo(() => [...groupVersions(p.snapshot.shifts)].map(([id, v]) => ({ id, name: [...v].sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1))[0]?.name ?? id })), [p.snapshot.shifts]);
-  const filtered = filters.projectIds.length > 0 || filters.taskIds.length > 0 || filters.band !== null || filters.shiftKey !== null;
+  const liveTags = useMemo(() => p.snapshot.tags.filter((t) => !t.deleted), [p.snapshot.tags]);
+  const filtered = filters.projectIds.length > 0 || filters.taskIds.length > 0 || filters.tagIds.length > 0 || filters.band !== null || filters.shiftKey !== null;
   const setKind = (kind: RangeKind): void => {
     if (kind === 'custom') p.setRange({ kind, anchor: span.fromDay, from: span.fromDay, to: span.toDay });
     else p.setRange({ kind, anchor: kind === range.kind ? range.anchor : p.today >= span.fromDay && p.today <= span.toDay ? p.today : span.fromDay });
   };
   const toggleProject = (id: string): void =>
     p.setFilters({ ...filters, projectIds: filters.projectIds.includes(id) ? filters.projectIds.filter((x) => x !== id) : [...filters.projectIds, id] });
+  const toggleTag = (id: string): void => p.setFilters({ ...filters, tagIds: filters.tagIds.includes(id) ? filters.tagIds.filter((x) => x !== id) : [...filters.tagIds, id] });
   return (
     <div className="a-controls" role="group" aria-label="Analysis controls">
       <div className="a-row a-wrap">
@@ -161,6 +163,19 @@ export function Controls(p: ControlsProps) {
           </button>
         ) : null}
       </div>
+      {liveTags.length > 0 ? (
+        <div className="a-row a-wrap" role="group" aria-label="Tag filter">
+          <span className="a-field-label">Tags</span>
+          {liveTags.map((t) => (
+            <label key={t.id} className="a-check">
+              <input type="checkbox" checked={filters.tagIds.includes(t.id)} onChange={() => toggleTag(t.id)} />
+              <span className="a-dot-sw" style={{ background: t.color }} aria-hidden="true" />
+              <span>{t.name}</span>
+            </label>
+          ))}
+          <span className="muted a-tag-hint">{filters.tagIds.length === 0 ? 'All tasks' : 'Tasks with any selected tag'}; whole tasks are kept, so Billable stays available.</span>
+        </div>
+      ) : null}
     </div>
   );
 }

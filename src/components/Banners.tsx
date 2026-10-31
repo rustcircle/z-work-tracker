@@ -1,5 +1,7 @@
 import { useApp } from '../app/store';
 import { api } from '../lib/api';
+import { AwayBanner, AwayDialog } from '../features/away/AwayDialog';
+import { ReminderBanner } from '../features/away/ReminderBanner';
 import { IconClose, IconInfo, IconWarn } from './icons';
 import { useCommands } from './useCommands';
 
@@ -24,6 +26,9 @@ export function Banners() {
           <span>{w}</span>
         </div>
       ))}
+      <ReminderBanner />
+      <AwayBanner />
+      <AwayDialog />
       {snapshot.notices.map((n) => (
         <div key={n.id} className={`banner ${n.level === 'warning' ? 'banner-warning' : 'banner-info'}`} role="status" data-testid="notice">
           {n.level === 'warning' ? <IconWarn /> : <IconInfo />}

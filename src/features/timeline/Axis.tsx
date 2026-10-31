@@ -5,10 +5,10 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { readableText } from '../../lib/color';
 import type { ShiftWindow } from '../../lib/shifts';
 import { dayOf, shiftText, type OffsetChange } from '../../lib/tz';
-import type { Project } from '../../lib/types';
+import type { Project, RawSegment } from '../../lib/types';
 import { shortDay } from '../../components/format';
 import { assignLanes, axisTicks } from './axisGeometry';
-import type { Block, Window } from './model';
+import { isAway, type Block, type SegKind, type Window } from './model';
 
 const LANE = 28;
 const BAND_ROW = 18;
@@ -34,19 +34,41 @@ export interface AxisProps {
   windowTitle?: (w: ShiftWindow) => string;
   /** The date the card is for. A different date at the axis's left edge is printed there. */
   refDay?: string;
+  /** Corrected and hand-entered segments by recorded id, flagged on their blocks. */
+  marks?: ReadonlyMap<string, RawSegment>;
 }
 
-function BlockView({ block, project, left, width, labelOf, tipOf, interactive }: { block: Block; project: Project | undefined; left: number; width: number; labelOf?: (b: Block) => string; tipOf?: (b: Block) => ReactNode; interactive: boolean }) {
+/** The word printed on a block (and in the legend) for each kind of time; work has none. */
+export const KIND_WORD: Record<SegKind, string> = {
+  work: '',
+  thinking: 'Thinking',
+  billablePause: 'Billable pause',
+  pending: 'Unconfirmed',
+  dropped: 'Dropped',
+};
+
+/** Marks a corrected or hand-entered block carries: a glyph on its corner, and the same words elsewhere. */
+export const MARK_WORD = { corrected: 'Corrected', manual: 'Added by hand' } as const;
+const MARK_GLYPH = { corrected: '✎', manual: '+' } as const;
+
+function BlockView({ block, project, left, width, labelOf, tipOf, interactive, mark }: { block: Block; project: Project | undefined; left: number; width: number; labelOf?: (b: Block) => string; tipOf?: (b: Block) => ReactNode; interactive: boolean; mark: 'corrected' | 'manual' | undefined }) {
   const [tip, setTip] = useState(false);
   const color = project?.color ?? '#6b7280';
   const label = labelOf?.(block);
+  // Work and thinking are solid in the project's colour. A billable pause and time away are outlines in
+  // it, patterned by their class, so the kind never rests on colour alone.
+  const outline = block.kind === 'billablePause' || isAway(block.kind);
+  const word = KIND_WORD[block.kind];
+  const text = `${word ? `${word}: ` : ''}${label?.split(',')[0] ?? ''}`;
   return (
     <div
-      className={`block ${block.live ? 'block-live' : ''}`}
+      className={`block k-${block.kind} ${block.live ? 'block-live' : ''} ${mark ? `mark-${mark}` : ''}`}
       data-testid={interactive ? 'block' : undefined}
       data-project={block.projectId}
       data-live={block.live ? 'true' : undefined}
-      style={{ left: `${left}%`, width: `${width}%`, top: block.lane * LANE + 4, height: LANE - 4, backgroundColor: color, color: readableText(color) }}
+      data-kind={block.kind}
+      data-mark={mark}
+      style={{ left: `${left}%`, width: `${width}%`, top: block.lane * LANE + 4, height: LANE - 4, ...(outline ? { borderColor: color } : { backgroundColor: color, color: readableText(color) }) }}
       tabIndex={interactive ? 0 : undefined}
       role={interactive ? 'img' : undefined}
       aria-label={interactive ? label : undefined}
@@ -56,7 +78,12 @@ function BlockView({ block, project, left, width, labelOf, tipOf, interactive }:
       onFocus={interactive ? () => setTip(true) : undefined}
       onBlur={interactive ? () => setTip(false) : undefined}
     >
-      {interactive && width > 7 && <span className="block-text">{label?.split(',')[0]}</span>}
+      {interactive && width > 7 && <span className="block-text">{text}</span>}
+      {interactive && mark && (
+        <span className="block-flag" aria-hidden="true" title={MARK_WORD[mark]}>
+          {MARK_GLYPH[mark]}
+        </span>
+      )}
       {interactive && tip && tipOf && (
         <div className={`tip ${left + width / 2 > 55 ? 'tip-right' : ''}`} role="tooltip" aria-hidden="true">
           {tipOf(block)}
@@ -64,6 +91,12 @@ function BlockView({ block, project, left, width, labelOf, tipOf, interactive }:
       )}
     </div>
   );
+}
+
+function markOf(marks: ReadonlyMap<string, RawSegment> | undefined, b: Block): 'corrected' | 'manual' | undefined {
+  const raw = marks?.get(b.segmentId);
+  if (!raw) return undefined;
+  return raw.corrected ? 'corrected' : raw.manual ? 'manual' : undefined;
 }
 
 export function Axis(p: AxisProps) {
@@ -102,7 +135,7 @@ export function Axis(p: AxisProps) {
         ))}
         <div className="blocks" style={{ top: stripH }}>
           {p.blocks.map((b) => (
-            <BlockView key={b.key} block={b} project={p.projects.get(b.projectId)} left={pct(b.start)} width={Math.max(0.25, pct(b.end) - pct(b.start))} labelOf={p.labelOf} tipOf={p.tipOf} interactive={p.interactive} />
+            <BlockView key={b.key} block={b} project={p.projects.get(b.projectId)} left={pct(b.start)} width={Math.max(0.25, pct(b.end) - pct(b.start))} labelOf={p.labelOf} tipOf={p.tipOf} interactive={p.interactive} mark={markOf(p.marks, b)} />
           ))}
         </div>
         {now !== null && <span className="now-line" style={{ left: `${pct(now)}%` }} title="Now" />}

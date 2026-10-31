@@ -10,7 +10,8 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { useApp } from '../../app/store';
 import { api } from '../../lib/api';
-import type { RichDoc, Task, TaskPatch } from '../../lib/types';
+import type { RichDoc, Task, TaskPatch, TemplateInput } from '../../lib/types';
+import { TagPicker } from './TagPicker';
 import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
@@ -23,14 +24,17 @@ const MAX_RETRIES = 5;
 type Status = { kind: 'idle' } | { kind: 'saving' } | { kind: 'saved' } | { kind: 'rejected'; message: string } | { kind: 'failed'; willRetry: boolean };
 
 export function TaskEditor({ task }: { task: Task }) {
-  const { snapshot } = useApp();
+  const { snapshot, adopt, showError } = useApp();
   const { act } = useCommands();
   const store = useEditStore();
   const statusId = useId();
 
-  const session = store.session(task.id, (): EditSession => ({ name: task.name, description: task.description, projectId: null, dirty: { name: false, project: false, description: false }, focus: null, rev: 0, queue: Promise.resolve(true), failures: 0 }));
+  const session = store.session(task.id, (): EditSession => ({ name: task.name, description: task.description, projectId: null, tags: null, dirty: { name: false, project: false, description: false, tags: false }, focus: null, rev: 0, queue: Promise.resolve(true), failures: 0 }));
   const [name, setName] = useState(session.name);
   const [projectId, setProjectId] = useState(session.projectId ?? task.projectId);
+  const [tags, setTags] = useState<string[]>(session.tags ?? task.tags);
+  const [templateState, setTemplateState] = useState<string | null>(null);
+  const [templateBusy, setTemplateBusy] = useState(false);
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [nameError, setNameError] = useState<string | null>(null);
 
@@ -53,11 +57,11 @@ export function TaskEditor({ task }: { task: Task }) {
 
   const doSave = useCallback(async (): Promise<boolean> => {
     const s = session;
-    if (!s.dirty.name && !s.dirty.project && !s.dirty.description) return true;
+    if (!s.dirty.name && !s.dirty.project && !s.dirty.description && !s.dirty.tags) return true;
     const cur = latest.current;
     const trimmed = s.name.trim();
     const nameOk = s.dirty.name && trimmed !== '';
-    const changes = nameOk || s.dirty.project || s.dirty.description;
+    const changes = nameOk || s.dirty.project || s.dirty.description || s.dirty.tags;
     if (s.dirty.name && trimmed === '') setStatus({ kind: 'rejected', message: `A task needs a name, so “${cur.name}” is kept.` });
     if (!changes) return true;
     const sentRev = s.rev;
@@ -66,6 +70,8 @@ export function TaskEditor({ task }: { task: Task }) {
       ...(nameOk ? { name: trimmed } : {}),
       ...(s.dirty.project && s.projectId ? { projectId: s.projectId } : {}),
       ...(s.dirty.description ? { description: s.description } : {}),
+      // An empty list clears the tags: only patch_task does that, update_task ignores it.
+      ...(s.dirty.tags && s.tags ? { tags: s.tags } : {}),
     };
     const ok = await act(() => api.patchTask(task.id, patch));
     if (!ok) {
@@ -77,7 +83,7 @@ export function TaskEditor({ task }: { task: Task }) {
     }
     s.failures = 0;
     if (s.rev === sentRev) {
-      s.dirty = { name: s.dirty.name && !nameOk, project: false, description: false };
+      s.dirty = { name: s.dirty.name && !nameOk, project: false, description: false, tags: false };
       setStatus((prev) => (prev.kind === 'rejected' ? prev : { kind: 'saved' }));
     } else schedule();
     return true;
@@ -130,6 +136,32 @@ export function TaskEditor({ task }: { task: Task }) {
   const leave = (el: Element | null, field: EditField): void => {
     if (el?.isConnected && session.focus === field) session.focus = null;
   };
+
+  /** Stores the task as it is shown now (after saving pending edits) as a template, without time or ticks. */
+  async function saveAsTemplate(): Promise<void> {
+    setTemplateBusy(true);
+    try {
+      await flush();
+      const cur = latest.current;
+      const name = session.name.trim() || cur.name;
+      const live = new Set(snapshot.tags.filter((t) => !t.deleted).map((t) => t.id));
+      const input: TemplateInput = {
+        id: null,
+        name,
+        projectId: session.projectId ?? cur.projectId,
+        description: session.description,
+        tags: (session.tags ?? cur.tags).filter((id) => live.has(id)),
+      };
+      const saved = await api.saveTemplate(input);
+      adopt(saved.snapshot);
+      setTemplateState(`Saved as template “${name}”. Task-list items start unticked, with no time.`);
+    } catch (e) {
+      showError(e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e));
+      setTemplateState(null);
+    } finally {
+      setTemplateBusy(false);
+    }
+  }
 
   const usable = snapshot.projects.filter((p) => !p.archived || p.id === task.projectId);
   const restoreName = (): void => {
@@ -230,6 +262,16 @@ export function TaskEditor({ task }: { task: Task }) {
           void flush();
         }}
       />
+      <TagPicker
+        tags={snapshot.tags}
+        value={tags}
+        onChange={(ids) => {
+          setTags(ids);
+          session.tags = ids;
+          touch('tags');
+          schedule();
+        }}
+      />
       <div className="editor-foot">
         <span id={statusId} className="save-state" role="status" aria-live="polite" data-testid="save-state" data-kind={status.kind}>
           {status.kind === 'saving' && 'Saving…'}
@@ -237,19 +279,27 @@ export function TaskEditor({ task }: { task: Task }) {
           {status.kind === 'rejected' && status.message}
           {status.kind === 'failed' && (status.willRetry ? 'Not saved. Your changes are still here and will be sent again.' : 'Not saved. Your changes are still here. Edit or press Done to try again.')}
         </span>
-        <Button
-          small
-          variant="primary"
-          onClick={() => {
-            // A failed save keeps the editor open, so what was typed is not lost.
-            void flush().then((saved) => {
-              if (saved) store.close(task.id);
-            });
-          }}
-        >
-          Done
-        </Button>
+        <div className="editor-buttons">
+          <Button small disabled={templateBusy} onClick={() => void saveAsTemplate()}>
+            Save as template
+          </Button>
+          <Button
+            small
+            variant="primary"
+            onClick={() => {
+              // A failed save keeps the editor open, so what was typed is not lost.
+              void flush().then((saved) => {
+                if (saved) store.close(task.id);
+              });
+            }}
+          >
+            Done
+          </Button>
+        </div>
       </div>
+      <p className="template-note" role="status" aria-live="polite">
+        {templateState}
+      </p>
     </form>
   );
 }

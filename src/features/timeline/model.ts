@@ -1,10 +1,107 @@
 // Timeline data model. Closed segments are split and rated once per snapshot and zone; the running
 // segment is re-split every second, and only the days it touches are rebuilt (see `dayData`).
-import { exactNumeratorsOf, numeratorsOf, taskDays, type Numerators, type RateBook, type TaskDay } from '../../lib/billing';
-import { splitAll, type BandIndex, type Piece, type Seg } from '../../lib/split';
-import { addDays, dayOf, hhmmToMinutes, instantOfWall, weekdayOf } from '../../lib/tz';
-import type { RoundingVersion } from '../../lib/types';
+import { exactNumeratorsOf, numeratorsOf, taskDays, type Numerators, type RateBook, type SpanLike, type TaskDay } from '../../lib/billing';
+import { effectiveEnd, splitAll, type BandIndex, type Piece, type Seg } from '../../lib/split';
+import { addDays, dayOf, hhmmToMinutes, instantOfWall, parseIso, weekdayOf } from '../../lib/tz';
+import type { GapKind, PieceKind, RawSegment, RoundingVersion, Snapshot } from '../../lib/types';
 import { assignLanes } from './axisGeometry';
+
+/**
+ * What a stretch of the timeline is. The first three are counted time (the backend's pieces); `pending`
+ * and `dropped` are time away that counts nowhere, drawn from `snapshot.gaps`.
+ */
+export type SegKind = PieceKind | 'pending' | 'dropped';
+
+/** A `Seg` that knows its kind. Plain `Seg`s (old fixtures, tests) are work. */
+export interface TlSeg extends Seg {
+  kind: SegKind;
+  /** The recorded segment this came from, to find its correction. */
+  segmentId: string;
+  /** Sleep or idle, for time away. */
+  gapKind?: GapKind;
+}
+
+const isTl = (s: Seg): s is TlSeg => 'kind' in s;
+export const kindOf = (s: Seg): SegKind => (isTl(s) ? s.kind : 'work');
+export const segmentIdOf = (s: Seg): string => (isTl(s) ? s.segmentId : s.id);
+export const gapKindOf = (s: Seg): GapKind | undefined => (isTl(s) ? s.gapKind : undefined);
+/** True for time that counts nowhere. */
+export const isAway = (k: SegKind): k is 'pending' | 'dropped' => k === 'pending' || k === 'dropped';
+
+/**
+ * The timeline's segments: the backend's pieces with their kind, plus time away that is pending or
+ * dropped (it is in no piece). `toSegs` in lib/split.ts does the same for the pieces alone.
+ */
+export function timelineSegs(snapshot: Pick<Snapshot, 'segments' | 'tasks' | 'gaps'>): TlSeg[] {
+  const projectOf = new Map(snapshot.tasks.map((t) => [t.id, t.projectId] as const));
+  const out: TlSeg[] = [];
+  for (const s of snapshot.segments) {
+    const projectId = projectOf.get(s.taskId);
+    if (projectId === undefined) continue;
+    out.push({
+      id: s.id,
+      taskId: s.taskId,
+      projectId,
+      deviceId: s.deviceId,
+      start: parseIso(s.start),
+      end: effectiveEnd(s, 0),
+      live: s.end === null && s.provisionalEnd === null,
+      remoteOpen: s.end === null && s.provisionalEnd !== null,
+      kind: s.kind ?? 'work',
+      segmentId: s.segmentId ?? s.id,
+    });
+  }
+  for (const g of snapshot.gaps) {
+    const projectId = projectOf.get(g.taskId);
+    if (projectId === undefined || (g.decision !== 'pending' && g.decision !== 'drop')) continue;
+    const start = parseIso(g.start);
+    out.push({
+      id: `gap:${g.id}`,
+      taskId: g.taskId,
+      projectId,
+      deviceId: g.deviceId,
+      start,
+      end: Math.max(parseIso(g.end), start),
+      live: false,
+      remoteOpen: false,
+      kind: g.decision === 'pending' ? 'pending' : 'dropped',
+      segmentId: g.segmentId,
+      gapKind: g.kind,
+    });
+  }
+  return out;
+}
+
+/** Counted time only: what rounding, billable and earnings are computed from. */
+function spansOf(segs: readonly Seg[]): SpanLike[] {
+  const out: SpanLike[] = [];
+  for (const s of segs) {
+    const kind = kindOf(s);
+    if (!isAway(kind)) out.push({ taskId: s.taskId, projectId: s.projectId, start: s.start, end: s.end, kind });
+  }
+  return out;
+}
+
+/** Corrections and hand-entered time by recorded segment id; voided segments are listed apart. */
+export interface RawIndex {
+  marks: ReadonlyMap<string, RawSegment>;
+  /** Voided segments by the day (in `zone`) they were recorded on. */
+  voided: ReadonlyMap<string, readonly RawSegment[]>;
+}
+
+export function rawIndex(raws: readonly RawSegment[], zone: string): RawIndex {
+  const marks = new Map<string, RawSegment>();
+  const voided = new Map<string, RawSegment[]>();
+  for (const r of raws) {
+    if (r.voided) {
+      const day = dayOf(parseIso(r.rawStart), zone);
+      const list = voided.get(day);
+      if (list) list.push(r);
+      else voided.set(day, [r]);
+    } else if (r.corrected || r.manual) marks.set(r.id, r);
+  }
+  return { marks, voided };
+}
 
 export interface DayData {
   day: string;
@@ -22,8 +119,8 @@ export interface ClosedModel {
   /** Segments open on this device (end == start here; the overlay stretches them to now). */
   liveSegs: Seg[];
   liveTaskIds: ReadonlySet<string>;
-  /** Closed segments of the tasks that are running, needed to re-round their rows. */
-  liveTaskSegs: Seg[];
+  /** Counted time of the tasks that are running, needed to re-round their rows. */
+  liveTaskSpans: SpanLike[];
 }
 
 function group<T extends { day: string }>(items: readonly T[]): Map<string, T[]> {
@@ -43,9 +140,9 @@ export function buildClosed(base: readonly Seg[], zone: string, book: RateBook, 
   const liveTaskIds = new Set(liveSegs.map((s) => s.taskId));
   const closedSegs = base.filter((s) => !s.live);
   const pieces = group(splitAll(closedSegs, zone).filter(hasLength));
-  const rows = group(taskDays(closedSegs, zone, book, rounding));
+  const rows = group(taskDays(spansOf(closedSegs), zone, book, rounding));
   const days = [...pieces.keys()].sort().reverse();
-  return { zone, pieces, rows, days, cache: new Map(), liveSegs, liveTaskIds, liveTaskSegs: closedSegs.filter((s) => liveTaskIds.has(s.taskId)) };
+  return { zone, pieces, rows, days, cache: new Map(), liveSegs, liveTaskIds, liveTaskSpans: spansOf(closedSegs.filter((s) => liveTaskIds.has(s.taskId))) };
 }
 
 export interface LiveOverlay {
@@ -61,7 +158,7 @@ export function buildOverlay(closed: ClosedModel, nowSec: number, book: RateBook
   const live = closed.liveSegs.map((s) => ({ ...s, end: Math.max(nowSec, s.start) }));
   const pieces = group(splitAll(live, closed.zone).filter(hasLength));
   if (pieces.size === 0) return NO_OVERLAY;
-  const rows = group(taskDays([...closed.liveTaskSegs, ...live], closed.zone, book, rounding).filter((r) => pieces.has(r.day)));
+  const rows = group(taskDays([...closed.liveTaskSpans, ...spansOf(live)], closed.zone, book, rounding).filter((r) => pieces.has(r.day)));
   return { pieces, rows };
 }
 
@@ -94,28 +191,40 @@ export function allDays(closed: ClosedModel, overlay: LiveOverlay): string[] {
 export interface Totals {
   exactSecs: number;
   billableSecs: number;
+  /** Billable pauses: in billable, never in exact. */
+  pauseSecs: number;
+  /** Away time marked as thinking: in both, reported on its own. */
+  thinkingSecs: number;
   billable: Numerators;
   exact: Numerators;
   /** Some row used an increment, so billable can differ from exact. */
   rounded: boolean;
 }
 
+/** Billable can differ from exact: rounding is on or the period holds a billable pause. */
+export const differs = (t: Pick<Totals, 'rounded' | 'pauseSecs'>): boolean => t.rounded || t.pauseSecs > 0;
+
 export function totalsOf(rows: readonly TaskDay[]): Totals {
   let exactSecs = 0;
   let billableSecs = 0;
+  let pauseSecs = 0;
+  let thinkingSecs = 0;
   let rounded = false;
   for (const r of rows) {
     exactSecs += r.exactSecs;
     billableSecs += r.billableSecs;
+    pauseSecs += r.pauseSecs;
+    thinkingSecs += r.thinkingSecs;
     if (r.rule.incrementMinutes > 0) rounded = true;
   }
-  return { exactSecs, billableSecs, billable: numeratorsOf(rows), exact: exactNumeratorsOf(rows), rounded };
+  return { exactSecs, billableSecs, pauseSecs, thinkingSecs, billable: numeratorsOf(rows), exact: exactNumeratorsOf(rows), rounded };
 }
 
 export interface ProjectTotal {
   projectId: string;
   exactSecs: number;
   billableSecs: number;
+  pauseSecs: number;
   billable: Numerators;
   /** At least some of the time had a rate in force. */
   hasRate: boolean;
@@ -133,6 +242,7 @@ export function projectTotals(rows: readonly TaskDay[]): ProjectTotal[] {
       projectId,
       exactSecs: list.reduce((n, r) => n + r.exactSecs, 0),
       billableSecs: list.reduce((n, r) => n + r.billableSecs, 0),
+      pauseSecs: list.reduce((n, r) => n + r.pauseSecs, 0),
       billable: numeratorsOf(list),
       hasRate: list.some((r) => r.buckets.some((b) => b.rateCents !== null)),
     }))
@@ -152,6 +262,10 @@ export function pieceNumerators(book: RateBook, projectId: string, start: number
 export interface Entry {
   key: string;
   segId: string;
+  /** The recorded segment (or pause record) this came from. */
+  segmentId: string;
+  kind: SegKind;
+  gapKind: GapKind | undefined;
   taskId: string;
   projectId: string;
   band: BandIndex;
@@ -167,13 +281,16 @@ export function entriesOf(pieces: readonly Piece[], book: RateBook): Entry[] {
     .map((p) => ({
       key: `${p.seg.id}:${p.start}`,
       segId: p.seg.id,
+      segmentId: segmentIdOf(p.seg),
+      kind: kindOf(p.seg),
+      gapKind: gapKindOf(p.seg),
       taskId: p.seg.taskId,
       projectId: p.seg.projectId,
       band: p.band,
       start: p.start,
       end: p.end,
       live: p.seg.live,
-      numerators: pieceNumerators(book, p.seg.projectId, p.start, p.end),
+      numerators: isAway(kindOf(p.seg)) ? {} : pieceNumerators(book, p.seg.projectId, p.start, p.end),
     }))
     .sort((a, b) => a.start - b.start || (a.key < b.key ? -1 : 1));
 }
@@ -181,6 +298,9 @@ export function entriesOf(pieces: readonly Piece[], book: RateBook): Entry[] {
 export interface Block {
   key: string;
   segId: string;
+  segmentId: string;
+  kind: SegKind;
+  gapKind: GapKind | undefined;
   taskId: string;
   projectId: string;
   start: number;
@@ -198,7 +318,7 @@ export function blocksOf(pieces: readonly Piece[]): { blocks: Block[]; lanes: nu
       b.start = Math.min(b.start, p.start);
       b.end = Math.max(b.end, p.end);
     } else {
-      by.set(p.seg.id, { key: p.seg.id, segId: p.seg.id, taskId: p.seg.taskId, projectId: p.seg.projectId, start: p.start, end: p.end, live: p.seg.live, lane: 0 });
+      by.set(p.seg.id, { key: p.seg.id, segId: p.seg.id, segmentId: segmentIdOf(p.seg), kind: kindOf(p.seg), gapKind: gapKindOf(p.seg), taskId: p.seg.taskId, projectId: p.seg.projectId, start: p.start, end: p.end, live: p.seg.live, lane: 0 });
     }
   }
   const blocks = [...by.values()].sort((a, b) => a.start - b.start);

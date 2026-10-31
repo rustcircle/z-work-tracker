@@ -8,8 +8,9 @@ import { useNav } from '../../components/nav';
 import { Badge, Button, Card, Modal, Swatch } from '../../components/ui';
 import { IconArchive, IconEdit, IconPlus, IconRestore, IconTrash } from '../../components/icons';
 import { useCommands } from '../../components/useCommands';
+import { BudgetMeter } from './BudgetMeter';
 import { ProjectForm } from './ProjectForm';
-import { rateAt, rateText } from './projectLogic';
+import { effectiveRateText, feeText, rateAt, rateText } from './projectLogic';
 
 export function ProjectsTab() {
   const { snapshot, nowSec } = useApp();
@@ -45,7 +46,13 @@ export function ProjectsTab() {
             <h3>{p.name}</h3>
             <div className="project-sub">
               {p.billable ? (
-                rate && rate.rateCents !== null ? (
+                p.billingType === 'fixedFee' ? (
+                  <>
+                    <span className="tabular fee-line">{feeText(p, hide ? MASK : null)}</span>
+                    {rate && rate.rateCents !== null && <span className="muted tabular">Measured at {rateText(rate, hide ? MASK : null)}</span>}
+                    {effectiveRateText(p, hide ? MASK : null) && <span className="tabular">{effectiveRateText(p, hide ? MASK : null)}</span>}
+                  </>
+                ) : rate && rate.rateCents !== null ? (
                   <span className="tabular">{rateText(rate, hide ? MASK : null)}</span>
                 ) : (
                   <span className="no-rate">
@@ -65,6 +72,7 @@ export function ProjectsTab() {
               {p.clientZone && <span className="muted">Client zone {p.clientZone.split('/').pop()?.replaceAll('_', ' ')}</span>}
               {p.archived && <Badge tone="warning">Archived</Badge>}
             </div>
+            <BudgetMeter project={p} hideEarnings={hide} onSetRate={() => setEditing(p.id)} />
           </div>
           <div className="project-actions">
             <Button small icon={<IconEdit />} aria-expanded={editing === p.id} onClick={() => setEditing(editing === p.id ? null : p.id)}>

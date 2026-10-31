@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { useApp } from '../../app/store';
 import { RateBook, centsFromNumerator, type Numerators } from '../../lib/billing';
-import { toSegs } from '../../lib/split';
 import { addDays, dayOf, zoneLabel } from '../../lib/tz';
 import type { Task } from '../../lib/types';
 import { amountText, addNumerators, dayLabel, formatDuration, hasAmount, shortDay } from '../../components/format';
@@ -10,13 +9,15 @@ import { MASK, money } from '../../lib/billing';
 import { useNav } from '../../components/nav';
 import { Button } from '../../components/ui';
 import { DayCard } from './DayCard';
-import { allDays, buildClosed, buildOverlay, dayData, totalsOf, weekStart, type Totals } from './model';
+import { Legend } from './Legend';
+import { allDays, buildClosed, buildOverlay, dayData, differs, rawIndex, timelineSegs, totalsOf, weekStart, type Totals } from './model';
 
 const PAGE = 14;
 
 function TotalsLine({ label, totals, hide, running }: { label: string; totals: Totals; hide: boolean; running?: string }) {
   const amt = amountText(totals.billable, hide);
   const exactAmt = amountText(totals.exact, hide);
+  const pauses = totals.pauseSecs > 0 ? ` · includes ${formatDuration(totals.pauseSecs)} billable pauses` : '';
   return (
     <div className="summary-block" data-testid={`summary-${label.toLowerCase().split(' ')[0]}`}>
       <p className="summary-headline">
@@ -24,11 +25,12 @@ function TotalsLine({ label, totals, hide, running }: { label: string; totals: T
         {running && <span className="summary-running tabular">, running {running}</span>}
       </p>
       <p className="muted summary-detail tabular">
-        {totals.rounded ? (
+        {differs(totals) ? (
           <>
             Billable {formatDuration(totals.billableSecs)}
             {amt && ` (${amt})`} · Exact {formatDuration(totals.exactSecs)}
             {exactAmt && ` (${exactAmt})`}
+            {pauses}
           </>
         ) : (
           <>
@@ -50,7 +52,9 @@ export function TimelineTab() {
   const client = zones.showBoth ? zones.client : null;
 
   const book = useMemo(() => new RateBook(snapshot.projects, snapshot.rates), [snapshot.projects, snapshot.rates]);
-  const base = useMemo(() => toSegs({ segments: snapshot.segments, tasks: snapshot.tasks }, 0), [snapshot.segments, snapshot.tasks]);
+  const base = useMemo(() => timelineSegs({ segments: snapshot.segments, tasks: snapshot.tasks, gaps: snapshot.gaps }), [snapshot.segments, snapshot.tasks, snapshot.gaps]);
+  const raw = useMemo(() => rawIndex(snapshot.rawSegments, zone), [snapshot.rawSegments, zone]);
+  const pauseNotes = useMemo(() => new Map(snapshot.pauses.filter((x) => !x.deleted).map((x) => [x.id, x.note])), [snapshot.pauses]);
   const closed = useMemo(() => buildClosed(base, zone, book, snapshot.rounding), [base, zone, book, snapshot.rounding]);
   const overlay = buildOverlay(closed, nowSec, book, snapshot.rounding);
 
@@ -104,6 +108,7 @@ export function TimelineTab() {
           {dayLabel(today)}, shown in {zoneLabel(zone, nowSec)}. Weeks start on Monday ({shortDay(monday)}).
         </p>
       </div>
+      <Legend />
       {shown.length === 0 && <p className="muted empty">Nothing is logged yet. Create a task, press Start, and its time appears here as a block on today's axis.</p>}
       <div className="days">
         {shown.map((d) => (
@@ -124,6 +129,9 @@ export function TimelineTab() {
             onSetRate={onSetRate}
             chain={chain}
             onOpenTask={onOpenTask}
+            marks={raw.marks}
+            voided={raw.voided}
+            pauseNotes={pauseNotes}
           />
         ))}
       </div>

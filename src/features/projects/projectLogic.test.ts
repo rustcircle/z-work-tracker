@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Project, RateVersion } from '../../lib/types';
+import { fullProject } from '../../mocks/factories';
 import { parseBudget, parsePrice, rateAt, rateHistory, rateText, validateProjectName } from './projectLogic';
 
 const stamp = { at: '', by: '' };
 const rate = (id: string, from: string, cents: number | null): RateVersion => ({ id, projectId: 'p', effectiveFrom: from, rateCents: cents, currency: 'EUR', deleted: false, stamp });
-const proj = (id: string, name: string): Project => ({ id, name, color: '#000000', archived: false, billable: true, budgetHours: null, clientZone: null, createdAt: '', hasTasks: false });
+const proj = (id: string, name: string): Project => fullProject({ id, name, color: '#000000', createdAt: '', hasTasks: false });
 
 describe('parsePrice', () => {
   it('reads whole and decimal prices to exact cents', () => {

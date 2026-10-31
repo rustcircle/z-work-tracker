@@ -11,7 +11,9 @@ import { formatDuration } from '../../components/format';
 import { useCommands } from '../../components/useCommands';
 import { useEditStore } from './editStore';
 import { LiveTicker } from './LiveTicker';
+import { TaskDetailsButton } from './TaskDetails';
 import { TaskEditor } from './TaskEditor';
+import { TaskTags, TaskTimeParts } from './TaskCardExtras';
 import { STATE_LABEL, controlsFor, pauseReasonText } from './taskLogic';
 
 interface Props {
@@ -37,7 +39,7 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
   const articleRef = useRef<HTMLElement | null>(null);
   const handledSeq = useRef(0);
   const editing = store.editing.has(task.id);
-  const c = controlsFor(task, project, launch);
+  const c = controlsFor(task, project, launch, snapshot.tags);
   const reason = task.state === 'paused' ? pauseReasonText(task.pauseReason, tasks) : null;
   const detail = hasDescription(task.description);
   const titleId = `task-${task.id}`;
@@ -75,6 +77,7 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
       <div className="task-meta">
         {project ? <ProjectChip name={project.name} color={project.color} archived={project.archived} /> : <Badge tone="danger">No project</Badge>}
         {task.state !== 'draft' && task.state !== 'running' && loggedSecs > 0 && <span className="muted tabular">{formatDuration(loggedSecs)} logged</span>}
+        <TaskTags task={task} />
       </div>
       {(task.continuedFrom || continuedBy.length > 0) && (
         <ul className="chain" aria-label="Continuation links">
@@ -110,6 +113,7 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
       {task.state === 'paused' && !launch.warm && <p className="task-note">After a restart, Resume asks for every field again and starts a new task that continues this one. This task stays as it is.</p>}
       {task.state === 'running' && project && !task.runningElsewhere && <LiveTicker task={task} project={project} />}
       {task.state === 'stopped' && task.stoppedAt && <p className="muted task-note">Stopped {task.stoppedAt.slice(0, 16).replace('T', ' ')} UTC.</p>}
+      <TaskTimeParts task={task} />
 
       <div className="task-actions" role="group" aria-label={`Controls for ${task.name}`}>
         {btn('Start', c.start, <IconPlay />, () => void transition(() => api.startTask(task.id), task.name), 'primary')}
@@ -120,6 +124,7 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
       {c.start.why && task.state === 'draft' && <p className="task-note">{c.start.why}</p>}
       <div className="task-tools">
         <IconButton label={`Edit ${task.name}`} icon={<IconEdit />} onClick={() => (editing ? store.close(task.id) : store.open(task.id))} aria-expanded={editing} />
+        {task.state !== 'draft' && <TaskDetailsButton task={task} />}
         {task.state === 'draft' && <IconButton label={`Delete draft ${task.name}`} icon={<IconTrash />} onClick={() => setConfirmDelete(true)} />}
         {detail && !editing && (
           <button type="button" className="link task-details" aria-expanded={open} onClick={() => setOpen((v) => !v)}>

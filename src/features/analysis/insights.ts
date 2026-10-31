@@ -75,7 +75,23 @@ export function buildInsights(m: Metrics, opts: { hideEarnings: boolean; names: 
   }
   if (m.money.available && m.volume.billable !== m.volume.exact) {
     const diff = m.money.roundingSecs;
-    add('rounding', ['money.rounding'], `Rounding ${diff >= 0 ? 'added' : 'removed'} ${fmtHM(Math.abs(diff))} ${diff >= 0 ? 'to' : 'from'} Billable time.`);
+    const pause = m.pieces.pauseSecs;
+    add('rounding', ['money.rounding'], pause > 0
+      ? `Billable time is ${fmtHM(Math.abs(diff))} ${diff >= 0 ? 'more' : 'less'} than Exact: ${fmtHM(pause)} of billable pauses and ${fmtHM(Math.abs(diff - pause))} of rounding.`
+      : `Rounding ${diff >= 0 ? 'added' : 'removed'} ${fmtHM(Math.abs(diff))} ${diff >= 0 ? 'to' : 'from'} Billable time.`);
+  }
+  if (m.pieces.pausesShown && m.pieces.pauseSecs > 0) add('pauses', ['pauses.billable'], `${fmtHM(m.pieces.pauseSecs)} of billable pauses count in Billable time but not in Exact.`);
+  if (m.pieces.thinkingSecs > 0) add('thinking', ['time.thinking'], `${fmtHM(m.pieces.thinkingSecs)} of away time was kept as thinking time.`);
+  if (m.pieces.unconfirmed.shown && m.pieces.unconfirmed.secs > 0) add('unconfirmed', ['time.unconfirmed'], `${fmtHM(m.pieces.unconfirmed.secs)} of time away is unconfirmed and counts nowhere until you decide.`);
+  const topTag = m.tags.stats[0];
+  if (topTag && topTag.share !== null) add('tags', ['tags.time'], `${topTag.name} is the tag with the most time: ${fmtHM(topTag.secs)}, ${fmtPct(topTag.share)} of all time. Tags overlap, so tag shares can add up to more than 100%.`);
+  for (const b of m.budgetStatus) {
+    if (b.needsTargetRate || b.level === 0) continue;
+    add(`budget-status-${b.projectId}`, ['budget.used'], `${b.name} has used ${b.percent}% of its ${b.basis === 'hours' ? 'hours budget' : 'fixed fee'}: ${b.level === 100 ? 'over budget' : 'a warning at 80%'}.`);
+  }
+  for (const f of m.fixedFee) {
+    if (f.effectiveHourlyCents === null || f.currency === null) continue;
+    add(`fixed-${f.projectId}`, ['money.fixedFeeRate'], `${f.name} is a fixed-fee project: its effective hourly rate is ${opts.hideEarnings ? MASK : fmtMoney(f.currency, f.effectiveHourlyCents)} over ${fmtHM(f.billableSecs)} of billable time.`);
   }
   if (m.money.available && Object.keys(m.money.numerators).length > 0) {
     add('earnings', ['money.earnings'], `Earnings from Billable time: ${moneyText(m.money.numerators, opts.hideEarnings)}.`);

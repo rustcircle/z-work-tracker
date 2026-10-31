@@ -14,7 +14,9 @@ export interface EditSession {
   description: RichDoc;
   /** The project the user picked, or null while it is unchanged. */
   projectId: string | null;
-  dirty: { name: boolean; project: boolean; description: boolean };
+  /** The tags the user picked, or null while they are unchanged. An empty list means none. */
+  tags: string[] | null;
+  dirty: { name: boolean; project: boolean; description: boolean; tags: boolean };
   /** The field that had focus, so a rebuilt editor can give it back. */
   focus: EditField | null;
   /** Bumped by every change. Lives here, because saves outlive an editor rebuilt mid-save. */

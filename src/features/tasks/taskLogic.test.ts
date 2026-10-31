@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Project, Task } from '../../lib/types';
-import { controlsFor, pauseReasonText, validateTask } from './taskLogic';
+import type { Project, RequiredField, Task } from '../../lib/types';
+import { fullProject, fullTask } from '../../mocks/factories';
+import { coldMissing, controlsFor, missingText, pauseReasonText, requiredToStart, validateTask } from './taskLogic';
 
-const project = (o: Partial<Project> = {}): Project => ({ id: 'p1', name: 'Brand', color: '#2563eb', archived: false, billable: true, budgetHours: null, clientZone: null, createdAt: '', hasTasks: false, ...o });
-const task = (o: Partial<Task> = {}): Task => ({ id: 't1', name: 'Logo', projectId: 'p1', description: null, state: 'draft', pauseReason: null, createdAt: '', stoppedAt: null, runningElsewhere: null, continuedFrom: null, ...o });
+const project = (o: Partial<Project> = {}): Project => fullProject({ id: 'p1', name: 'Brand', createdAt: '', hasTasks: false, ...o });
+const task = (o: Partial<Task> = {}): Task => fullTask({ id: 't1', name: 'Logo', projectId: 'p1', createdAt: '', ...o });
 const enabled = (t: Task, p: Project | undefined = project()) => Object.entries(controlsFor(t, p)).filter(([, c]) => c.enabled).map(([k]) => k);
 
 describe('validateTask', () => {
@@ -56,5 +57,50 @@ describe('pauseReasonText', () => {
     expect(pauseReasonText({ kind: 'crashRecovery' }, tasks)).toContain('unexpectedly');
     expect(pauseReasonText({ kind: 'user' }, tasks)).toBe('Paused by you.');
     expect(pauseReasonText(null, tasks)).toBeNull();
+  });
+});
+
+describe('required fields are data-driven, tags included', () => {
+  const tags = [
+    { id: 'tg1', deleted: false },
+    { id: 'tg2', deleted: true },
+  ];
+  const draft = { name: 'x', projectId: 'p1', description: null };
+
+  it('tags are required only when the launch lists them, and need a live tag', () => {
+    expect(validateTask(draft, [project()], null, ['name', 'project'], tags).ok).toBe(true);
+    const e = validateTask(draft, [project()], null, ['name', 'project', 'tags'], tags);
+    expect(e.ok).toBe(false);
+    expect(e.tags).toBe('Choose at least one tag.');
+    expect(e.draftOk).toBe(true); // a draft never needs them
+    expect(validateTask({ ...draft, tags: ['tg1'] }, [project()], null, ['name', 'project', 'tags'], tags).ok).toBe(true);
+    // A deleted tag, or an id nobody knows, is no tag.
+    expect(validateTask({ ...draft, tags: ['tg2'] }, [project()], null, ['name', 'project', 'tags'], tags).ok).toBe(false);
+    expect(validateTask({ ...draft, tags: ['nope'] }, [project()], null, ['name', 'project', 'tags'], tags).ok).toBe(false);
+  });
+
+  it('words what is missing from the list, in the form order', () => {
+    const all = validateTask({ name: '', projectId: '', description: null }, [project()], null, ['name', 'project', 'description', 'tags'], tags);
+    expect(missingText(all)).toBe('a task name, a project, a description and at least one tag');
+    const some = validateTask({ name: 'x', projectId: '', description: null }, [project()], null, ['name', 'project', 'tags'], tags);
+    expect(missingText(some)).toBe('a project and at least one tag');
+    expect(missingText(validateTask({ ...draft, description: null }, [project()], null, ['name', 'project', 'description', 'tags'], tags))).toBe('a description and at least one tag');
+    expect(missingText(validateTask({ ...draft, tags: ['tg1'] }, [project()], null, ['name', 'project', 'tags'], tags))).toBe('');
+  });
+
+  it('requiredToStart follows coldRequired, so a launch without tags in the list needs none', () => {
+    expect(requiredToStart({ warm: false, coldRequired: ['name', 'project', 'description'] })).toEqual(['name', 'project', 'description']);
+    expect(requiredToStart({ warm: false, coldRequired: ['name', 'project', 'description', 'tags'] })).toEqual(['name', 'project', 'description', 'tags']);
+    expect(requiredToStart({ warm: true, coldRequired: ['name', 'project', 'description', 'tags'] })).toEqual(['name', 'project']);
+  });
+
+  it('a stored draft lacking a tag cannot start cold, and says so', () => {
+    const cold = { warm: false, coldRequired: ['name', 'project', 'description', 'tags'] as RequiredField[] };
+    const d = task({ state: 'draft', description: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'x' }] }] } });
+    expect(coldMissing(d, cold, tags)).toEqual(['tags']);
+    expect(controlsFor(d, project(), cold, tags).start.enabled).toBe(false);
+    expect(controlsFor(d, project(), cold, tags).start.why).toContain('needs tags');
+    expect(controlsFor({ ...d, tags: ['tg1'] }, project(), cold, tags).start.enabled).toBe(true);
+    expect(coldMissing(d, { warm: true, coldRequired: cold.coldRequired }, tags)).toEqual([]);
   });
 });

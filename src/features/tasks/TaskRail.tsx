@@ -30,6 +30,8 @@ export function TaskRail() {
     const logged = new Map<string, number>();
     const last = new Map<string, number>();
     for (const s of snapshot.segments) {
+      // A billable pause is billed, not worked: it is no logged time and no activity.
+      if (s.kind === 'billablePause') continue;
       const start = parseIso(s.start);
       const openHere = s.end === null && s.provisionalEnd === null;
       const end = openHere ? start : effectiveEnd(s, 0);

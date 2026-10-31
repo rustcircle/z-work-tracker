@@ -2,6 +2,7 @@
 import { Columns, CalendarHeat, Donut, HBars, HeatLegend, Legend, StackedArea, WeekdayHourHeat, timeScale, type Col, type HRow, type LegendEntry, type Slice } from './charts';
 import { fmtHM, fmtHMS, fmtLong, fmtPct, fmtSignedPct } from './format';
 import { projectLegend, projectTipLines, segsOf, tipTime, basisWord, type SecEnv } from './secenv';
+import { PiecesCard, feeLine } from './SectionsP2';
 import { Card, Section, Stat, dayText } from './ui';
 import { WEEKDAY_NAMES, WEEKDAY_SHORT, dayStr, weekdayIndex } from './range';
 
@@ -82,6 +83,7 @@ export function Overview({ env }: { env: SecEnv }) {
           empty={EMPTY}
         />
       </Card>
+      <PiecesCard env={env} />
       <Card
         title="Projection"
         info="forecast.projected"
@@ -188,6 +190,20 @@ export function TimeOfDay({ env }: { env: SecEnv }) {
   );
 }
 
+function pricingText(env: SecEnv, projectId: string, rate: 'set' | 'none' | 'fixed' | 'not-billable'): string {
+  if (rate === 'not-billable') return 'Not billable';
+  if (rate === 'none') return 'No rate set';
+  if (rate === 'set') return 'Hourly rate';
+  const f = env.m.fixedFee.find((x) => x.projectId === projectId);
+  return f ? feeLine(env, f) : 'Fixed fee';
+}
+
+/** The fixed-fee line of a project's tooltip: its fee and effective hourly rate, never "No rate set". */
+function fixedLine(env: SecEnv, projectId: string): string[] {
+  const f = env.m.fixedFee.find((x) => x.projectId === projectId);
+  return f ? [feeLine(env, f)] : [];
+}
+
 export function Projects({ env }: { env: SecEnv }) {
   const { m } = env;
   const list = m.projects;
@@ -216,6 +232,7 @@ export function Projects({ env }: { env: SecEnv }) {
       `${p.taskCount} task${p.taskCount === 1 ? '' : 's'}${p.avgPerTask === null ? '' : `, ${fmtHM(p.avgPerTask)} average per task`}`,
       ...(p.delta ? [`Previous period: ${fmtHM(p.delta.prev)}${p.delta.pct === null ? '' : ` (${fmtSignedPct(p.delta.pct)})`}`] : []),
       ...(p.rate === 'none' ? ['No rate set'] : []),
+      ...fixedLine(env, p.id),
     ],
     onSelect: () => env.drill({ title: p.name, projectId: p.id }),
   }));
@@ -229,7 +246,7 @@ export function Projects({ env }: { env: SecEnv }) {
         title="Share of time"
         info="projects.share"
         openGlossary={env.openGlossary}
-        data={{ caption: 'Project time', columns: ['Project', basisWord(env), 'Share', 'Exact', 'Billable', 'Tasks', 'Average per task', 'Change vs previous'], rows: list.map((p) => [p.name, fmtHMS(p.secs), p.share === null ? '' : fmtPct(p.share, 1), fmtHMS(p.exact), fmtHMS(p.billableSecs), p.taskCount, p.avgPerTask === null ? '' : fmtHMS(p.avgPerTask), p.delta?.pct == null ? '' : fmtSignedPct(p.delta.pct)]) }}
+        data={{ caption: 'Project time', columns: ['Project', basisWord(env), 'Share', 'Exact', 'Billable', 'Tasks', 'Average per task', 'Change vs previous', 'Pricing'], rows: list.map((p) => [p.name, fmtHMS(p.secs), p.share === null ? '' : fmtPct(p.share, 1), fmtHMS(p.exact), fmtHMS(p.billableSecs), p.taskCount, p.avgPerTask === null ? '' : fmtHMS(p.avgPerTask), p.delta?.pct == null ? '' : fmtSignedPct(p.delta.pct), pricingText(env, p.id, p.rate)]) }}
       >
         <Donut slices={slices} centerTop={fmtHM(total)} centerBottom={basisWord(env)} ariaLabel="Share of time per project" empty={EMPTY} />
       </Card>

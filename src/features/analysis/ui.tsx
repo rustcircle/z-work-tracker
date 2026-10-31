@@ -9,7 +9,7 @@ import { fmtHM, fmtHMS } from './format';
 import { glossaryEntry, searchGlossary, type GlossaryEntry } from './glossary';
 import type { SpanRec } from './engine';
 import { MONTH_SHORT, WEEKDAY_SHORT, dayNum, weekdayIndex } from './range';
-import type { Project, Task } from '../../lib/types';
+import type { Project, Tag, Task } from '../../lib/types';
 
 export function dayText(day: string): string {
   const n = dayNum(day);
@@ -187,6 +187,22 @@ export function GlossaryDialog({ open, focusId, onClose }: { open: boolean; focu
 
 // ------------------------------------------------------------------ drill-down
 
+/** Tag names with their colour as a swatch; the name is always written out. */
+export function TagChips({ ids, tags }: { ids: readonly string[]; tags: ReadonlyMap<string, Tag> | undefined }) {
+  const live = ids.map((id) => tags?.get(id)).filter((t): t is Tag => t !== undefined && !t.deleted);
+  if (live.length === 0) return null;
+  return (
+    <span className="a-tags">
+      {live.map((t) => (
+        <span key={t.id} className="a-tag">
+          <span className="a-dot-sw" style={{ background: t.color }} aria-hidden="true" />
+          {t.name}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export interface DrillContext {
   spans: readonly SpanRec[];
   zone: string;
@@ -194,12 +210,14 @@ export interface DrillContext {
   nowSec: number;
   projects: ReadonlyMap<string, Project>;
   tasks: ReadonlyMap<string, Task>;
+  /** Live tags by id, for the tag names on the task rows. */
+  tags?: ReadonlyMap<string, Tag>;
 }
 
 const MAX_SEGMENTS = 60;
 
 export function DrillPanel({ sel, ctx, onClose }: { sel: DrillSel; ctx: DrillContext; onClose: () => void }) {
-  const res: DrillResult = useMemo(() => drillInto(ctx.spans, ctx.zone, sel), [ctx.spans, ctx.zone, sel]);
+  const res: DrillResult = useMemo(() => drillInto(ctx.spans, ctx.zone, sel, new Map([...ctx.tasks].map(([id, t]) => [id, t.tags]))), [ctx.spans, ctx.zone, ctx.tasks, sel]);
   const [all, setAll] = useState(false);
   const ref = useRef<HTMLElement>(null);
   useEscape(true, onClose);
@@ -233,6 +251,7 @@ export function DrillPanel({ sel, ctx, onClose }: { sel: DrillSel; ctx: DrillCon
             <li key={t.taskId}>
               <span>{ctx.tasks.get(t.taskId)?.name ?? t.taskId}</span>
               {p ? <ProjectChip name={p.name} color={p.color} /> : null}
+              <TagChips ids={ctx.tasks.get(t.taskId)?.tags ?? []} tags={ctx.tags} />
               <span className="tabular">{fmtHM(t.secs)}</span>
             </li>
           );

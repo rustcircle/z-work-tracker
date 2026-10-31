@@ -2,7 +2,7 @@
 // the view the Analysis tab last showed (or all logged history when it was never opened), and the
 // sheet title names the period and the zone. Durations are seconds, money is exact cents, shares
 // are fractions. Sheets holding money are marked containsPrices so client exports can drop them.
-import { centsFromNumerator } from '../../lib/billing';
+import { centsFromNumerator, money as fmtMoney } from '../../lib/billing';
 import { dayOf, parseIso, zoneLabel } from '../../lib/tz';
 import type { AnalyticsSheet, Snapshot } from '../../lib/types';
 import { NO_FILTERS, closedSegs } from './engine';
@@ -30,12 +30,16 @@ export function historyRange(snapshot: Snapshot, zone: string, nowSec: number): 
 
 const basisOf = (id: string): string => glossaryEntry(id)?.basis ?? '';
 
+/** The Rate column: a fixed-fee project says so instead of "No rate set". No price is written here. */
+const rateText = (rate: 'set' | 'none' | 'fixed' | 'not-billable'): string => (rate === 'none' ? 'No rate set' : rate === 'not-billable' ? 'Not billable' : rate === 'fixed' ? 'Fixed fee' : '');
+
 export function buildAnalyticsSheets(snapshot: Snapshot, zone: string, nowSec: number, view?: AnalysisView | null): AnalyticsSheet[] {
   const v = view ?? publishedAnalysisView();
   const range = v?.range ?? historyRange(snapshot, zone, nowSec);
   const m = analyze(snapshot, { zone, range, filters: v?.filters ?? NO_FILTERS, compare: v?.compare ?? false }, nowSec, v?.basis ?? 'billable');
   const where = `${m.period.label}, ${zoneLabel(zone, Math.min(nowSec, m.period.to - 1))}`;
   const sheets: AnalyticsSheet[] = [kpiSheet(m, where), bandsSheet(snapshot, m, where), projectsSheet(m, where), weekdaysSheet(m, where)];
+  if (m.tags.stats.length > 0) sheets.push(tagsSheet(m, where));
   if (m.shifts.configured && m.shifts.stats.length > 0) sheets.push(shiftsSheet(m, where));
   if (m.money.available) sheets.push(earningsPeriodSheet(m, where), earningsProjectSheet(m, where));
   return sheets;
@@ -54,6 +58,8 @@ function kpiSheet(m: Metrics, where: string): AnalyticsSheet {
     if (vol.billable >= vol.exact) time('Rounding adjustment (Billable minus Exact)', vol.billable - vol.exact, 'money.rounding');
     else rows.push(['Rounding adjustment (Billable minus Exact), negative: see Projects sheet', null, null, null, basisOf('money.rounding'), 'money.rounding']);
   }
+  if (m.pieces.pausesShown && m.pieces.pauseSecs > 0) time('Billable pauses (in Billable, not in Exact)', m.pieces.pauseSecs, 'pauses.billable');
+  if (m.pieces.thinkingSecs > 0) time('Thinking time (in Exact and Billable)', m.pieces.thinkingSecs, 'time.thinking');
   count('Active days', vol.activeDays, 'volume.activeDays');
   count('Calendar days elapsed', vol.elapsedDays, 'volume.avgCalendarDay');
   time('Average per active day', vol.avgPerActiveDay, 'volume.avgActiveDay');
@@ -141,7 +147,7 @@ function projectsSheet(m: Metrics, where: string): AnalyticsSheet {
     p.adjSecs / 3600,
     p.prevSecs,
     p.delta?.pct ?? null,
-    p.rate === 'none' ? 'No rate set' : p.rate === 'not-billable' ? 'Not billable' : '',
+    rateText(p.rate),
   ]);
   return {
     name: 'Projects',
@@ -157,6 +163,23 @@ function projectsSheet(m: Metrics, where: string): AnalyticsSheet {
       { header: 'Previous period', kind: 'duration' },
       { header: 'Change', kind: 'percent' },
       { header: 'Rate', kind: 'text' },
+    ],
+    rows,
+    containsPrices: false,
+  };
+}
+
+function tagsSheet(m: Metrics, where: string): AnalyticsSheet {
+  const rows: Cell[][] = [...m.tags.stats, ...(m.tags.untagged ? [m.tags.untagged] : [])].map((t) => [t.name, t.exact, t.billableSecs, t.share, t.taskCount]);
+  return {
+    name: 'Tags',
+    title: `Time by tag (a task with two tags counts fully in each, so rows overlap and have no total): ${where}`,
+    columns: [
+      { header: 'Tag', kind: 'text' },
+      { header: 'Exact time', kind: 'duration' },
+      { header: 'Billable time', kind: 'duration' },
+      { header: `Share of total time (${m.basis === 'billable' ? 'Billable' : 'Exact'}, overlaps)`, kind: 'percent' },
+      { header: 'Tasks', kind: 'int' },
     ],
     rows,
     containsPrices: false,
@@ -247,12 +270,14 @@ function earningsPeriodSheet(m: Metrics, where: string): AnalyticsSheet {
 function earningsProjectSheet(m: Metrics, where: string): AnalyticsSheet {
   const rows: Cell[][] = m.projects.map((p) => {
     const n = m.money.byProject.get(p.id);
+    const fixed = m.fixedFee.find((f) => f.projectId === p.id);
     return [
       p.name,
       p.billableSecs,
       n?.EUR !== undefined ? centsFromNumerator(n.EUR) : null,
       n?.USD !== undefined ? centsFromNumerator(n.USD) : null,
-      p.rate === 'none' ? 'No rate set' : p.rate === 'not-billable' ? 'Not billable' : '',
+      rateText(p.rate),
+      fixed ? (fixed.effectiveHourlyCents !== null && fixed.currency ? `${fmtMoney(fixed.currency, fixed.effectiveHourlyCents)} per hour` : 'Not enough data') : '',
     ];
   });
   return {
@@ -264,6 +289,7 @@ function earningsProjectSheet(m: Metrics, where: string): AnalyticsSheet {
       { header: 'Earnings EUR', kind: 'eur' },
       { header: 'Earnings USD', kind: 'usd' },
       { header: 'Rate', kind: 'text' },
+      { header: 'Effective hourly rate (fixed fee)', kind: 'text' },
     ],
     rows,
     containsPrices: true,

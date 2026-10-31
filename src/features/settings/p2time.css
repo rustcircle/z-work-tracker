@@ -1,0 +1,14 @@
+/* Settings: reminders, backups and the audit log. */
+.reminder-field { max-width: 640px; }
+.backup-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.backup-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.backup-row:last-child { border-bottom: 0; }
+.backup-name { flex: 1 1 260px; font-variant-numeric: tabular-nums; word-break: break-all; }
+.backup-result { margin: 0; padding: 8px 12px; border-left: 4px solid var(--success); background: color-mix(in srgb, var(--success) 10%, var(--surface)); border-radius: 4px; }
+.audit-controls { align-items: flex-end; }
+.audit-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.audit-entry { padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+.audit-entry:last-child { border-bottom: 0; }
+.audit-entry p { margin: 0; }
+.audit-reason { font-style: italic; }
+.audit-change { font-size: 12.5px; }

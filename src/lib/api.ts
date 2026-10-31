@@ -3,7 +3,18 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type {
+  AuditEntry,
+  BackupInfo,
+  CorrectionInput,
   ExportRequest,
+  GapDecision,
+  ManualEntryInput,
+  PauseInput,
+  PdfRequest,
+  SummaryPreview,
+  SummaryRequest,
+  TagInput,
+  TemplateInput,
   FolderPreview,
   MovePreview,
   MoveProgress,
@@ -60,6 +71,40 @@ export const api = {
   setAutostart: (enabled: boolean) => invoke<boolean>('set_autostart', { enabled }),
   ackHideNotice: () => invoke<void>('ack_hide_notice'),
   quitApp: () => invoke<void>('quit_app'),
+
+  // Manual entries and corrections. An `overlap` error means the span clashes with logged time; the page
+  // may ask again with `allowOverlap`. Billed time can't change until its summary is voided.
+  addManualEntry: (input: ManualEntryInput) => invoke<WithId>('add_manual_entry', { input }),
+  correctSegment: (input: CorrectionInput) => invoke<Snapshot>('correct_segment', { input }),
+  voidSegment: (id: string, reason: string) => invoke<Snapshot>('void_segment', { id, reason }),
+  restoreSegment: (id: string, reason: string) => invoke<Snapshot>('restore_segment', { id, reason }),
+  getAudit: (entityId: string | null) => invoke<AuditEntry[]>('get_audit', { entityId }),
+  // Time away and billable pauses.
+  decideGap: (id: string, decision: GapDecision) => invoke<Snapshot>('decide_gap', { id, decision }),
+  markBillablePause: (input: PauseInput) => invoke<WithId>('mark_billable_pause', { input }),
+  unmarkBillablePause: (id: string) => invoke<Snapshot>('unmark_billable_pause', { id }),
+  setActiveSubtask: (taskId: string, subtaskId: string | null) => invoke<Snapshot>('set_active_subtask', { taskId, subtaskId }),
+  // Tags and templates.
+  saveTag: (input: TagInput) => invoke<WithId>('save_tag', { input }),
+  deleteTag: (id: string) => invoke<Snapshot>('delete_tag', { id }),
+  saveTemplate: (input: TemplateInput) => invoke<WithId>('save_template', { input }),
+  deleteTemplate: (id: string) => invoke<Snapshot>('delete_template', { id }),
+  taskFromTemplate: (id: string, projectId: string | null) => invoke<WithId>('task_from_template', { id, projectId }),
+  // Billing summaries: for the user's own guidance, never an invoice.
+  summaryPreview: (request: SummaryRequest) => invoke<SummaryPreview>('summary_preview', { request }),
+  createSummary: (request: SummaryRequest) => invoke<WithId>('create_summary', { request }),
+  voidSummary: (id: string) => invoke<Snapshot>('void_summary', { id }),
+  setDevicePrefix: (prefix: string) => invoke<Snapshot>('set_device_prefix', { prefix }),
+  exportSummaryCsv: (id: string) => invoke<string | null>('export_summary_csv', { id }),
+  // PDF timesheet and its logo (PNG, kept on this computer only).
+  exportPdf: (request: PdfRequest) => invoke<string | null>('export_pdf', { request }),
+  pickPdfLogo: () => invoke<Snapshot>('pick_pdf_logo'),
+  clearPdfLogo: () => invoke<Snapshot>('clear_pdf_logo'),
+  // Backups and reminders.
+  listBackups: () => invoke<BackupInfo[]>('list_backups'),
+  restoreBackup: (name: string) => invoke<Snapshot>('restore_backup', { name }),
+  setBackupKeep: (keep: number) => invoke<Snapshot>('set_backup_keep', { keep }),
+  snoozeReminder: (minutes: number) => invoke<Snapshot>('snooze_reminder', { minutes }),
 };
 
 export interface HideNoticePayload {

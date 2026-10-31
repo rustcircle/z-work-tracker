@@ -1,9 +1,9 @@
-// Entry for the e2e build. `?seed=demo` (default) or `?seed=empty`, `?theme=`, `?firstRun=1`, `?launch=cold`.
+// Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty`, `?theme=`, `?firstRun=1`, `?launch=cold`.
 import { emit } from '@tauri-apps/api/event';
 
 import { toIso } from '../lib/tz';
 import type { Theme } from '../lib/types';
-import { demoState } from './demoSeed';
+import { demoP2State, demoState } from './demoSeed';
 import { crashRelaunch, emptyState, installMock, relaunch, type MockState } from './ipcMock';
 
 declare global {
@@ -29,7 +29,8 @@ function seedSync(state: MockState): void {
 
 export function installE2eBackend(): void {
   const q = new URLSearchParams(window.location.search);
-  const state = q.get('seed') === 'empty' ? emptyState() : demoState();
+  const seed = q.get('seed');
+  const state = seed === 'empty' ? emptyState() : seed === 'p2' ? demoP2State() : demoState();
   const theme = q.get('theme');
   if (theme) state.theme = theme as Theme;
   if (q.get('hide') === '1') state.hideEarnings = true;

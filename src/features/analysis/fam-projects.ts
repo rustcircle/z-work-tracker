@@ -20,8 +20,8 @@ export interface ProjectStat {
   taskCount: number;
   avgPerTask: number | null;
   rank: number;
-  /** 'none' means a billable project with no rate: shown as "No rate set", never as zero. */
-  rate: 'set' | 'none' | 'not-billable';
+  /** 'none' means a billable hourly project with no rate: shown as "No rate set", never as zero. 'fixed' is a fixed-fee project, which earns its fee, not an hourly rate. */
+  rate: 'set' | 'none' | 'fixed' | 'not-billable';
   adjSecs: number;
 }
 
@@ -62,7 +62,7 @@ export function projectsOf(ctx: Ctx): ProjectStat[] {
       taskCount: tc,
       avgPerTask: tc > 0 ? secs / tc : null,
       rank: 0,
-      rate: !p.billable ? 'not-billable' : ctx.book.at(id, refSec).rateCents === null ? 'none' : 'set',
+      rate: !p.billable ? 'not-billable' : p.billingType === 'fixedFee' ? 'fixed' : ctx.book.at(id, refSec).rateCents === null ? 'none' : 'set',
       adjSecs: idx.adjByProject.get(id) ?? 0,
     });
   }

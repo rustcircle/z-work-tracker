@@ -8,11 +8,12 @@ import type { ExportRequest } from '../../lib/types';
 import { Button, Field, Modal, Segmented, Switch } from '../../components/ui';
 import { IconDownload } from '../../components/icons';
 import { buildAnalyticsSheets } from '../analysis/sheets';
+import { PdfFields, usePdfForm } from './PdfExport';
 import { segmentShiftText } from './segmentShifts';
 
-type Kind = 'xlsx' | 'csv';
+type Kind = 'xlsx' | 'csv' | 'pdf';
 
-/** Excel or CSV export of everything logged, cut into days in the chosen zone. */
+/** Excel or CSV export of everything logged, cut into days in the chosen zone, or a PDF timesheet. */
 export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { snapshot, zones, nowSec, showError } = useApp();
   const [kind, setKind] = useState<Kind>('xlsx');
@@ -21,6 +22,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const [earnings, setEarnings] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ path: string | null } | null>(null);
+  const pdf = usePdfForm();
 
   const zone = dayZone ?? zones.active;
   const includeEarnings = earnings ?? !snapshot.prefs.hideEarnings;
@@ -36,6 +38,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const zoneOptions = [...roles.entries()].map(([z, r]) => ({ z, text: `${zoneLabel(z, nowSec)} (${r.join(', ')})` }));
 
   async function run(): Promise<void> {
+    if (kind === 'pdf') return pdf.run();
     setBusy(true);
     setResult(null);
     try {
@@ -60,12 +63,13 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
     <Modal
       open={open}
       title="Export"
+      wide={kind === 'pdf'}
       onClose={onClose}
       footer={
         <>
           <Button onClick={onClose}>Close</Button>
-          <Button variant="primary" icon={<IconDownload />} disabled={busy} onClick={() => void run()}>
-            {busy ? 'Exporting…' : `Export ${kind === 'xlsx' ? 'Excel' : 'CSV'}`}
+          <Button variant="primary" icon={<IconDownload />} disabled={busy || pdf.busy} onClick={() => void run()}>
+            {busy || pdf.busy ? 'Exporting…' : `Export ${kind === 'xlsx' ? 'Excel' : kind === 'pdf' ? 'PDF' : 'CSV'}`}
           </Button>
         </>
       }
@@ -81,37 +85,44 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
           options={[
             { value: 'xlsx', label: 'Excel (.xlsx)' },
             { value: 'csv', label: 'CSV (.csv)' },
+            { value: 'pdf', label: 'PDF timesheet (.pdf)' },
           ]}
         />
-        <Field label="Cut days in" hint="Raw times are always exported in UTC as well. This zone decides which day a segment belongs to.">
-          {({ id, describedBy }) => (
-            <select id={id} className="input" value={zone} onChange={(e) => setDayZone(e.target.value)} aria-describedby={describedBy}>
-              {zoneOptions.map((o) => (
-                <option key={o.z} value={o.z}>
-                  {o.text}
-                </option>
+        {kind === 'pdf' ? (
+          <PdfFields form={pdf} />
+        ) : (
+          <>
+            <Field label="Cut days in" hint="Raw times are always exported in UTC as well. This zone decides which day a segment belongs to.">
+              {({ id, describedBy }) => (
+                <select id={id} className="input" value={zone} onChange={(e) => setDayZone(e.target.value)} aria-describedby={describedBy}>
+                  {zoneOptions.map((o) => (
+                    <option key={o.z} value={o.z}>
+                      {o.text}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+            {zones.client && <Switch label={`Include ${zoneLabel(zones.client, nowSec)} times`} checked={withClient} onChange={setWithClient} hint="Adds client-zone columns next to My zone." />}
+            <Switch
+              label="Include earnings"
+              checked={includeEarnings}
+              onChange={setEarnings}
+              hint={includeEarnings ? (hidden ? 'Earnings are hidden on screen, but this file will contain them.' : 'Prices and amounts are in the file.') : 'Turn off for client-facing files: no rates, prices or amounts, and analysis sheets with money are left out.'}
+            />
+            {kind === 'xlsx' && <p className="field-hint">The Excel file also holds analysis sheets for the same zone.</p>}
+            {result &&
+              (result.path ? (
+                <p className="export-result" role="status" data-testid="export-result">
+                  Saved to <code>{result.path}</code>
+                </p>
+              ) : (
+                <p className="muted" role="status">
+                  Export cancelled. Nothing was saved.
+                </p>
               ))}
-            </select>
-          )}
-        </Field>
-        {zones.client && <Switch label={`Include ${zoneLabel(zones.client, nowSec)} times`} checked={withClient} onChange={setWithClient} hint="Adds client-zone columns next to My zone." />}
-        <Switch
-          label="Include earnings"
-          checked={includeEarnings}
-          onChange={setEarnings}
-          hint={includeEarnings ? (hidden ? 'Earnings are hidden on screen, but this file will contain them.' : 'Prices and amounts are in the file.') : 'Turn off for client-facing files: no rates, prices or amounts, and analysis sheets with money are left out.'}
-        />
-        {kind === 'xlsx' && <p className="field-hint">The Excel file also holds analysis sheets for the same zone.</p>}
-        {result &&
-          (result.path ? (
-            <p className="export-result" role="status" data-testid="export-result">
-              Saved to <code>{result.path}</code>
-            </p>
-          ) : (
-            <p className="muted" role="status">
-              Export cancelled. Nothing was saved.
-            </p>
-          ))}
+          </>
+        )}
       </div>
     </Modal>
   );

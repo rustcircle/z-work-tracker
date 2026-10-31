@@ -33,11 +33,14 @@ test.describe('full flow on an empty store', () => {
     await page.getByRole('button', { name: 'New task' }).click();
     const form = page.getByRole('form', { name: 'New task' });
     await expect(form.getByRole('button', { name: 'Start' })).toBeDisabled();
-    await expect(form.getByText('To start, enter a task name, a project and a description.')).toBeVisible();
+    await expect(form.getByText('To start, enter a task name, a project, a description and at least one tag.')).toBeVisible();
     await form.getByRole('textbox', { name: 'Task name' }).fill('Logo concepts');
     await form.getByRole('combobox', { name: 'Project' }).selectOption({ label: 'Brand refresh' });
     await form.getByRole('button', { name: 'Numbered list' }).click();
     await form.getByRole('textbox', { name: 'Description' }).pressSequentially('Moodboard\nSketches\nFinal artwork');
+    await expect(form.getByRole('button', { name: 'Start' })).toBeDisabled();
+    await expect(form.getByText('To start, enter at least one tag.')).toBeVisible();
+    await form.getByRole('checkbox', { name: 'Concept' }).check();
     await expect(form.getByRole('button', { name: 'Start' })).toBeEnabled();
     await form.getByRole('button', { name: 'Start' }).click();
 

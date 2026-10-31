@@ -132,8 +132,10 @@ describe('cold start: every field is required', () => {
     expect(await within(form).findByText(/spaces-only description does not count/)).toBeVisible();
     expect(within(form).getByRole('button', { name: 'Start' })).toBeDisabled();
     await user.type(within(form).getByRole('textbox', { name: 'Description' }), 'x');
+    await waitFor(() => expect(within(form).queryByText(/spaces-only/)).toBeNull());
+    expect(within(form).getByRole('button', { name: 'Start' })).toBeDisabled(); // still no tag
+    await user.click(within(form).getByRole('checkbox', { name: 'Admin' }));
     await waitFor(() => expect(within(form).getByRole('button', { name: 'Start' })).toBeEnabled());
-    expect(within(form).queryByText(/spaces-only/)).toBeNull();
   });
 
   it('moves focus to the first invalid field when saving is attempted', async () => {
@@ -167,12 +169,16 @@ describe('cold start: every field is required', () => {
     await user.type(within(form).getByRole('textbox', { name: 'Task name' }), 'First');
     await user.selectOptions(within(form).getByRole('combobox', { name: 'Project' }), 'p1');
     await user.type(within(form).getByRole('textbox', { name: 'Description' }), 'Do it');
+    // The starter tags exist, so a cold start also needs one of them.
+    expect(within(form).getByRole('button', { name: 'Start' })).toBeDisabled();
+    await user.click(within(form).getByRole('checkbox', { name: 'Concept' }));
     await user.click(within(form).getByRole('button', { name: 'Start' }));
     await waitFor(() => expect(state.warm).toBe(true));
     await user.click(await screen.findByRole('button', { name: 'New task' }));
     const next = screen.getByRole('form', { name: 'New task' });
     expect(within(next).getByRole('textbox', { name: 'Task name' })).toHaveValue('First');
     expect(within(next).getByTestId('copy-note')).toBeVisible();
+    expect(within(next).getByRole('checkbox', { name: 'Concept' })).toBeChecked();
   });
 });
 
@@ -190,6 +196,7 @@ describe('cold resume', () => {
     await user.type(within(form).getByRole('textbox', { name: 'Task name' }), 'Retry me');
     await user.selectOptions(within(form).getByRole('combobox', { name: 'Project' }), 'p-web');
     await user.type(within(form).getByRole('textbox', { name: 'Description' }), 'Real text');
+    await user.click(within(form).getByRole('checkbox', { name: 'Concept' }));
     state.failNext = ['start_task', 'start_task'];
     await user.click(within(form).getByRole('button', { name: 'Start' }));
     await waitFor(() => expect(state.tasks).toHaveLength(before + 1));
@@ -232,9 +239,11 @@ describe('cold resume', () => {
     await user.type(within(form).getByRole('textbox', { name: 'Task name' }), 'Logo concepts v2');
     await user.selectOptions(within(form).getByRole('combobox', { name: 'Project' }), 'p-brand');
     await user.type(within(form).getByRole('textbox', { name: 'Description' }), 'Second round');
+    expect(within(form).getByRole('button', { name: 'Start' })).toBeDisabled(); // a cold start needs a tag too
+    await user.click(within(form).getByRole('checkbox', { name: 'Revision' }));
     await user.click(within(form).getByRole('button', { name: 'Start' }));
     await waitFor(() => expect(calls('start_task')).toHaveLength(1));
-    expect(calls('create_task')[0]).toMatchObject({ input: { name: 'Logo concepts v2', projectId: 'p-brand', continuedFrom: 't-logo' } });
+    expect(calls('create_task')[0]).toMatchObject({ input: { name: 'Logo concepts v2', projectId: 'p-brand', continuedFrom: 't-logo', tags: ['tag-revision'] } });
     expect(calls('resume_task')).toEqual([]);
     const created = taskNamed('Logo concepts v2');
     expect(created.state).toBe('running');

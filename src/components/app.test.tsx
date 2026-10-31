@@ -33,17 +33,22 @@ describe('new task form', () => {
     await user.click(await screen.findByRole('button', { name: 'New task' }));
     const start = screen.getByRole('button', { name: 'Start' });
     expect(start).toBeDisabled();
-    expect(screen.getByText('To start, enter a task name, a project and a description.')).toBeVisible();
+    // The starter tags exist, so the data-driven list ends with the tag requirement.
+    expect(screen.getByText('To start, enter a task name, a project, a description and at least one tag.')).toBeVisible();
 
     await user.type(screen.getByRole('textbox', { name: 'Task name' }), 'Draft logo');
     expect(start).toBeDisabled();
-    expect(screen.getByText('To start, enter a project and a description.')).toBeVisible();
+    expect(screen.getByText('To start, enter a project, a description and at least one tag.')).toBeVisible();
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'p1');
     expect(start).toBeDisabled();
-    expect(screen.getByText('To start, enter a description.')).toBeVisible();
+    expect(screen.getByText('To start, enter a description and at least one tag.')).toBeVisible();
 
     await user.type(screen.getByRole('textbox', { name: 'Description' }), 'Three directions');
+    expect(start).toBeDisabled();
+    expect(screen.getByText('To start, enter at least one tag.')).toBeVisible();
+
+    await user.click(screen.getByRole('checkbox', { name: 'Concept' }));
     expect(start).toBeEnabled();
     expect(screen.queryByText(/To start, enter/)).toBeNull();
   });
@@ -66,8 +71,13 @@ describe('new task form', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'p1');
     await user.click(screen.getByRole('button', { name: 'Numbered list' }));
     await user.type(screen.getByRole('textbox', { name: 'Description' }), 'Moodboard{Enter}Sketches');
+    // A cold start needs a tag as soon as any tag exists.
+    expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled();
+    expect(screen.getByText('To start, enter at least one tag.')).toBeVisible();
+    await user.click(screen.getByRole('checkbox', { name: 'Concept' }));
     await user.click(screen.getByRole('button', { name: 'Start' }));
     await waitFor(() => expect(state.tasks[0]?.state).toBe('running'));
+    expect(state.tasks[0]?.tags).toEqual(['tag-concept']);
     const json = JSON.stringify(state.tasks[0]?.description);
     expect(json).toContain('orderedList');
     expect(json).toContain('Sketches');

@@ -1,0 +1,38 @@
+/* The colour picker. Every colour that is not the picked one comes from the theme tokens. */
+.cp { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cp-main { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: flex-start; }
+.cp-spectrum { display: flex; flex-direction: column; gap: 12px; width: min(100%, 250px); }
+.cp-area {
+  position: relative; width: 100%; height: 150px; border-radius: var(--radius-sm); cursor: crosshair; touch-action: none;
+  background-image: linear-gradient(to top, #000, rgb(0 0 0 / 0)), linear-gradient(to right, #fff, rgb(255 255 255 / 0));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 30%, transparent);
+}
+.cp-hue {
+  position: relative; width: 100%; height: 16px; border-radius: 8px; cursor: pointer; touch-action: none;
+  background-image: linear-gradient(to right, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 30%, transparent);
+}
+.cp-thumb, .cp-hue-thumb {
+  position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; pointer-events: none;
+  border: 2px solid #fff; box-shadow: 0 0 0 1.5px #000, 0 1px 3px rgb(0 0 0 / 0.5);
+}
+.cp-hue-thumb { top: 50%; }
+.cp-area:focus-visible, .cp-hue:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+.cp-side { display: flex; flex-direction: column; gap: 10px; flex: 1 1 200px; min-width: 190px; max-width: 320px; }
+.cp-preview {
+  display: grid; place-items: center; height: 54px; border-radius: var(--radius-sm); font-weight: 600; padding: 0 12px; overflow: hidden;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 30%, transparent);
+}
+.cp-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.cp-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cp-field-hex { grid-column: 1 / -1; }
+.cp-group { display: flex; flex-direction: column; gap: 5px; }
+.cp-sub { font-size: 12.5px; color: var(--text-muted); }
+.cp-notes { display: flex; flex-direction: column; gap: 4px; }
+.cp-notes:empty { display: none; }
+.cp .field-warning { margin: 0; }
+
+.field > .segmented { align-self: flex-start; }
+
+/* A refusal from the backend, shown above the buttons of a form that hosts a picker. */
+.form-error { margin: 0; padding: 8px 12px; border: 1px solid var(--danger); border-radius: var(--radius-sm); color: var(--danger); font-weight: 600; background: color-mix(in srgb, var(--danger) 8%, var(--surface)); overflow-wrap: anywhere; }

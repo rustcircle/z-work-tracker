@@ -38,11 +38,27 @@ function Kpi({ title, info, value, sub, delta, abs, spark, sparkLabel, env }: { 
   );
 }
 
+/** Fixed-fee projects earn their fee, so the card shows the effective hourly rate instead of "No rate set". */
+function FixedFeeKpi({ env }: { env: SecEnv }) {
+  const f = env.m.fixedFee;
+  const one = f.length === 1 ? f[0] : undefined;
+  const rate = one && one.effectiveHourlyCents !== null && one.currency ? (env.hide ? MASK : `${fmtMoney(one.currency, one.effectiveHourlyCents)} per hour`) : null;
+  return (
+    <Kpi
+      env={env}
+      title="Fixed fee"
+      info="money.fixedFeeRate"
+      value={one ? (rate ?? 'Not enough data') : `${f.length} projects`}
+      sub={one ? `${one.name}: effective hourly rate${one.feeCents !== null && one.currency ? `, fee ${env.hide ? MASK : fmtMoney(one.currency, one.feeCents)}` : ''}` : 'Effective hourly rate per project in Goals and money'}
+    />
+  );
+}
+
 export function KpiRow({ env }: { env: SecEnv }) {
   const { m, hide } = env;
   const v = m.volume;
   const pts = m.series.points;
-  const showBoth = m.billableAvailable && m.roundingActive;
+  const showBoth = m.billableAvailable && (m.roundingActive || m.pieces.pauseSecs > 0);
   const earn = (['EUR', 'USD'] as const).filter((c) => m.money.numerators[c] !== undefined);
   const firstCur: Currency | undefined = earn[0];
   const earnSpark = firstCur ? m.money.earnings[firstCur]?.map((p) => p.numerator) : undefined;
@@ -57,7 +73,7 @@ export function KpiRow({ env }: { env: SecEnv }) {
           title="Total time"
           info="volume.total"
           value={fmtHM(v.primary)}
-          sub={showBoth ? `Billable ${fmtHM(v.billable)} · Exact ${fmtHM(v.exact)}` : 'Exact (no rounding applies)'}
+          sub={showBoth ? `Billable ${fmtHM(v.billable)}${m.pieces.pauseSecs > 0 && m.pieces.pausesShown ? ` (includes ${fmtHM(m.pieces.pauseSecs)} billable pauses)` : ''} · Exact ${fmtHM(v.exact)}` : 'Exact (no rounding applies)'}
           delta={v.deltaTotal}
           abs={fmtHM}
           spark={pts.map((p) => p.secs)}
@@ -91,6 +107,11 @@ export function KpiRow({ env }: { env: SecEnv }) {
               No rate set for {m.money.missingRate.length} project{m.money.missingRate.length === 1 ? '' : 's'}: set a rate
             </button>
           ) : null}
+        </div>
+      ) : null}
+      {m.fixedFee.length > 0 ? (
+        <div role="listitem">
+          <FixedFeeKpi env={env} />
         </div>
       ) : null}
       <div role="listitem">

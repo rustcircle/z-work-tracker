@@ -102,13 +102,17 @@ test.describe('cold start requires every field', () => {
     await expect(f.getByTestId('copy-note')).toHaveCount(0);
     const start = f.getByRole('button', { name: 'Start', exact: true });
     await expect(start).toBeDisabled();
-    await expect(f.getByText('To start, enter a task name, a project and a description.')).toBeVisible();
+    await expect(f.getByText('To start, enter a task name, a project, a description and at least one tag.')).toBeVisible();
     await f.getByRole('textbox', { name: 'Task name' }).fill('Cold task');
     await f.getByRole('combobox', { name: 'Project' }).selectOption('p-web');
     await f.getByRole('textbox', { name: 'Description' }).pressSequentially('     ');
     await expect(f.getByText(/spaces-only description does not count/)).toBeVisible();
     await expect(start).toBeDisabled();
     await f.getByRole('textbox', { name: 'Description' }).pressSequentially('Real words');
+    // Everything else is there, but the demo has tags, so a cold start needs one of them too.
+    await expect(start).toBeDisabled();
+    await expect(f.getByText('To start, enter at least one tag.')).toBeVisible();
+    await f.getByRole('checkbox', { name: 'Concept' }).check();
     await expect(start).toBeEnabled();
     await start.click();
     await expect(card(page, 'Cold task').getByText('Running', { exact: true })).toBeVisible();
@@ -169,6 +173,8 @@ test.describe('cold Resume', () => {
     await f.getByRole('textbox', { name: 'Task name' }).fill('Logo concepts v2');
     await f.getByRole('combobox', { name: 'Project' }).selectOption('p-brand');
     await f.getByRole('textbox', { name: 'Description' }).pressSequentially('Second round');
+    await expect(f.getByRole('button', { name: 'Start', exact: true })).toBeDisabled(); // a cold start needs a tag
+    await f.getByRole('checkbox', { name: 'Revision' }).check();
     await f.getByRole('button', { name: 'Start', exact: true }).click();
     const fresh = card(page, 'Logo concepts v2');
     await expect(fresh.getByText('Running', { exact: true })).toBeVisible();

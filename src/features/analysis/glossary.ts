@@ -1,28 +1,23 @@
 // The Metrics glossary. Every figure on the screen, in an insight and in the Excel sheets has an
 // entry here, with its plain definition, its formula and whether it uses Exact or Billable time.
-export type GlossaryBasis = 'Exact' | 'Billable' | 'Follows the Basis switch' | 'Neither';
+// Phase 2 entries live in the glossaryP2* files, one per area, so each can grow on its own.
+import { g, type GlossaryBasis, type GlossaryEntry } from './glossaryBase';
+import { GLOSSARY_P2_MONEY } from './glossaryP2Money';
+import { GLOSSARY_P2_TAGS } from './glossaryP2Tags';
+import { GLOSSARY_P2_TIME } from './glossaryP2Time';
 
-export interface GlossaryEntry {
-  id: string;
-  name: string;
-  family: string;
-  basis: GlossaryBasis;
-  definition: string;
-  formula: string;
-}
-
-const g = (id: string, name: string, family: string, basis: GlossaryBasis, definition: string, formula: string): GlossaryEntry => ({ id, name, family, basis, definition, formula });
+export type { GlossaryBasis, GlossaryEntry };
 
 export const GLOSSARY: readonly GlossaryEntry[] = [
   g('basis', 'Exact and Billable time', 'Basics', 'Neither',
-    'Exact is the real logged time from the segments, to the second. Billable is the rounded time from your rounding rule (default 15 minutes, up), applied once per task per day in the zone shown, never per segment. Exact totals are the same in every zone; Billable can differ by zone because the day edges move. Continued tasks count as separate tasks: a task that continues an earlier one is rounded on its own, so a chain can round up more than once on the same day.',
-    'Billable(task, day) = round(sum of that task\'s segment time on that day); totals = sum of those rows'),
+    'Exact is the real logged time from the segments, to the second. Billable is the rounded time from your rounding rule (default 15 minutes, up), applied once per task per day in the zone shown, never per segment. Exact totals are the same in every zone; Billable can differ by zone because the day edges move. Continued tasks count as separate tasks: a task that continues an earlier one is rounded on its own, so a chain can round up more than once on the same day. Billable pauses (waits you marked as still working) count in Billable and never in Exact, and are rounded together with that day\'s Exact time; thinking time counts in both. Time away you have not confirmed counts in neither.',
+    'Billable(task, day) = round(Exact(task, day) + billable pauses(task, day)); totals = sum of those rows'),
   g('filters.time', 'Band and shift filters', 'Basics', 'Exact',
     'A band or shift filter keeps only the time inside the chosen band or shift. A session that crosses the edge is cut at the edge, so session lengths in a filtered view describe the part inside the filter. Billable rounds whole task-days, so Billable, earnings and rounding figures are hidden while a band or shift filter is on.',
     'kept time = logged time within the band hours or the shift window'),
 
   g('volume.total', 'Total time', 'Volume', 'Follows the Basis switch',
-    'Everything logged in the period, including the running task. Shown with both Exact and Billable; the Basis switch picks the one used for charts and comparisons.',
+    'Everything logged in the period, including the running task. Shown with both Exact and Billable; the Basis switch picks the one used for charts and comparisons. Billable includes billable pauses and Exact does not; thinking time is in both.',
     'sum of segment durations (Exact) or of task-day rows (Billable)'),
   g('volume.activeDays', 'Active days', 'Volume', 'Exact',
     'Days in the period, in the zone shown, with any logged time.', 'count of days with time > 0'),
@@ -68,12 +63,12 @@ export const GLOSSARY: readonly GlossaryEntry[] = [
   g('tasks.top', 'Top tasks', 'Tasks', 'Follows the Basis switch', 'The ten tasks with the most time in the period.', 'tasks sorted by time'),
   g('tasks.multiDay', 'Tasks spanning several days', 'Tasks', 'Neither', 'Tasks with time on two or more days of the period, in the zone shown.', 'count of tasks with rows on 2 or more days'),
 
-  g('focus.sessions', 'Sessions', 'Focus', 'Exact', 'A session is one segment: one uninterrupted Start or Resume to Pause or Stop, cut to the period and to any filter.', 'count of segments'),
+  g('focus.sessions', 'Sessions', 'Focus', 'Exact', 'A session is one segment: one uninterrupted Start or Resume to Pause or Stop, cut to the period and to any filter. Switching the active subtask does not split it. Time you marked as thinking is a stretch of its own, and billable pauses are not sessions.', 'count of segments'),
   g('focus.avgSession', 'Session length', 'Focus', 'Exact', 'Average, median and longest session.', 'mean, median and max of segment durations'),
   g('focus.dist', 'Session-length distribution', 'Focus', 'Exact', 'How many sessions fall into each length range, stacked by project.', 'count of sessions per range'),
   g('focus.streak', 'Longest uninterrupted stretch', 'Focus', 'Exact', 'The longest run of logged time with no gap between sessions (sessions at most one second apart join up, even across tasks).', 'longest merged run of sessions'),
   g('focus.pausedTime', 'Paused time', 'Focus', 'Exact',
-    'The gap between consecutive segments of one task, plus the last segment\'s end to the task\'s stop time, when the gap begins and ends on the same calendar day in the zone you are viewing. Gaps that cross midnight (overnight, weekend or multi-day breaks between sessions) are not pauses and are left out of every figure. A task that is still paused has an open gap, which is not counted. A pause belongs to the day it began.',
+    'The gap between consecutive segments of one task, plus the last segment\'s end to the task\'s stop time, when the gap begins and ends on the same calendar day in the zone you are viewing. Gaps that cross midnight (overnight, weekend or multi-day breaks between sessions) are not pauses and are left out of every figure. A task that is still paused has an open gap, which is not counted. A pause belongs to the day it began. A billable pause stays a pause here: marking it billable changes Billable time, not the pause count or the focus ratio. Away time you dropped or have not confirmed also leaves a gap, so it shows as paused time; away time you marked as thinking does not.',
     'gap = next start - previous end, kept only when both fall on one calendar day'),
   g('focus.pauses', 'Pauses', 'Focus', 'Exact', 'Number, total and average length of same-day paused-time gaps that began in the period, and pauses per task with sessions in the period.', 'count, sum and mean of gaps'),
   g('focus.ratio', 'Focus ratio', 'Focus', 'Exact', 'Worked time as a share of worked plus paused time, where paused time is same-day pauses only (overnight and multi-day gaps are excluded). It measures logged time, not output.', 'worked / (worked + paused)'),
@@ -89,12 +84,12 @@ export const GLOSSARY: readonly GlossaryEntry[] = [
 
   g('goals.daily', 'Daily target', 'Goals', 'Exact', 'Logged time on the period\'s last elapsed day against the daily target, and how many elapsed days reached it. Hidden until a target is set.', 'attainment = logged / target'),
   g('goals.weekly', 'Weekly target', 'Goals', 'Exact', 'Logged time in the Monday-to-Sunday week of the period\'s last elapsed day against the weekly target. Hidden until a target is set.', 'attainment = logged / target'),
-  g('goals.budget', 'Project budget burn', 'Goals', 'Exact', 'All-time logged time on a project against its budget hours, ignoring the date range. The projected finish assumes the average pace of the last 28 days, today included.', 'finish = today + remaining / (time in last 28 days / 28)'),
+  g('goals.budget', 'Project budget burn', 'Goals', 'Exact', 'All-time logged (Exact) time on a project against its budget hours, ignoring the date range. The projected finish assumes the average pace of the last 28 days, today included. Budget used is the project\'s own status in Billable time with the 80% and 100% alerts.', 'finish = today + remaining / (time in last 28 days / 28)'),
 
   g('money.billable', 'Billable projects share', 'Money', 'Billable', 'Share of Billable time spent on projects marked billable.', 'time on billable projects / all Billable time'),
-  g('money.earnings', 'Earnings', 'Money', 'Billable', 'Billable time multiplied by the rate in force when the time was logged, per currency. Currencies are never added together. Rounded to cents only at the total shown. A billable project with no rate shows "No rate set", not zero.', 'sum of rate x Billable seconds / 3600'),
-  g('money.hourly', 'Effective hourly rate', 'Money', 'Billable', 'Earnings divided by the Exact hours that earned in that currency, so rounding up raises it above the nominal rate.', 'earnings / Exact hours with a rate'),
-  g('money.rounding', 'Rounding adjustment', 'Money', 'Billable', 'Billable time minus Exact time, per period and project, and what that difference is worth. Each task rounds separately per day, so a chain of continued tasks can round up more than once, and that shows up here as a larger adjustment.', 'Billable - Exact'),
+  g('money.earnings', 'Earnings', 'Money', 'Billable', 'Billable time multiplied by the rate in force when the time was logged, per currency. Currencies are never added together. Rounded to cents only at the total shown. A billable hourly project with no rate shows "No rate set", not zero. A fixed-fee project earns its fee instead: it has no hourly earnings here and shows its effective hourly rate.', 'sum of rate x Billable seconds / 3600 (hourly projects only)'),
+  g('money.hourly', 'Effective hourly rate', 'Money', 'Billable', 'Earnings divided by the Exact hours that earned in that currency, so rounding up and billable pauses, which add earnings but no Exact hours, raise it above the nominal rate.', 'earnings / Exact hours with a rate'),
+  g('money.rounding', 'Rounding adjustment', 'Money', 'Billable', 'Billable time minus Exact time, per period and project, and what that difference is worth. Billable pauses are Billable only, so they are included in the adjustment: it is the rounding plus the billable pauses, and Analysis says how much of it is pauses. Each task rounds separately per day, so a chain of continued tasks can round up more than once, and that shows up here as a larger adjustment.', 'Billable - Exact = rounding + billable pauses'),
 
   g('forecast.projected', 'Projection', 'Forecast', 'Follows the Basis switch', 'A projection, not a promise: the total so far extended linearly to the end of the period. Shown only for periods of 7 days or more that are under way, with at least two active days and 20% elapsed.', 'logged / elapsed fraction of the period'),
 
@@ -110,6 +105,10 @@ export const GLOSSARY: readonly GlossaryEntry[] = [
   g('zones.overlap', 'Client working hours overlap', 'Zones', 'Exact', 'Logged time that falls inside the client\'s working hours (Settings, default 09:00-17:00) on Monday to Friday in the client\'s zone.', 'time inside client work hours / total'),
   g('zones.gap', 'Time gap between zones', 'Zones', 'Neither', 'The gap changes in weeks when the two zones switch daylight saving on different dates. Each stretch with a constant gap is listed.', 'offset(client) - offset(my zone)'),
   g('zones.markers', 'Clock changes', 'Zones', 'Neither', 'Dates in the period when a zone\'s clocks change. Zones without a change show none.', 'offset changes in the period'),
+
+  ...GLOSSARY_P2_TIME,
+  ...GLOSSARY_P2_MONEY,
+  ...GLOSSARY_P2_TAGS,
 ];
 
 const byId = new Map(GLOSSARY.map((e) => [e.id, e]));

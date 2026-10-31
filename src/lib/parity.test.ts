@@ -41,13 +41,18 @@ describe('shared billing fixtures', () => {
     const rounding: RoundingVersion[] = c.rounding.map((r, i) => ({
       id: `o${i}`, projectId: null, effectiveFrom: r.from, incrementMinutes: r.minutes, method: r.method as RoundMethod, deleted: false, stamp,
     }));
-    const spans = c.segments.map(([a, b]) => ({ taskId: 't', projectId: 'p', start: parseIso(a as string), end: parseIso(b as string) }));
-    const rows = taskDays(spans, c.zone, new RateBook([{ id: 'p', billable: true }], rates), rounding).sort((a, b) => a.day.localeCompare(b.day));
+    // Additive fields: pauses and thinking are lists of [from, to], fixedFee marks the project, rows[].pause is the pause seconds.
+    const extra = c as typeof c & { pauses?: string[][]; thinking?: string[][]; fixedFee?: boolean };
+    const span = (pair: string[], kind?: 'billablePause' | 'thinking') => ({ taskId: 't', projectId: 'p', start: parseIso(pair[0] as string), end: parseIso(pair[1] as string), ...(kind ? { kind } : {}) });
+    const spans = [...c.segments.map((x) => span(x)), ...(extra.thinking ?? []).map((x) => span(x, 'thinking')), ...(extra.pauses ?? []).map((x) => span(x, 'billablePause'))];
+    const book = new RateBook([{ id: 'p', billable: true, billingType: extra.fixedFee ? 'fixedFee' : 'hourly' }], rates);
+    const rows = taskDays(spans, c.zone, book, rounding).sort((a, b) => a.day.localeCompare(b.day));
     expect(rows.length).toBe(c.rows.length);
     rows.forEach((r, i) => {
-      const w = c.rows[i] as (typeof c.rows)[number] & { roundedToZero?: boolean };
+      const w = c.rows[i] as (typeof c.rows)[number] & { roundedToZero?: boolean; pause?: number };
       expect(r.day).toBe(w.day);
       expect(r.exactSecs).toBe(w.exact);
+      expect(r.pauseSecs).toBe(w.pause ?? 0);
       expect(r.billableSecs).toBe(w.billable);
       expect(r.roundedToZero).toBe(w.roundedToZero ?? false);
       const amounts = Object.fromEntries(Object.entries(numeratorsOf([r])).map(([k, n]) => [k, centsFromNumerator(n)]));

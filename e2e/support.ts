@@ -51,10 +51,26 @@ export async function expectClean(page: Page, found: Violations): Promise<void> 
   expect(found.errors, 'console errors').toEqual([]);
 }
 
+/**
+ * The p2 seed has time away waiting for a decision, so the time-away dialog opens on load. Specs about
+ * anything else dismiss it (as a user would); `away=show` in the query keeps it for the specs about it.
+ */
+export async function dismissAway(page: Page): Promise<void> {
+  const dialog = page.getByRole('dialog', { name: /You were away/ });
+  try {
+    await dialog.waitFor({ state: 'visible', timeout: 3000 });
+  } catch {
+    return;
+  }
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+}
+
 export async function open(page: Page, query: string, ready = true): Promise<Violations> {
   const found = await watch(page);
   await page.clock.install({ time: new Date(DEMO_NOW) });
   await page.goto(`/?${query}`);
+  if (query.includes('seed=p2') && !query.includes('away=show')) await dismissAway(page);
   if (ready) await expect(page.getByRole('tab', { name: 'Timeline' })).toBeVisible();
   return found;
 }

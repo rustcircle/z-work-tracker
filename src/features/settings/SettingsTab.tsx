@@ -2,6 +2,12 @@ import { useEffect, useRef, type ReactNode } from 'react';
 
 import { useNav } from '../../components/nav';
 import { Card } from '../../components/ui';
+import { AuditSection } from './AuditSection';
+import { BackupsSection } from './BackupsSection';
+import { BillingPrefixSection } from './BillingPrefixSection';
+import { RemindersSection } from './RemindersSection';
+import { TagsSection } from './TagsSection';
+import { TemplatesSection } from './TemplatesSection';
 import { AboutSection, AutostartSection, TargetsSection } from './OtherSections';
 import { RoundingSection } from './RoundingSection';
 import { ShiftsSection } from './ShiftsSection';
@@ -16,7 +22,13 @@ const SECTIONS: { id: string; title: string; render: () => ReactNode }[] = [
   { id: 'targets', title: 'Targets', render: () => <TargetsSection /> },
   { id: 'shifts', title: 'Shifts', render: () => <ShiftsSection /> },
   { id: 'startup', title: 'Startup', render: () => <AutostartSection /> },
+  { id: 'tags', title: 'Tags', render: () => <TagsSection /> },
+  { id: 'templates', title: 'Templates', render: () => <TemplatesSection /> },
+  { id: 'billing', title: 'Billing references', render: () => <BillingPrefixSection /> },
+  { id: 'reminders', title: 'Time away and reminders', render: () => <RemindersSection /> },
   { id: 'sync', title: 'Sync between devices', render: () => <SyncSection /> },
+  { id: 'backups', title: 'Backups', render: () => <BackupsSection /> },
+  { id: 'audit', title: 'History of changes', render: () => <AuditSection /> },
   { id: 'about', title: 'About', render: () => <AboutSection /> },
 ];
 

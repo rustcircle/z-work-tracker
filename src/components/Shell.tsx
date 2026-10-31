@@ -4,6 +4,7 @@ import { useApp } from '../app/store';
 import { api, events } from '../lib/api';
 import { AnalysisTab } from '../features/analysis/AnalysisTab';
 import { ExportDialog } from '../features/export/ExportDialog';
+import { BillingTab } from '../features/billing/BillingTab';
 import { ProjectsTab } from '../features/projects/ProjectsTab';
 import { SettingsTab } from '../features/settings/SettingsTab';
 import { EditStoreProvider } from '../features/tasks/editStore';
@@ -20,6 +21,7 @@ import { useCommands } from './useCommands';
 const TABS: { id: TabId; label: string; render: () => ReactNode }[] = [
   { id: 'timeline', label: 'Timeline', render: () => <TimelineTab /> },
   { id: 'analysis', label: 'Analysis', render: () => <AnalysisTab /> },
+  { id: 'billing', label: 'Billing', render: () => <BillingTab /> },
   { id: 'projects', label: 'Projects', render: () => <ProjectsTab /> },
   { id: 'settings', label: 'Settings', render: () => <SettingsTab /> },
 ];
