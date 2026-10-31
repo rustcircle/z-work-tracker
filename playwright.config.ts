@@ -7,7 +7,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   reporter: [['list']],
-  use: { baseURL: 'http://localhost:4173', viewport: { width: 1360, height: 900 }, ...devices['Desktop Chrome'] },
+  use: { ...devices['Desktop Chrome'], baseURL: 'http://localhost:4173', viewport: { width: 1360, height: 900 } },
   webServer: {
     command: 'pnpm build:e2e && pnpm exec vite preview --outDir dist-e2e',
     url: 'http://localhost:4173',

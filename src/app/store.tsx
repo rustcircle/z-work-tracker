@@ -1,6 +1,6 @@
 // App-wide state: the backend snapshot, a ticking clock and the zones in use. Every backend change
 // returns a fresh snapshot, so there is only ever one source of truth.
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { api, events, type HideNoticePayload } from '../lib/api';
 import { applyTheme } from '../lib/themes';
@@ -59,10 +59,10 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
   const [error, setError] = useState<string | null>(null);
   const [hideNotice, setHideNotice] = useState<HideNoticePayload | null>(null);
   const [tick, setTick] = useState(() => Date.now());
-  const skew = useRef(0);
+  const [skew, setSkew] = useState(0);
 
   const adopt = useCallback((s: Snapshot) => {
-    skew.current = parseIso(s.now) * 1000 - Date.now();
+    setSkew(parseIso(s.now) * 1000 - Date.now());
     setSnapshot(s);
   }, []);
 
@@ -110,7 +110,7 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
   );
 
   const zones = useMemo(() => (snapshot ? deriveZones(snapshot) : null), [snapshot]);
-  const nowSec = Math.floor((tick + skew.current) / 1000);
+  const nowSec = Math.floor((tick + skew) / 1000);
 
   const value = useMemo<AppValue | null>(
     () =>
