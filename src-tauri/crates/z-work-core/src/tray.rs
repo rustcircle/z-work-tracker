@@ -1,5 +1,7 @@
 //! Close-versus-quit decision and tray content, free of any windowing code.
 
+use std::collections::BTreeMap;
+
 use chrono_tz::Tz;
 
 use crate::billing::{cents_from_numerator, money, task_days};
