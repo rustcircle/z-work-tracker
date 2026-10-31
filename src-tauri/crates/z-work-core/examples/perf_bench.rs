@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 use z_work_core::merge::merge;
-use z_work_core::model::{LocalFile, Shared, SyncProvider, SyncTarget};
+use z_work_core::model::{LocalFile, Segment, Shared, SyncProvider, SyncTarget, TaskState};
 use z_work_core::pdf::{self, PdfRequest};
 use z_work_core::persist::{self, Paths};
 use z_work_core::report::ExportRequest;
@@ -248,7 +248,17 @@ fn main() -> Res<()> {
     let mut svc = Service::open(&dir, Arc::new(clock.clone()), "bench")?;
     svc.set_system_zone("Europe/Lisbon".to_owned());
     // A task runs from here on, half an hour in, as the app is most of the working day.
-    svc.mutate(|f, c| f.data.resume(c, "t013"))?;
+    // Set by hand rather than through a resume, whose random segment id would change the digests.
+    let open: Segment = serde_json::from_value(json!({ "id": "ffffffff-0000-4000-8000-000000000000",
+        "taskId": "t013", "deviceId": DEVICE, "start": NOW, "end": Value::Null }))?;
+    svc.mutate(|f, _| {
+        if let Some(task) = f.data.tasks.get_mut("t013") {
+            task.state = TaskState::Running;
+            task.pause_reason = None;
+        }
+        f.data.segments.insert(open.id.clone(), open);
+        Ok(())
+    })?;
     clock.advance(1800);
     let now = now.later(1800);
     let file: LocalFile = svc.file().clone();
