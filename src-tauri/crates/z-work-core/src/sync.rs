@@ -1396,12 +1396,21 @@ mod tests {
     #[test]
     fn a_hung_folder_does_not_hold_up_the_others_and_is_not_piled_on() {
         #[derive(Clone)]
-        struct Hangs(PathBuf, Arc<AtomicU32>);
+        struct Hangs(
+            PathBuf,
+            Arc<AtomicU32>,
+            Arc<(Mutex<bool>, std::sync::Condvar)>,
+        );
         impl SyncIo for Hangs {
             fn is_dir(&self, p: &Path) -> bool {
                 if p.starts_with(&self.0) {
                     self.1.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_secs(10));
+                    // Stuck until the test says otherwise, whatever the machine's load.
+                    let (released, wake) = &*self.2;
+                    let mut done = released.lock().unwrap();
+                    while !*done {
+                        done = wake.wait(done).unwrap();
+                    }
                 }
                 RealIo.is_dir(p)
             }
@@ -1427,9 +1436,16 @@ mod tests {
         let good = tempfile::tempdir().unwrap();
         let a = device(&clock, &[stuck.path(), good.path()]);
         let calls = Arc::new(AtomicU32::new(0));
-        let io = Hangs(stuck.path().to_path_buf(), Arc::clone(&calls));
-        run_cycle_within(&a.svc, &io, Duration::from_secs(2));
-        run_cycle_within(&a.svc, &io, Duration::from_secs(2));
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let io = Hangs(
+            stuck.path().to_path_buf(),
+            Arc::clone(&calls),
+            Arc::clone(&release),
+        );
+        // The limit only has to outlast a loaded machine's disk for the healthy folder. The stuck one
+        // costs it once, because the second cycle refuses a folder whose worker is still stuck.
+        run_cycle_within(&a.svc, &io, Duration::from_secs(5));
+        run_cycle_within(&a.svc, &io, Duration::from_secs(5));
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
@@ -1446,6 +1462,8 @@ mod tests {
             .clone();
         assert!(ok.last_error.is_none());
         assert!(ko.last_error.unwrap().contains("not responding"));
+        *release.0.lock().unwrap() = true;
+        release.1.notify_all();
     }
 
     #[test]
