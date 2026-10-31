@@ -8,7 +8,7 @@ use std::hash::{DefaultHasher, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -29,6 +29,8 @@ pub struct Paths {
     /// Hash of the main file as it was last read and checked, or written, so an unchanged file is
     /// not parsed again on every save. 0 until then, and no file is trusted because of it.
     checked: Arc<AtomicU64>,
+    /// True when `.bak` may be older than the main file's contents. See `save_heartbeat`.
+    bak_behind: Arc<AtomicBool>,
 }
 
 impl Paths {
@@ -37,6 +39,7 @@ impl Paths {
         Self {
             dir: dir.into(),
             checked: Arc::new(AtomicU64::new(0)),
+            bak_behind: Arc::new(AtomicBool::new(true)),
         }
     }
     #[must_use]
@@ -251,14 +254,44 @@ struct HeartbeatFile {
 
 /// Records that the app is alive, in a small file of its own. A heartbeat every 30 seconds used to
 /// rewrite the whole store and its backup, which at 50k segments is 32 MB each time, for one number.
-/// It is durable like any save. The next real save folds it into the main file and removes this.
+/// It is durable like any save, and stays until the next heartbeat replaces it, because the backup
+/// needs it as much as the main file does.
+///
+/// Those rewrites also kept `.bak` within one beat of the main file. To keep that, the first beat after
+/// a real save copies the main file over the backup, first, so a backup is never newer than the beat
+/// that goes with it being written. A main file that no longer hashes as checked isn't copied.
 pub fn save_heartbeat(paths: &Paths, device_id: &str, at: Ts) -> Result<(), CoreError> {
+    if paths.bak_behind.load(Ordering::Relaxed) {
+        match refresh_backup(paths) {
+            Ok(()) => paths.bak_behind.store(false, Ordering::Relaxed),
+            // As in `save`: a locked backup must not stop time logging. The next beat tries again.
+            Err(e) => eprintln!("could not refresh the backup: {e}"),
+        }
+    }
     let bytes = serde_json::to_vec(&HeartbeatFile {
         device_id: device_id.to_owned(),
         at,
     })?;
     with_local_retry(|| write_atomic(&paths.heartbeat(), &paths.heartbeat_tmp(), &bytes))?;
     Ok(())
+}
+
+fn refresh_backup(paths: &Paths) -> io::Result<()> {
+    match read_opt(&paths.main())? {
+        Some(main) if paths.is_checked(&main) => {
+            with_local_retry(|| write_atomic(&paths.bak(), &paths.bak_tmp(), &main))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Forgets the heartbeat, for when the store is rolled back to an older one on purpose.
+pub fn clear_heartbeat(paths: &Paths) {
+    if let Err(e) = fs::remove_file(paths.heartbeat())
+        && e.kind() != io::ErrorKind::NotFound
+    {
+        eprintln!("could not remove the old heartbeat: {e}");
+    }
 }
 
 /// The heartbeat on record for this device. An unreadable file says nothing, so the main file's stands.
@@ -268,10 +301,11 @@ fn read_heartbeat(paths: &Paths, device_id: &str) -> Option<Ts> {
     (beat.device_id == device_id).then_some(beat.at)
 }
 
-/// Brings a store just read up to date with the heartbeat recorded after it was last saved.
-fn apply_heartbeat(paths: &Paths, mut file: LocalFile) -> LocalFile {
+/// Brings a store just read up to date with the heartbeat recorded after it was last saved. Never past
+/// now: a clock put back after a beat must not give a recovered segment time that hasn't happened.
+fn apply_heartbeat(paths: &Paths, mut file: LocalFile, now: Ts) -> LocalFile {
     if let Some(at) = read_heartbeat(paths, &file.device_id) {
-        file.last_heartbeat = file.last_heartbeat.max(Some(at));
+        file.last_heartbeat = file.last_heartbeat.max(Some(at)).map(|t| t.min(now));
     }
     file
 }
@@ -306,7 +340,7 @@ pub fn load(
             Parsed::Good(file, version) => {
                 keep_before_migration(paths, bytes, version)?;
                 paths.remember_checked(bytes);
-                return Ok((apply_heartbeat(paths, *file), outcome));
+                return Ok((apply_heartbeat(paths, *file, now), outcome));
             }
             Parsed::Newer(found) => {
                 return Err(CoreError::FutureVersion {
@@ -332,7 +366,7 @@ pub fn load(
                 } else {
                     "The data file was missing, so your data was restored from the automatic backup.".to_owned()
                 });
-                return Ok((apply_heartbeat(paths, *file), outcome));
+                return Ok((apply_heartbeat(paths, *file, now), outcome));
             }
             Parsed::Newer(found) => {
                 return Err(CoreError::FutureVersion {
@@ -350,32 +384,6 @@ pub fn load(
         }
     }
     Ok((new_local_file(device_name), outcome))
-}
-
-/// Makes the current main file the backup. A hard link does it without copying the store: the backup
-/// keeps those very bytes when the rename in `save` gives the main name to a new file. Where links
-/// aren't available, such as FAT or exFAT, it falls back to a copy.
-fn rotate_backup(paths: &Paths, current: &[u8]) -> io::Result<()> {
-    let (bak, tmp) = (paths.bak(), paths.bak_tmp());
-    let linked = with_local_retry(|| {
-        let main = fs::symlink_metadata(paths.main())?;
-        if !main.is_file() {
-            return Err(io::Error::other("the main file is not a plain file"));
-        }
-        match fs::remove_file(&tmp) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
-        fs::hard_link(paths.main(), &tmp)?;
-        fs::rename(&tmp, &bak)
-    });
-    match linked {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            // A failed attempt may have left the link behind. write_atomic replaces it, never follows it.
-            with_local_retry(|| write_atomic(&bak, &tmp, current))
-        }
-    }
 }
 
 /// Saves the store. The current main file is rotated to `.bak` only when it is still valid, so a
@@ -400,19 +408,16 @@ pub fn save(paths: &Paths, file: &LocalFile, now: Ts) -> Result<(), CoreError> {
     if let Some(current) = current {
         if !known_good && matches!(parse_local(&current), Parsed::Corrupt(_)) {
             quarantine(paths, &paths.main(), now)?;
-        } else if let Err(e) = rotate_backup(paths, &current) {
+        } else if let Err(e) =
+            with_local_retry(|| write_atomic(&paths.bak(), &paths.bak_tmp(), &current))
+        {
             // A locked backup must not stop time logging; the next save rotates it again.
             eprintln!("could not refresh the backup: {e}");
         }
     }
     with_local_retry(|| fs::rename(&tmp, paths.main()))?;
     paths.remember_checked(&bytes);
-    // The main file now holds the latest heartbeat. Left behind, an old one could outlive a restore.
-    if let Err(e) = fs::remove_file(paths.heartbeat())
-        && e.kind() != io::ErrorKind::NotFound
-    {
-        eprintln!("could not remove the old heartbeat: {e}");
-    }
+    paths.bak_behind.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -598,7 +603,6 @@ mod tests {
         let before = fs::read(p.main()).unwrap();
         save_heartbeat(&p, &one.device_id, NOW).unwrap();
         assert_eq!(fs::read(p.main()).unwrap(), before);
-        assert!(!p.bak().exists());
         assert_eq!(load(&p, "pc", NOW).unwrap().0.last_heartbeat, Some(NOW));
     }
 
@@ -620,23 +624,62 @@ mod tests {
     }
 
     #[test]
-    fn a_real_save_folds_the_heartbeat_in_and_removes_its_file() {
+    fn a_real_save_keeps_the_heartbeat_for_the_backup_and_a_rollback_can_clear_it() {
         let dir = tempfile::tempdir().unwrap();
         let p = Paths::new(dir.path());
         let mut one = with_project("One");
         save(&p, &one, NOW).unwrap();
         save_heartbeat(&p, &one.device_id, NOW).unwrap();
-        one.last_heartbeat = Some(NOW);
-        save(&p, &one, NOW).unwrap();
-        assert!(!p.heartbeat().exists());
-        assert!(!p.heartbeat_tmp().exists());
-        // A store rolled back to an older heartbeat keeps it: nothing newer lingers to overrule it.
         one.last_heartbeat = Some(Ts(NOW.0 - 3600));
         save(&p, &one, NOW).unwrap();
+        assert_eq!(load(&p, "pc", NOW).unwrap().0.last_heartbeat, Some(NOW));
+        clear_heartbeat(&p);
+        assert!(!p.heartbeat().exists());
         assert_eq!(
             load(&p, "pc", NOW).unwrap().0.last_heartbeat,
             Some(Ts(NOW.0 - 3600))
         );
+    }
+
+    #[test]
+    fn the_first_beat_after_a_save_brings_the_backup_up_to_date_and_the_next_leaves_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let one = with_project("One");
+        save(&p, &one, NOW).unwrap();
+        let two = with_project("Two");
+        save(&p, &two, NOW).unwrap();
+        let main = fs::read(p.main()).unwrap();
+        assert_ne!(fs::read(p.bak()).unwrap(), main);
+        save_heartbeat(&p, &two.device_id, NOW).unwrap();
+        assert_eq!(fs::read(p.bak()).unwrap(), main);
+        // The next beat copies nothing: the backup can be told apart, and stays as it was.
+        fs::write(p.bak(), b"marker").unwrap();
+        save_heartbeat(&p, &two.device_id, NOW).unwrap();
+        assert_eq!(fs::read(p.bak()).unwrap(), b"marker");
+    }
+
+    #[test]
+    fn a_beat_never_copies_a_main_file_damaged_behind_the_app_over_the_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let one = with_project("One");
+        save(&p, &one, NOW).unwrap();
+        save(&p, &with_project("Two"), NOW).unwrap();
+        let good = fs::read(p.bak()).unwrap();
+        fs::write(p.main(), b"junk").unwrap();
+        save_heartbeat(&p, &one.device_id, NOW).unwrap();
+        assert_eq!(fs::read(p.bak()).unwrap(), good);
+    }
+
+    #[test]
+    fn a_heartbeat_past_now_is_not_believed() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let one = with_project("One");
+        save(&p, &one, NOW).unwrap();
+        save_heartbeat(&p, &one.device_id, Ts(NOW.0 + 7200)).unwrap();
+        assert_eq!(load(&p, "pc", NOW).unwrap().0.last_heartbeat, Some(NOW));
     }
 
     #[test]
@@ -645,16 +688,13 @@ mod tests {
         let p = Paths::new(dir.path());
         let one = with_project("One");
         save(&p, &one, NOW).unwrap();
-        save(&p, &with_project("Two"), NOW).unwrap();
-        let bak: LocalFile = serde_json::from_slice(&fs::read(p.bak()).unwrap()).unwrap();
-        save_heartbeat(&p, &bak.device_id, NOW).unwrap();
+        save_heartbeat(&p, &one.device_id, NOW).unwrap();
         fs::write(p.main(), b"junk").unwrap();
         let (loaded, _) = load(&p, "pc", NOW).unwrap();
         assert_eq!(loaded.device_id, one.device_id);
         assert_eq!(loaded.last_heartbeat, Some(NOW));
     }
 
-    /// The short way must reach the same verdict as the long way, whatever is in the file.
     #[test]
     fn current_schema_files_read_the_same_with_and_without_the_json_tree() {
         let long_way = |bytes: &[u8]| -> Option<LocalFile> {

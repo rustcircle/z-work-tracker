@@ -672,6 +672,7 @@ impl Service {
             serde_json::json!({"safetyCopy": safety}),
         );
         persist::save(&self.paths, &restored, now)?;
+        persist::clear_heartbeat(&self.paths);
         self.file = restored;
         self.revision += 1;
         self.warm = false;
@@ -1550,7 +1551,88 @@ mod tests {
         let again = open(dir.path(), &clock);
         let seg = again.file().data.segments.values().next().unwrap();
         assert_eq!(seg.end.unwrap().iso(), "2026-03-01T09:00:30Z");
-        assert!(!dir.path().join(persist::HEARTBEAT_FILE).exists());
+    }
+
+    /// A run of work with main damaged at the end. `.bak` must still tell the truth about it, as it did
+    /// when every heartbeat rotated the store, whichever moment the damage comes.
+    fn damage_main(dir: &Path) {
+        std::fs::write(dir.join(persist::MAIN_FILE), b"junk").unwrap();
+    }
+    fn minutes_of(s: &Service, task: &str) -> i64 {
+        s.file()
+            .data
+            .segments
+            .values()
+            .filter(|x| x.task_id == task)
+            .map(|x| x.end.unwrap_or(x.start).secs() - x.start.secs())
+            .sum::<i64>()
+            / 60
+    }
+    fn beats(s: &mut Service, clock: &ManualClock, count: usize) {
+        for _ in 0..count {
+            clock.advance(600);
+            s.heartbeat().unwrap();
+        }
+    }
+
+    #[test]
+    fn with_main_damaged_after_a_switch_hours_stay_on_the_right_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, a) = running(dir.path(), &clock);
+        beats(&mut s, &clock, 6);
+        let b = s
+            .create_task(&tinput("B", &s.file().data.tasks[&a].project_id.clone()))
+            .unwrap();
+        s.start_task(&b).unwrap();
+        beats(&mut s, &clock, 42);
+        drop(s);
+        damage_main(dir.path());
+        let again = open(dir.path(), &clock);
+        assert_eq!(minutes_of(&again, &a), 60);
+        assert_eq!(minutes_of(&again, &b), 420);
+    }
+
+    #[test]
+    fn with_main_damaged_right_after_a_pause_the_hours_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, a) = running(dir.path(), &clock);
+        beats(&mut s, &clock, 18);
+        clock.advance(10);
+        s.pause_task(&a).unwrap();
+        drop(s);
+        damage_main(dir.path());
+        let again = open(dir.path(), &clock);
+        assert_eq!(minutes_of(&again, &a), 180);
+    }
+
+    #[test]
+    fn with_main_damaged_after_a_clean_quit_the_hours_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, a) = running(dir.path(), &clock);
+        beats(&mut s, &clock, 48);
+        s.on_exit().unwrap();
+        drop(s);
+        damage_main(dir.path());
+        let again = open(dir.path(), &clock);
+        assert_eq!(minutes_of(&again, &a), 480);
+    }
+
+    #[test]
+    fn with_main_damaged_an_edit_older_than_one_beat_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, a) = running(dir.path(), &clock);
+        beats(&mut s, &clock, 1);
+        let project = s.create_project(&pinput("Later")).unwrap();
+        beats(&mut s, &clock, 2);
+        drop(s);
+        damage_main(dir.path());
+        let again = open(dir.path(), &clock);
+        assert!(again.file().data.projects.contains_key(&project));
+        assert_eq!(minutes_of(&again, &a), 30);
     }
 
     #[test]
