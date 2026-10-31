@@ -1,0 +1,78 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Frontend build output
+dist/
+dist-ssr/
+*.local
+
+# Rust / Tauri build output
+src-tauri/target/
+target/
+src-tauri/gen/schemas/
+**/*.rs.bk
+
+# Test output and coverage
+coverage/
+test-results/
+playwright-report/
+playwright/.cache/
+blob-report/
+.nyc_output/
+proptest-regressions/*.tmp
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files (keep the example)
+.env
+.env.*
+!.env.example
+
+# Caches and incremental build info
+.cache/
+.vite/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# Editor folders
+.vscode/
+.idea/
+.fleet/
+.zed/
+*.swp
+*.swo
+*~
+
+# OS junk
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Local user data, if ever copied next to the project (the app stores it in the OS app data dir)
+labor-data.json
+labor-data.json.bak
+labor-data.json.tmp
+labor-data.corrupt-*.json
+/local-data/
+
+# Exports
+/exports/
+*.xlsx
+!docs/*.xlsx
+
+# Lockfiles are committed on purpose: pnpm-lock.yaml and src-tauri/Cargo.lock
+
+# Agent and tool output
+.stack/
