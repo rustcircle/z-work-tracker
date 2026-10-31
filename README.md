@@ -333,7 +333,7 @@ Saves are atomic: a temporary file, then a rename. If the main file is damaged t
 
 ### Prerequisites
 
-- Node 24 and pnpm
+- Node 24 (`.nvmrc` and `engines` in `package.json`; CI reads the same file) and pnpm, whose version `packageManager` pins
 - rustup. The toolchain is pinned in `rust-toolchain.toml` (stable, with the `x86_64-pc-windows-gnu` target) and installs itself on first use. You don't need a global default.
 - On macOS, Xcode command line tools. To build for Windows: `brew install mingw-w64 nsis`
 
