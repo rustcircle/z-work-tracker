@@ -4,7 +4,8 @@ members = [".", "crates/z-work-core", "crates/z-work-session"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.88"
+# Tauri 2.12 needs Rust 1.90.
+rust-version = "1.90"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -36,7 +37,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 z-work-core = { path = "crates/z-work-core" }
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# Same minor as @tauri-apps/api and @tauri-apps/cli in package.json (~2.12.x): the CLI warns when they differ.
+tauri = { version = "~2.12", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
