@@ -8,9 +8,11 @@ If SignPath Foundation accepts the project: free code signing provided by [SignP
 
 | Role | Who | Responsibility |
 |---|---|---|
-| Authors | NAME-TO-CONFIRM | Commit to the repository |
-| Reviewers | NAME-TO-CONFIRM | Review external contributions before they merge |
-| Approvers | NAME-TO-CONFIRM | Approve each signing request |
+| Authors | Pedro Jorge | Commit to the repository |
+| Reviewers | Pedro Jorge | Review external contributions before they merge |
+| Approvers | Pedro Jorge | Approve each signing request |
+
+The project lives in the GitHub organization `rustcircle` and has one maintainer, who holds all three roles. SignPath has not confirmed that one person may hold them all.
 
 Contact: p@rustcircle.com
 

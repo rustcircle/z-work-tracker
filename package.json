@@ -2,7 +2,7 @@
   "name": "z-work-tracker",
   "private": true,
   "license": "MIT",
-  "author": "zWorkTracker project <p@rustcircle.com>",
+  "author": "Pedro Jorge <p@rustcircle.com>",
   "repository": "https://github.com/rustcircle/z-work-tracker",
   "version": "0.1.0",
   "type": "module",

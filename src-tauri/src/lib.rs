@@ -22,7 +22,8 @@ use z_work_core::model::{SyncProvider, SyncTarget, Theme};
 use z_work_core::report::ExportRequest;
 use z_work_core::service::Service;
 use z_work_core::sync::{
-    FolderPreview, RealIo, TARGET_TIMEOUT, bounded, preview_folder, run_cycle,
+    FolderPreview, MovePreview, MoveResult, RealIo, SyncSchedule, TARGET_TIMEOUT, bounded,
+    move_target, preview_folder, preview_move, run_cycle,
 };
 use z_work_core::tray::{
     CloseDecision, ToggleRoute, TrayAction, close_decision, toggle_route, tray_state,
@@ -33,8 +34,6 @@ use z_work_core::{CoreError, SystemClock, csv, xlsx};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const TRAY_TICK: Duration = Duration::from_secs(5);
-const SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
-const SYNC_PERIOD: Duration = Duration::from_secs(180);
 const EXIT_SYNC_LIMIT: Duration = Duration::from_secs(5);
 const QUIT_ARG: &str = "--quit";
 /// Lets the page save an edit in progress before the process ends.
@@ -59,7 +58,10 @@ impl From<CoreError> for CmdError {
 type CmdResult<T> = Result<T, CmdError>;
 
 enum SyncMsg {
+    /// A major action: start, pause, resume, stop, or a change to a project, shift, rate or setting.
     Changed,
+    /// Task text changed: wait for it to settle.
+    Edited,
     Now,
     Stop,
 }
@@ -119,6 +121,23 @@ impl Core {
         self.tell_sync(SyncMsg::Changed);
         refresh_tray(app, self);
         Ok((out, snap))
+    }
+
+    /// The same for an autosaved text edit, which schedules a later sync.
+    fn edit(
+        &self,
+        app: &AppHandle,
+        f: impl FnOnce(&mut Service) -> Result<(), CoreError>,
+    ) -> CmdResult<Snapshot> {
+        let svc = self.svc()?;
+        let snap = {
+            let mut s = guard(&svc);
+            f(&mut s)?;
+            s.snapshot()
+        };
+        self.tell_sync(SyncMsg::Edited);
+        refresh_tray(app, self);
+        Ok(snap)
     }
 }
 
@@ -183,7 +202,6 @@ fn show_main(app: &AppHandle) {
     }
     if let Some(core) = app.try_state::<Arc<Core>>() {
         core.hide_pending.store(false, Ordering::SeqCst);
-        core.tell_sync(SyncMsg::Now);
     }
 }
 
@@ -364,7 +382,7 @@ fn update_task(
     id: String,
     input: TaskInput,
 ) -> CmdResult<Snapshot> {
-    Ok(core.change(&app, |s| s.update_task(&id, &input))?.1)
+    core.edit(&app, |s| s.update_task(&id, &input))
 }
 
 #[tauri::command(async)]
@@ -374,7 +392,7 @@ fn patch_task(
     id: String,
     patch: TaskPatch,
 ) -> CmdResult<Snapshot> {
-    Ok(core.change(&app, |s| s.patch_task(&id, &patch))?.1)
+    core.edit(&app, |s| s.patch_task(&id, &patch))
 }
 
 #[tauri::command(async)]
@@ -537,6 +555,94 @@ fn preview_sync_folder(core: CoreState<'_>, root: String) -> CmdResult<FolderPre
     )
     .map_err(|e| CmdError::from(CoreError::Conflict(e)))?
     .map_err(CmdError::from)
+}
+
+/// Longest a folder move may take before the app reports it as stuck. Time logging is unaffected.
+const MOVE_TIMEOUT: Duration = Duration::from_secs(600);
+
+#[tauri::command(async)]
+fn preview_sync_move(
+    core: CoreState<'_>,
+    from: Option<String>,
+    to: String,
+) -> CmdResult<MovePreview> {
+    let (own, now, data, hung) = {
+        let svc = core.svc()?;
+        let s = guard(&svc);
+        (
+            s.file().device_id.clone(),
+            s.now(),
+            s.file().data.clone(),
+            s.hung_targets(),
+        )
+    };
+    bounded(&hung, &format!("preview:{to}"), TARGET_TIMEOUT, move || {
+        usable_folder(&to).map(|()| {
+            preview_move(
+                &RealIo,
+                from.as_deref().map(Path::new),
+                Path::new(&to),
+                &own,
+                now,
+                &data,
+            )
+        })
+    })
+    .map_err(|e| CmdError::from(CoreError::Conflict(e)))?
+    .map_err(CmdError::from)
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct MoveProgress {
+    step: String,
+    done: usize,
+    total: usize,
+}
+
+/// `replacing` true stops using `from` once the copy has checked out. Failure changes no setting.
+#[tauri::command(async)]
+fn move_sync_target(
+    app: AppHandle,
+    core: CoreState<'_>,
+    from: Option<String>,
+    to: String,
+    provider: SyncProvider,
+    replacing: bool,
+) -> CmdResult<MoveResult> {
+    usable_folder(&to)?;
+    let svc = core.svc()?;
+    let hung = guard(&svc).hung_targets();
+    let target = SyncTarget {
+        provider,
+        root: to.clone(),
+    };
+    let events = app.clone();
+    let outcome = bounded(&hung, &format!("move:{to}"), MOVE_TIMEOUT, move || {
+        let replace = from.clone().filter(|_| replacing);
+        move_target(
+            &svc,
+            &RealIo,
+            from.as_deref(),
+            &target,
+            replace.as_deref(),
+            &mut |step, done, total| {
+                let _ = events.emit(
+                    "sync-move-progress",
+                    MoveProgress {
+                        step: step.to_owned(),
+                        done,
+                        total,
+                    },
+                );
+            },
+        )
+    })
+    .map_err(|e| CmdError::from(CoreError::Conflict(e)))?
+    .map_err(|e| CmdError::from(CoreError::Conflict(e)))?;
+    core.tell_sync(SyncMsg::Now);
+    let _ = app.emit("state-changed", ());
+    Ok(outcome)
 }
 
 #[tauri::command(async)]
@@ -783,38 +889,37 @@ fn spawn_ticker(app: AppHandle, core: Arc<Core>) {
     });
 }
 
-/// Debounced sync after changes, plus periodic sync. Failures only ever reach the status.
+/// Runs the schedule in `SyncSchedule`. Failures only ever reach the status, and retry with backoff.
 fn spawn_sync(app: AppHandle, core: Arc<Core>, svc: Arc<Mutex<Service>>) {
     let (tx, rx) = mpsc::channel();
     *guard(&core.sync) = Some(tx);
     std::thread::spawn(move || {
-        let mut due = Some(Instant::now());
-        let mut next_periodic = Instant::now() + SYNC_PERIOD;
+        let started = Instant::now();
+        let clock = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut schedule = SyncSchedule::new(clock());
         loop {
-            let wake = due.map_or(next_periodic, |d| d.min(next_periodic));
-            match rx.recv_timeout(wake.saturating_duration_since(Instant::now())) {
-                Ok(SyncMsg::Changed) => {
-                    due = Some(Instant::now() + SYNC_DEBOUNCE);
-                    continue;
-                }
-                Ok(SyncMsg::Now) => due = Some(Instant::now()),
+            let wait = schedule.next_wake().saturating_sub(clock());
+            match rx.recv_timeout(Duration::from_millis(wait)) {
+                Ok(SyncMsg::Changed) => schedule.on_major_action(clock()),
+                Ok(SyncMsg::Edited) => schedule.on_text_edit(clock()),
+                Ok(SyncMsg::Now) => schedule.on_now(clock()),
                 Ok(SyncMsg::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                 Err(RecvTimeoutError::Timeout) => {}
             }
-            let now = Instant::now();
-            if due.is_some_and(|d| d <= now) || next_periodic <= now {
-                due = None;
-                next_periodic = now + SYNC_PERIOD;
-                let changed = {
-                    let _cycle = guard(&core.cycle_lock);
-                    run_cycle(&svc, &RealIo)
-                };
-                if changed {
-                    refresh_tray(&app, &core);
-                }
-                // Status also changes without data changing, so the UI always hears about it.
-                let _ = app.emit("state-changed", ());
+            if !schedule.is_due(clock()) {
+                continue;
             }
+            let changed = {
+                let _cycle = guard(&core.cycle_lock);
+                run_cycle(&svc, &RealIo)
+            };
+            let failed = guard(&svc).any_target_failed();
+            schedule.cycle_done(clock(), failed);
+            if changed {
+                refresh_tray(&app, &core);
+            }
+            // Status also changes without data changing, so the UI always hears about it.
+            let _ = app.emit("state-changed", ());
         }
     });
 }
@@ -972,6 +1077,8 @@ pub fn run() {
         remove_sync_target,
         pick_sync_folder,
         preview_sync_folder,
+        preview_sync_move,
+        move_sync_target,
         sync_now,
         export_xlsx,
         export_csv,
@@ -1010,6 +1117,8 @@ pub fn run() {
         remove_sync_target,
         pick_sync_folder,
         preview_sync_folder,
+        preview_sync_move,
+        move_sync_target,
         sync_now,
         export_xlsx,
         export_csv,

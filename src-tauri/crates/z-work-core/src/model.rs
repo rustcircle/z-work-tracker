@@ -495,6 +495,16 @@ pub struct LocalPrefs {
     /// The highest budget alert already shown per project, so each threshold notifies once.
     #[serde(default)]
     pub budget_alerts_seen: BTreeMap<String, u8>,
+    /// A sync folder move whose previous folder couldn't be read, to retry later.
+    #[serde(default)]
+    pub pending_copy: Option<PendingCopy>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingCopy {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

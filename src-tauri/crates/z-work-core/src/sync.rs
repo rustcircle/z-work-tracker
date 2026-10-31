@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::merge::merge;
-use crate::model::{DeviceFile, RemoteDevice, SCHEMA_VERSION, Shared, SyncTarget};
+use crate::model::{DeviceFile, PendingCopy, RemoteDevice, SCHEMA_VERSION, Shared, SyncTarget};
 use crate::persist;
 use crate::service::Service;
 use crate::time::Ts;
@@ -335,6 +335,353 @@ pub fn preview_folder(io_impl: &dyn SyncIo, root: &Path, own_id: &str, now: Ts) 
         segments: merged.segments.len(),
         warnings,
     }
+}
+
+const MAJOR_DEBOUNCE_MS: u64 = 2_000;
+const EDIT_DEBOUNCE_MS: u64 = 15_000;
+const PERIOD_MS: u64 = 30 * 60 * 1000;
+const CYCLE_RETRY_BASE_MS: u64 = 30_000;
+const CYCLE_RETRY_MAX_MS: u64 = 15 * 60 * 1000;
+
+/// When the next sync runs. Pure, with times as milliseconds since the app started.
+///
+/// One opt-in, then automatic: at launch, shortly after each major action, after text edits settle,
+/// every 30 minutes, and on quit. A failed attempt retries with backoff rather than waiting for the
+/// 30-minute timer. Debounces only coalesce: a burst never postpones a sync already scheduled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncSchedule {
+    due: Option<u64>,
+    next_periodic: u64,
+    retry_at: Option<u64>,
+    failures: u32,
+}
+
+/// The wait before retry number `failures`: 30 s, 1 min, 2 min and so on, up to 15 min.
+#[must_use]
+pub fn retry_delay_ms(failures: u32) -> u64 {
+    let shift = failures.saturating_sub(1).min(16);
+    CYCLE_RETRY_BASE_MS
+        .saturating_mul(1 << shift)
+        .min(CYCLE_RETRY_MAX_MS)
+}
+
+impl SyncSchedule {
+    /// Due at once: the app syncs at launch.
+    #[must_use]
+    pub fn new(now: u64) -> Self {
+        Self {
+            due: Some(now),
+            next_periodic: now + PERIOD_MS,
+            retry_at: None,
+            failures: 0,
+        }
+    }
+
+    fn earliest(&mut self, at: u64) {
+        self.due = Some(self.due.map_or(at, |d| d.min(at)));
+    }
+
+    pub fn on_major_action(&mut self, now: u64) {
+        self.earliest(now + MAJOR_DEBOUNCE_MS);
+    }
+
+    pub fn on_text_edit(&mut self, now: u64) {
+        self.earliest(now + EDIT_DEBOUNCE_MS);
+    }
+
+    pub fn on_now(&mut self, now: u64) {
+        self.earliest(now);
+    }
+
+    #[must_use]
+    pub fn next_wake(&self) -> u64 {
+        [self.due, self.retry_at]
+            .into_iter()
+            .flatten()
+            .fold(self.next_periodic, u64::min)
+    }
+
+    #[must_use]
+    pub fn is_due(&self, now: u64) -> bool {
+        self.next_wake() <= now
+    }
+
+    pub fn cycle_done(&mut self, now: u64, failed: bool) {
+        self.due = None;
+        self.next_periodic = now + PERIOD_MS;
+        if failed {
+            self.failures = self.failures.saturating_add(1);
+            self.retry_at = Some(now + retry_delay_ms(self.failures));
+        } else {
+            self.failures = 0;
+            self.retry_at = None;
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Counts {
+    pub projects: usize,
+    pub tasks: usize,
+    pub segments: usize,
+}
+
+fn counts(data: &Shared) -> Counts {
+    Counts {
+        projects: data.projects.values().filter(|p| !p.deleted).count(),
+        tasks: data.tasks.values().filter(|t| !t.deleted).count(),
+        segments: data.segments.len(),
+    }
+}
+
+/// FNV-1a over the canonical JSON of the merged data. It detects a damaged copy; it isn't security.
+fn checksum(data: &Shared) -> String {
+    let bytes = serde_json::to_vec(data).unwrap_or_default();
+    let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    format!("{hash:016x}")
+}
+
+/// What a move would do, for the confirmation screen.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovePreview {
+    pub source_available: bool,
+    pub source_devices: Vec<String>,
+    pub source_counts: Counts,
+    pub destination_has_data: bool,
+    pub destination_devices: Vec<String>,
+    pub destination_counts: Counts,
+    pub local_counts: Counts,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveResult {
+    pub files_copied: usize,
+    pub files_already_there: usize,
+    pub files_ignored: usize,
+    /// The previous folder couldn't be read, so this went ahead from local data.
+    pub source_missing: bool,
+    pub counts: Counts,
+    pub checksum: String,
+    pub warnings: Vec<String>,
+}
+
+fn merged_of(read: &TargetRead) -> Shared {
+    let mut out = read
+        .own
+        .as_ref()
+        .map_or_else(Shared::default, |f| f.data.clone());
+    for f in &read.files {
+        out = merge(&out, &f.data);
+    }
+    out
+}
+
+fn names_of(read: &TargetRead) -> Vec<String> {
+    read.files.iter().map(|f| f.device_name.clone()).collect()
+}
+
+#[must_use]
+pub fn preview_move(
+    io_impl: &dyn SyncIo,
+    from: Option<&Path>,
+    to: &Path,
+    own_id: &str,
+    now: Ts,
+    local: &Shared,
+) -> MovePreview {
+    let mut out = MovePreview {
+        local_counts: counts(local),
+        ..MovePreview::default()
+    };
+    if let Some(from) = from {
+        let read = read_target(io_impl, from, own_id, now);
+        out.source_available = read.error.is_none();
+        out.source_devices = names_of(&read);
+        out.source_counts = counts(&merged_of(&read));
+        out.warnings.extend(read.warnings);
+        out.warnings.extend(read.error);
+    }
+    let dest = read_target(io_impl, to, own_id, now);
+    out.destination_has_data = dest.own.is_some() || !dest.files.is_empty();
+    out.destination_devices = names_of(&dest);
+    out.destination_counts = counts(&merged_of(&dest));
+    out.warnings.extend(dest.warnings);
+    out.warnings.extend(dest.error);
+    out
+}
+
+/// Copies data into a new folder and only then switches to it. The previous folder is only read, and
+/// the lock is only held for the merges, so time logging carries on. If anything fails, the settings
+/// stay as they were and the error says why; running it again is safe.
+///
+/// `replacing` is the folder to stop using, which may differ from `from` on a retry.
+pub fn move_target<I: SyncIo>(
+    service: &Mutex<Service>,
+    io_impl: &I,
+    from: Option<&str>,
+    target: &SyncTarget,
+    replacing: Option<&str>,
+    progress: &mut dyn FnMut(&str, usize, usize),
+) -> Result<MoveResult, String> {
+    let lock = || service.lock().unwrap_or_else(PoisonError::into_inner);
+    let (own_id, now) = {
+        let s = lock();
+        (s.file().device_id.clone(), s.now())
+    };
+    let to = Path::new(&target.root);
+    if !io_impl.is_dir(to) {
+        return Err(FOLDER_NOT_FOUND.to_owned());
+    }
+    progress("Reading the folders", 0, 1);
+    let source = from.map(|f| read_target(io_impl, Path::new(f), &own_id, now));
+    let dest = read_target(io_impl, to, &own_id, now);
+    if let Some(e) = dest.error {
+        return Err(e);
+    }
+    if dest.own_newer {
+        return Err("The new folder holds this device's file from a newer app version. Update this app first.".to_owned());
+    }
+    if dest.own_unread {
+        return Err(
+            "This device's file in the new folder could not be read right now. Try again later."
+                .to_owned(),
+        );
+    }
+    let mut result = MoveResult::default();
+    result.warnings.extend(dest.warnings.iter().cloned());
+    result.files_ignored = dest.ignored;
+    let source_ok = source.as_ref().filter(|r| r.error.is_none());
+    if from.is_some() && source_ok.is_none() {
+        result.source_missing = true;
+        result.warnings.push(
+            "The previous folder could not be read, so this used the data on this computer. You can retry the copy later.".to_owned(),
+        );
+    }
+    if let Some(read) = source_ok {
+        result.warnings.extend(read.warnings.iter().cloned());
+        result.files_ignored += read.ignored;
+    }
+
+    // Everything readable joins local data first, by the normal merge rules.
+    {
+        let mut s = lock();
+        let mut incoming = Shared::default();
+        let mut seen: BTreeMap<String, RemoteDevice> = BTreeMap::new();
+        let mut own_files = Vec::new();
+        for read in source_ok.into_iter().chain(std::iter::once(&TargetRead {
+            files: dest.files.clone(),
+            own: dest.own.clone(),
+            ..TargetRead::default()
+        })) {
+            own_files.extend(read.own.clone());
+            for f in &read.files {
+                incoming = merge(&incoming, &f.data);
+                let entry = RemoteDevice {
+                    name: f.device_name.clone(),
+                    last_heartbeat: f.last_heartbeat,
+                    written_at: f.written_at,
+                };
+                match seen.get(&f.device_id) {
+                    Some(old) if old.written_at >= entry.written_at => {}
+                    _ => {
+                        seen.insert(f.device_id.clone(), entry);
+                    }
+                }
+            }
+        }
+        s.absorb_remote(&incoming, seen, own_files);
+        if let Some(e) = s.local_error() {
+            return Err(e.to_owned());
+        }
+    }
+
+    // The other devices' files go across as they are, unless the new folder has a fresher copy.
+    let dir = devices_dir(to);
+    with_retry(io_impl, || io_impl.create_dir_all(&dir))
+        .map_err(|e| format!("Could not create the folder: {e}"))?;
+    let mut expected: BTreeMap<String, DeviceFile> = dest
+        .files
+        .iter()
+        .map(|f| (f.device_id.clone(), f.clone()))
+        .collect();
+    let others: &[DeviceFile] = source_ok.map_or(&[], |r| r.files.as_slice());
+    let total = others.len() + 1;
+    for (i, file) in others.iter().enumerate() {
+        progress("Copying device files", i, total);
+        let fresher = expected
+            .get(&file.device_id)
+            .is_some_and(|d| d.written_at >= file.written_at);
+        if fresher {
+            result.files_already_there += 1;
+            continue;
+        }
+        let name = format!("{}.json", file.device_id);
+        let src_path = devices_dir(Path::new(from.unwrap_or_default())).join(&name);
+        let bytes = with_retry(io_impl, || io_impl.read(&src_path))
+            .map_err(|e| format!("Could not read {name}: {e}"))?;
+        let tmp = dir.join(format!(".{}.move.tmp", file.device_id));
+        with_retry(io_impl, || {
+            io_impl.write_atomic(&dir.join(&name), &tmp, &bytes)
+        })
+        .map_err(|e| format!("Could not write {name}: {e}"))?;
+        expected.insert(file.device_id.clone(), file.clone());
+        result.files_copied += 1;
+    }
+
+    // This device's file last, holding the merged data.
+    progress("Writing this device's data", total - 1, total);
+    let own_file = lock().device_file();
+    let bytes = serde_json::to_vec(&own_file).map_err(|e| e.to_string())?;
+    let own_name = format!("{own_id}.json");
+    let tmp = dir.join(format!(".{own_id}.move.tmp"));
+    with_retry(io_impl, || {
+        io_impl.write_atomic(&dir.join(&own_name), &tmp, &bytes)
+    })
+    .map_err(|e| format!("Could not write this device's file: {e}"))?;
+
+    // Read back, and compare with what should be there, before calling it done.
+    progress("Checking the copy", total - 1, total);
+    let check = read_target(io_impl, to, &own_id, now);
+    if let Some(e) = check.error {
+        return Err(format!("The copy could not be checked: {e}"));
+    }
+    if check.own.is_none() {
+        return Err(
+            "The copy could not be checked: this device's file did not read back.".to_owned(),
+        );
+    }
+    let mut want = own_file.data.clone();
+    for f in expected.values() {
+        want = merge(&want, &f.data);
+    }
+    let got = merged_of(&check);
+    if counts(&got) != counts(&want) || checksum(&got) != checksum(&want) {
+        return Err(
+            "The copy did not match when read back, so the folder was not switched.".to_owned(),
+        );
+    }
+    result.counts = counts(&got);
+    result.checksum = checksum(&got);
+
+    let pending = (result.source_missing)
+        .then(|| {
+            from.map(|f| PendingCopy {
+                from: f.to_owned(),
+                to: target.root.clone(),
+            })
+        })
+        .flatten();
+    lock()
+        .switch_targets(replacing, target.clone(), pending)
+        .map_err(|e| e.to_string())?;
+    progress("Done", total, total);
+    Ok(result)
 }
 
 /// Roots whose worker is still stuck, so a hung folder never collects more threads.
@@ -1329,6 +1676,336 @@ mod tests {
         let status = a.s().target_status_mut(&key).clone();
         assert_eq!(status.devices_seen, 1);
         assert!(status.last_error.is_some());
+    }
+
+    #[test]
+    fn the_schedule_syncs_at_launch_soon_after_actions_and_every_30_minutes() {
+        let mut s = SyncSchedule::new(0);
+        assert!(s.is_due(0), "launch");
+        s.cycle_done(0, false);
+        assert!(!s.is_due(1));
+        s.on_major_action(1000);
+        assert!(!s.is_due(2999));
+        assert!(s.is_due(3000));
+        s.cycle_done(3000, false);
+        assert_eq!(s.next_wake(), 3000 + 30 * 60 * 1000);
+        assert!(s.is_due(3000 + 30 * 60 * 1000), "the timer needs no action");
+    }
+
+    #[test]
+    fn a_burst_coalesces_and_never_postpones_a_scheduled_sync() {
+        let mut s = SyncSchedule::new(0);
+        s.cycle_done(0, false);
+        s.on_text_edit(1000);
+        assert_eq!(s.next_wake(), 16_000);
+        s.on_text_edit(5000);
+        assert_eq!(s.next_wake(), 16_000);
+        s.on_major_action(6000);
+        assert_eq!(s.next_wake(), 8000, "a major action goes sooner");
+        s.on_major_action(7000);
+        assert_eq!(s.next_wake(), 8000);
+    }
+
+    #[test]
+    fn failures_retry_with_backoff_without_waiting_for_the_timer() {
+        let mut s = SyncSchedule::new(0);
+        s.cycle_done(0, true);
+        assert_eq!(s.next_wake(), 30_000);
+        s.cycle_done(30_000, true);
+        assert_eq!(s.next_wake(), 90_000);
+        for _ in 0..20 {
+            s.cycle_done(100_000, true);
+        }
+        assert_eq!(s.next_wake(), 100_000 + 15 * 60 * 1000, "capped");
+        s.cycle_done(200_000, false);
+        assert_eq!(s.next_wake(), 200_000 + 30 * 60 * 1000, "success clears it");
+    }
+
+    #[test]
+    fn a_failing_folder_shows_as_failed_for_the_schedule() {
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let gone = root.path().join("gone");
+        std::fs::create_dir_all(&gone).unwrap();
+        let a = device(&clock, &[&gone]);
+        a.cycle();
+        assert!(!a.s().any_target_failed());
+        std::fs::remove_dir_all(&gone).unwrap();
+        a.cycle();
+        assert!(a.s().any_target_failed());
+    }
+
+    fn target(root: &Path) -> SyncTarget {
+        SyncTarget {
+            provider: SyncProvider::Custom,
+            root: root.to_string_lossy().into_owned(),
+        }
+    }
+    fn mv(a: &Device, from: &Path, to: &Path) -> Result<MoveResult, String> {
+        let f = from.to_string_lossy().into_owned();
+        move_target(
+            &a.svc,
+            &RealIo,
+            Some(&f),
+            &target(to),
+            Some(&f),
+            &mut |_, _, _| {},
+        )
+    }
+    fn roots(a: &Device) -> Vec<String> {
+        a.s()
+            .file()
+            .prefs
+            .sync_targets
+            .iter()
+            .map(|t| t.root.clone())
+            .collect()
+    }
+    fn names(root: &Path) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(devices_dir(root))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn moving_carries_every_devices_data_and_leaves_the_old_folder_alone() {
+        let clock = ManualClock::at(T0);
+        let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(&clock, &[old.path()]);
+        let b = device(&clock, &[old.path()]);
+        let c = device(&clock, &[old.path()]);
+        b.s().create_project(&pinput("From B")).unwrap();
+        c.s().create_project(&pinput("From C")).unwrap();
+        a.s().create_project(&pinput("From A")).unwrap();
+        for d in [&b, &c, &a] {
+            d.cycle();
+        }
+        let before: Vec<(String, Vec<u8>)> = names(old.path())
+            .into_iter()
+            .map(|n| {
+                let bytes = std::fs::read(devices_dir(old.path()).join(&n)).unwrap();
+                (n, bytes)
+            })
+            .collect();
+        let got = mv(&a, old.path(), new.path()).unwrap();
+        assert_eq!(got.files_copied, 2);
+        assert_eq!(got.counts.projects, 3);
+        assert!(!got.source_missing);
+        assert_eq!(names(new.path()).len(), 3);
+        assert_eq!(a.data().projects.len(), 3, "merged into local too");
+        assert_eq!(roots(&a), vec![new.path().to_string_lossy().into_owned()]);
+        for (n, bytes) in before {
+            assert_eq!(
+                std::fs::read(devices_dir(old.path()).join(&n)).unwrap(),
+                bytes,
+                "{n}"
+            );
+        }
+    }
+
+    #[test]
+    fn moving_into_a_folder_with_data_merges_and_doesnt_overwrite_fresher_files() {
+        let clock = ManualClock::at(T0);
+        let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(&clock, &[old.path()]);
+        let b = device(&clock, &[old.path()]);
+        let d = device(&clock, &[new.path()]);
+        b.s().create_project(&pinput("Stale in old")).unwrap();
+        b.cycle();
+        d.s().create_project(&pinput("Only in new")).unwrap();
+        d.cycle();
+        // B's file in the new folder is newer than the one in the old folder.
+        clock.advance(600);
+        let fresh_b = {
+            b.s().create_project(&pinput("Fresh B")).unwrap();
+            let f = b.s().device_file();
+            let path = devices_dir(new.path()).join(format!("{}.json", b.id()));
+            std::fs::write(&path, serde_json::to_vec(&f).unwrap()).unwrap();
+            path
+        };
+        let kept = std::fs::read(&fresh_b).unwrap();
+        clock.advance(600);
+        let got = mv(&a, old.path(), new.path()).unwrap();
+        assert_eq!(got.files_already_there, 1);
+        assert_eq!(std::fs::read(&fresh_b).unwrap(), kept);
+        let projects: Vec<String> = a.data().projects.values().map(|p| p.name.clone()).collect();
+        for want in ["Stale in old", "Only in new", "Fresh B"] {
+            assert!(projects.iter().any(|p| p == want), "{want}");
+        }
+    }
+
+    #[test]
+    fn a_missing_previous_folder_uses_local_data_says_so_and_can_be_retried() {
+        let clock = ManualClock::at(T0);
+        let (base, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let old = base.path().join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        let a = device(&clock, &[&old]);
+        let b = device(&clock, &[&old]);
+        b.s().create_project(&pinput("Only in old")).unwrap();
+        b.cycle();
+        a.s().create_project(&pinput("Local")).unwrap();
+        let hidden = base.path().join("offline");
+        std::fs::rename(&old, &hidden).unwrap();
+        let got = mv(&a, &old, new.path()).unwrap();
+        assert!(got.source_missing);
+        assert!(got.warnings.iter().any(|w| w.contains("previous folder")));
+        assert_eq!(got.counts.projects, 1);
+        let pending = a.s().file().prefs.pending_copy.clone().unwrap();
+        assert_eq!(pending.to, new.path().to_string_lossy());
+        // The drive comes back, and the copy is retried.
+        std::fs::rename(&hidden, &old).unwrap();
+        let from = pending.from.clone();
+        let again = move_target(
+            &a.svc,
+            &RealIo,
+            Some(&from),
+            &target(new.path()),
+            None,
+            &mut |_, _, _| {},
+        )
+        .unwrap();
+        assert!(!again.source_missing);
+        assert_eq!(again.files_copied, 1);
+        assert_eq!(a.data().projects.len(), 2);
+        assert!(a.s().file().prefs.pending_copy.is_none());
+    }
+
+    #[derive(Clone)]
+    struct FailsWriting(String, Arc<AtomicU32>);
+    impl SyncIo for FailsWriting {
+        fn is_dir(&self, p: &Path) -> bool {
+            RealIo.is_dir(p)
+        }
+        fn create_dir_all(&self, p: &Path) -> io::Result<()> {
+            RealIo.create_dir_all(p)
+        }
+        fn list(&self, p: &Path) -> io::Result<Vec<String>> {
+            RealIo.list(p)
+        }
+        fn file_size(&self, p: &Path) -> io::Result<u64> {
+            RealIo.file_size(p)
+        }
+        fn read(&self, p: &Path) -> io::Result<Vec<u8>> {
+            RealIo.read(p)
+        }
+        fn write_atomic(&self, d: &Path, t: &Path, b: &[u8]) -> io::Result<()> {
+            if d.to_string_lossy().contains(&self.0) {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                return Err(io::Error::other("disk full"));
+            }
+            RealIo.write_atomic(d, t, b)
+        }
+        fn sleep(&self, _: Duration) {}
+    }
+
+    #[test]
+    fn a_failed_copy_keeps_the_old_folder_as_the_setting_and_local_data_is_unharmed() {
+        let clock = ManualClock::at(T0);
+        let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(&clock, &[old.path()]);
+        let b = device(&clock, &[old.path()]);
+        b.s().create_project(&pinput("B")).unwrap();
+        b.cycle();
+        a.s().create_project(&pinput("A")).unwrap();
+        // The other device's file copies; this device's own write then fails.
+        let io = FailsWriting(a.id(), Arc::new(AtomicU32::new(0)));
+        let from = old.path().to_string_lossy().into_owned();
+        let err = move_target(
+            &a.svc,
+            &io,
+            Some(&from),
+            &target(new.path()),
+            Some(&from),
+            &mut |_, _, _| {},
+        )
+        .unwrap_err();
+        assert!(err.contains("disk full"), "{err}");
+        assert_eq!(roots(&a), vec![from.clone()], "the setting is unchanged");
+        assert!(a.data().projects.values().any(|p| p.name == "A"));
+        // Time can still be logged, and a later attempt finishes the job.
+        let t = {
+            let p = a.data().projects.keys().next().unwrap().clone();
+            a.s().create_task(&tinput("T", &p)).unwrap()
+        };
+        a.s().start_task(&t).unwrap();
+        assert!(mv(&a, old.path(), new.path()).is_ok());
+    }
+
+    #[test]
+    fn conflict_copies_and_damaged_files_arent_copied_and_a_repeat_changes_nothing() {
+        let clock = ManualClock::at(T0);
+        let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(&clock, &[old.path()]);
+        let b = device(&clock, &[old.path()]);
+        b.s().create_project(&pinput("B")).unwrap();
+        b.cycle();
+        let dir = devices_dir(old.path());
+        std::fs::write(dir.join(format!("{} (1).json", b.id())), "{}").unwrap();
+        std::fs::write(
+            dir.join("123e4567-e89b-42d3-a456-426614174000.json"),
+            "{nope",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("223e4567-e89b-42d3-a456-426614174000.json"),
+            r#"{"schemaVersion":999}"#,
+        )
+        .unwrap();
+        let first = mv(&a, old.path(), new.path()).unwrap();
+        assert_eq!(first.files_copied, 1);
+        assert_eq!(first.files_ignored, 1);
+        assert!(first.warnings.iter().any(|w| w.contains("damaged")));
+        assert!(first.warnings.iter().any(|w| w.contains("newer version")));
+        assert_eq!(names(new.path()).len(), 2);
+        let from = old.path().to_string_lossy().into_owned();
+        let again = move_target(
+            &a.svc,
+            &RealIo,
+            Some(&from),
+            &target(new.path()),
+            None,
+            &mut |_, _, _| {},
+        )
+        .unwrap();
+        assert_eq!(again.files_copied, 0);
+        assert_eq!(again.files_already_there, 1);
+        assert_eq!(again.checksum, first.checksum, "idempotent");
+    }
+
+    #[test]
+    fn the_preview_reports_both_folders() {
+        let clock = ManualClock::at(T0);
+        let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = device(&clock, &[old.path()]);
+        let b = device(&clock, &[old.path()]);
+        b.s().create_project(&pinput("B")).unwrap();
+        b.cycle();
+        let pv = preview_move(
+            &RealIo,
+            Some(old.path()),
+            new.path(),
+            &a.id(),
+            Ts::parse(T0).unwrap(),
+            &a.data(),
+        );
+        assert!(pv.source_available);
+        assert_eq!(pv.source_counts.projects, 1);
+        assert_eq!(pv.source_devices.len(), 1);
+        assert!(!pv.destination_has_data);
+        let gone = old.path().join("nope");
+        let pv = preview_move(
+            &RealIo,
+            Some(&gone),
+            new.path(),
+            &a.id(),
+            Ts::parse(T0).unwrap(),
+            &a.data(),
+        );
+        assert!(!pv.source_available);
     }
 
     #[test]

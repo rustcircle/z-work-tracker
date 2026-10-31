@@ -57,8 +57,8 @@
       "nsis",
       "app"
     ],
-    "publisher": "zWorkTracker project",
-    "copyright": "Copyright (c) 2026 COPYRIGHT-HOLDER-TO-CONFIRM",
+    "publisher": "Pedro Jorge",
+    "copyright": "Copyright (c) 2026 Pedro Jorge",
     "category": "Productivity",
     "shortDescription": "Labor hours tracker",
     "longDescription": "Local-first tracker of labor hours by project and task, with timeline, analysis and spreadsheet exports.",
