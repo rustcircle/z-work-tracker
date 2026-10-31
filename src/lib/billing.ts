@@ -1,0 +1,259 @@
+// Derived rounding and earnings, matching `labor-core`'s billing.rs. Pinned on both sides by
+// fixtures/billing-fixtures.json. Nothing here is stored.
+// Rules: a row is one task on one day in the zone. Its exact time is rounded once; larger totals
+// are sums of rows. Earnings keep the exact numerator (rate cents x seconds) and round half up to
+// cents only at the total shown. Currencies are never added together. The rounding difference goes
+// to the last rate in force that day, moving back to earlier buckets if it would go below zero.
+import { addDays, dayOf, startOfDay } from './tz';
+import type { Currency, Project, RateVersion, RoundMethod, RoundingVersion } from './types';
+import { parseIso } from './tz';
+
+export const DEFAULT_INCREMENT_MINUTES = 15;
+export const DEFAULT_METHOD: RoundMethod = 'up';
+
+export function roundSeconds(exact: number, incrementMinutes: number, method: RoundMethod): number {
+  if (incrementMinutes === 0) return exact;
+  const inc = incrementMinutes * 60;
+  const rem = exact % inc;
+  const down = exact - rem;
+  if (method === 'down') return down;
+  if (method === 'up') return rem === 0 ? down : down + inc;
+  return rem * 2 >= inc ? down + inc : down;
+}
+
+/** `round(numerator / 3600)` half up, exact for all safe integers. */
+export function centsFromNumerator(numerator: number): number {
+  const rem = numerator % 3600;
+  const q = (numerator - rem) / 3600;
+  return rem >= 1800 ? q + 1 : q;
+}
+
+export interface Rule {
+  incrementMinutes: number;
+  method: RoundMethod;
+}
+
+export function ruleFor(rounding: readonly RoundingVersion[], projectId: string, day: string): Rule {
+  let own: RoundingVersion | null = null;
+  let global: RoundingVersion | null = null;
+  for (const r of rounding) {
+    if (r.deleted || r.effectiveFrom > day) continue;
+    if (r.projectId === projectId) {
+      if (!own || r.effectiveFrom > own.effectiveFrom || (r.effectiveFrom === own.effectiveFrom && r.id > own.id)) own = r;
+    } else if (r.projectId === null) {
+      if (!global || r.effectiveFrom > global.effectiveFrom || (r.effectiveFrom === global.effectiveFrom && r.id > global.id)) global = r;
+    }
+  }
+  const chosen = own ?? global;
+  return chosen
+    ? { incrementMinutes: chosen.incrementMinutes, method: chosen.method }
+    : { incrementMinutes: DEFAULT_INCREMENT_MINUTES, method: DEFAULT_METHOD };
+}
+
+export const isCurrency = (c: string): c is Currency => c === 'EUR' || c === 'USD';
+
+interface CompiledRate {
+  from: number;
+  id: string;
+  rateCents: number | null;
+  currency: Currency;
+}
+
+export class RateBook {
+  private byProject = new Map<string, CompiledRate[]>();
+
+  constructor(projects: readonly Pick<Project, 'id' | 'billable'>[], rates: readonly RateVersion[]) {
+    const billable = new Set(projects.filter((p) => p.billable).map((p) => p.id));
+    for (const r of rates) {
+      if (r.deleted || !isCurrency(r.currency) || !billable.has(r.projectId)) continue;
+      const list = this.byProject.get(r.projectId) ?? [];
+      list.push({ from: parseIso(r.effectiveFrom), id: r.id, rateCents: r.rateCents, currency: r.currency });
+      this.byProject.set(r.projectId, list);
+    }
+    for (const list of this.byProject.values()) {
+      list.sort((a, b) => a.from - b.from || (a.id < b.id ? -1 : 1));
+    }
+  }
+
+  /** The version in force at `sec`, or null when the project has no rate yet. */
+  at(projectId: string, sec: number): { rateCents: number | null; currency: Currency | null } {
+    const list = this.byProject.get(projectId);
+    if (list) {
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const r = list[i] as CompiledRate;
+        if (r.from <= sec) return r.rateCents === null ? { rateCents: null, currency: null } : { rateCents: r.rateCents, currency: r.currency };
+      }
+    }
+    return { rateCents: null, currency: null };
+  }
+
+  /** Slices `[start, end)` at rate changes. */
+  split(projectId: string, start: number, end: number): RatePiece[] {
+    const list = this.byProject.get(projectId) ?? [];
+    const out: RatePiece[] = [];
+    let cur = start;
+    for (;;) {
+      const v = this.at(projectId, cur);
+      let next = end;
+      for (const r of list) {
+        if (r.from > cur) {
+          next = Math.min(r.from, end);
+          break;
+        }
+      }
+      out.push({ start: cur, end: next, rateCents: v.rateCents, currency: v.currency });
+      if (next >= end) return out;
+      cur = next;
+    }
+  }
+}
+
+export interface RatePiece {
+  start: number;
+  end: number;
+  rateCents: number | null;
+  currency: Currency | null;
+}
+
+export interface Bucket {
+  rateCents: number | null;
+  currency: Currency | null;
+  exactSecs: number;
+  billableSecs: number;
+}
+
+export interface TaskDay {
+  taskId: string;
+  projectId: string;
+  day: string;
+  firstStart: number;
+  exactSecs: number;
+  billableSecs: number;
+  rule: Rule;
+  /** Real time rounded down to nothing (Nearest or Down only). The row stays. */
+  roundedToZero: boolean;
+  /** No exact time at all. The row stays at 0. */
+  zeroExact: boolean;
+  buckets: Bucket[];
+}
+
+export interface SpanLike {
+  taskId: string;
+  projectId: string;
+  start: number;
+  end: number;
+}
+
+function nextMidnight(day: string, zone: string, cache: Map<string, number>): number {
+  let v = cache.get(day);
+  if (v === undefined) {
+    v = startOfDay(addDays(day, 1), zone);
+    cache.set(day, v);
+  }
+  return v;
+}
+
+function allocate(buckets: Bucket[], diff: number): void {
+  let left = diff;
+  for (let i = buckets.length - 1; i >= 0 && left !== 0; i -= 1) {
+    const b = buckets[i] as Bucket;
+    const applied = Math.max(left, -b.billableSecs);
+    b.billableSecs += applied;
+    left -= applied;
+  }
+}
+
+/** One row per task per day in `zone`, in no particular order. */
+export function taskDays(spans: readonly SpanLike[], zone: string, book: RateBook, rounding: readonly RoundingVersion[]): TaskDay[] {
+  const midnight = new Map<string, number>();
+  const acc = new Map<string, { taskId: string; projectId: string; day: string; first: number; pieces: RatePiece[] }>();
+  for (const s of spans) {
+    let cur = s.start;
+    for (;;) {
+      const day = dayOf(cur, zone);
+      const next = nextMidnight(day, zone, midnight);
+      const stop = next >= s.end ? s.end : next;
+      const key = `${s.taskId}|${day}`;
+      let row = acc.get(key);
+      if (!row) {
+        row = { taskId: s.taskId, projectId: s.projectId, day, first: cur, pieces: [] };
+        acc.set(key, row);
+      }
+      row.first = Math.min(row.first, cur);
+      for (const p of book.split(s.projectId, cur, stop)) row.pieces.push(p);
+      if (stop >= s.end) break;
+      cur = stop;
+    }
+  }
+  const rows: TaskDay[] = [];
+  for (const row of acc.values()) {
+    row.pieces.sort((a, b) => a.start - b.start);
+    const buckets: Bucket[] = [];
+    for (const p of row.pieces) {
+      const secs = p.end - p.start;
+      const last = buckets[buckets.length - 1];
+      if (last && last.rateCents === p.rateCents && last.currency === p.currency) {
+        last.exactSecs += secs;
+        last.billableSecs += secs;
+      } else {
+        buckets.push({ rateCents: p.rateCents, currency: p.currency, exactSecs: secs, billableSecs: secs });
+      }
+    }
+    const exactSecs = buckets.reduce((n, b) => n + b.exactSecs, 0);
+    const rule = ruleFor(rounding, row.projectId, row.day);
+    const billableSecs = roundSeconds(exactSecs, rule.incrementMinutes, rule.method);
+    allocate(buckets, billableSecs - exactSecs);
+    rows.push({
+      taskId: row.taskId,
+      projectId: row.projectId,
+      day: row.day,
+      firstStart: row.first,
+      exactSecs,
+      billableSecs,
+      rule,
+      roundedToZero: exactSecs > 0 && billableSecs === 0,
+      zeroExact: exactSecs === 0,
+      buckets,
+    });
+  }
+  return rows;
+}
+
+export type Numerators = Partial<Record<Currency, number>>;
+
+/** Exact numerators per currency from billable time. */
+export function numeratorsOf(rows: readonly TaskDay[]): Numerators {
+  const out: Numerators = {};
+  for (const r of rows) {
+    for (const b of r.buckets) {
+      if (b.rateCents !== null && b.currency) out[b.currency] = (out[b.currency] ?? 0) + b.rateCents * b.billableSecs;
+    }
+  }
+  return out;
+}
+
+/** Exact numerators per currency from exact (unrounded) time: what the live ticker's exact figure shows. */
+export function exactNumeratorsOf(rows: readonly TaskDay[]): Numerators {
+  const out: Numerators = {};
+  for (const r of rows) {
+    for (const b of r.buckets) {
+      if (b.rateCents !== null && b.currency) out[b.currency] = (out[b.currency] ?? 0) + b.rateCents * b.exactSecs;
+    }
+  }
+  return out;
+}
+
+export function money(currency: Currency, cents: number): string {
+  const symbol = currency === 'EUR' ? '€' : '$';
+  const whole = Math.floor(cents / 100);
+  const frac = cents - whole * 100;
+  return `${symbol}${whole.toLocaleString('en-US')}.${String(frac).padStart(2, '0')}`;
+}
+
+/** "€12.00 + $3.50", currencies side by side, rounded only here. */
+export function moneyTotals(n: Numerators): string {
+  const parts = (['EUR', 'USD'] as const).filter((c) => n[c] !== undefined).map((c) => money(c, centsFromNumerator(n[c] as number)));
+  return parts.join(' + ');
+}
+
+export const MASK = '••••';

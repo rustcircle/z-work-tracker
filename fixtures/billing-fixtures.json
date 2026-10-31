@@ -1,0 +1,119 @@
+{
+  "comment": "Checked by both Rust and Vitest. Every expected figure is worked out by hand in the note.",
+  "cases": [
+    {
+      "name": "default 15 min up, 1 minute bills 15",
+      "note": "60 s up to 900 s. 900 s at 6000 c/h = 1500 c.",
+      "zone": "UTC",
+      "rounding": [],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" }],
+      "segments": [["2026-02-02T09:00:00Z", "2026-02-02T09:01:00Z"]],
+      "rows": [{ "day": "2026-02-02", "exact": 60, "billable": 900, "amounts": { "EUR": 1500 }, "exactAmounts": { "EUR": 100 } }]
+    },
+    {
+      "name": "exact multiple stays, one second over steps up",
+      "note": "900 stays 900 (1500 c). 901 becomes 1800 (3000 c).",
+      "zone": "UTC",
+      "rounding": [],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "USD" }],
+      "segments": [["2026-02-02T09:00:00Z", "2026-02-02T09:15:00Z"], ["2026-02-03T09:00:00Z", "2026-02-03T09:15:01Z"]],
+      "rows": [
+        { "day": "2026-02-02", "exact": 900, "billable": 900, "amounts": { "USD": 1500 }, "exactAmounts": { "USD": 1500 } },
+        { "day": "2026-02-03", "exact": 901, "billable": 1800, "amounts": { "USD": 3000 }, "exactAmounts": { "USD": 1502 } }
+      ]
+    },
+    {
+      "name": "rate change mid segment, exact time",
+      "note": "30 min at 6000 c/h = 3000 c, 30 min at 12000 c/h = 6000 c.",
+      "zone": "UTC",
+      "rounding": [{ "from": "2000-01-01", "minutes": 0, "method": "nearest" }],
+      "rates": [
+        { "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" },
+        { "from": "2026-02-02T10:00:00Z", "cents": 12000, "currency": "EUR" }
+      ],
+      "segments": [["2026-02-02T09:30:00Z", "2026-02-02T10:30:00Z"]],
+      "rows": [{ "day": "2026-02-02", "exact": 3600, "billable": 3600, "amounts": { "EUR": 9000 }, "exactAmounts": { "EUR": 9000 } }]
+    },
+    {
+      "name": "rounding difference goes to the last rate",
+      "note": "10 min old rate, 10 min new rate: 20 min up to 30. New bucket gets the extra 10: 20 min at 12000 = 4000, plus 10 min at 6000 = 1000.",
+      "zone": "UTC",
+      "rounding": [],
+      "rates": [
+        { "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" },
+        { "from": "2026-02-02T10:00:00Z", "cents": 12000, "currency": "EUR" }
+      ],
+      "segments": [["2026-02-02T09:50:00Z", "2026-02-02T10:10:00Z"]],
+      "rows": [{ "day": "2026-02-02", "exact": 1200, "billable": 1800, "amounts": { "EUR": 5000 }, "exactAmounts": { "EUR": 3000 } }]
+    },
+    {
+      "name": "zero and blank rates and two currencies stay apart",
+      "note": "Before any rate: no amount. Zero rate: 0 EUR. 5000 USD. Blank again: no amount.",
+      "zone": "UTC",
+      "rounding": [{ "from": "2000-01-01", "minutes": 0, "method": "nearest" }],
+      "rates": [
+        { "from": "2026-02-02T00:00:00Z", "cents": 0, "currency": "EUR" },
+        { "from": "2026-02-03T00:00:00Z", "cents": 5000, "currency": "USD" },
+        { "from": "2026-02-04T00:00:00Z", "cents": null, "currency": "USD" }
+      ],
+      "segments": [
+        ["2026-02-01T10:00:00Z", "2026-02-01T11:00:00Z"], ["2026-02-02T10:00:00Z", "2026-02-02T11:00:00Z"],
+        ["2026-02-03T10:00:00Z", "2026-02-03T11:00:00Z"], ["2026-02-04T10:00:00Z", "2026-02-04T11:00:00Z"]
+      ],
+      "rows": [
+        { "day": "2026-02-01", "exact": 3600, "billable": 3600, "amounts": {}, "exactAmounts": {} },
+        { "day": "2026-02-02", "exact": 3600, "billable": 3600, "amounts": { "EUR": 0 }, "exactAmounts": { "EUR": 0 } },
+        { "day": "2026-02-03", "exact": 3600, "billable": 3600, "amounts": { "USD": 5000 }, "exactAmounts": { "USD": 5000 } },
+        { "day": "2026-02-04", "exact": 3600, "billable": 3600, "amounts": {}, "exactAmounts": {} }
+      ]
+    },
+    {
+      "name": "half cent rounds up at the total",
+      "note": "18 s at 100 c/h = 0.5 c, rounds to 1.",
+      "zone": "UTC",
+      "rounding": [{ "from": "2000-01-01", "minutes": 0, "method": "up" }],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 100, "currency": "USD" }],
+      "segments": [["2026-02-02T09:00:00Z", "2026-02-02T09:00:18Z"]],
+      "rows": [{ "day": "2026-02-02", "exact": 18, "billable": 18, "amounts": { "USD": 1 }, "exactAmounts": { "USD": 1 } }]
+    },
+    {
+      "name": "same work rounds differently per zone",
+      "note": "UTC: one 20 min row, up to 30 (with 15 up). New York: midnight at 05:00Z splits it into two 10 min rows, each up to 15. Exact totals agree at 1200.",
+      "zone": "America/New_York",
+      "rounding": [],
+      "rates": [{ "from": "2026-01-01T00:00:00Z", "cents": 6000, "currency": "EUR" }],
+      "segments": [["2026-02-02T04:50:00Z", "2026-02-02T05:10:00Z"]],
+      "rows": [
+        { "day": "2026-02-01", "exact": 600, "billable": 900, "amounts": { "EUR": 1500 }, "exactAmounts": { "EUR": 1000 } },
+        { "day": "2026-02-02", "exact": 600, "billable": 900, "amounts": { "EUR": 1500 }, "exactAmounts": { "EUR": 1000 } }
+      ]
+    },
+    {
+      "name": "nearest rounds exact halves up and can round to zero",
+      "note": "450 s is half of 15 min: up to 900. 300 s: down to 0, kept.",
+      "zone": "UTC",
+      "rounding": [{ "from": "2000-01-01", "minutes": 15, "method": "nearest" }],
+      "rates": [],
+      "segments": [["2026-02-02T09:00:00Z", "2026-02-02T09:07:30Z"], ["2026-02-03T09:00:00Z", "2026-02-03T09:05:00Z"]],
+      "rows": [
+        { "day": "2026-02-02", "exact": 450, "billable": 900, "amounts": {}, "exactAmounts": {} },
+        { "day": "2026-02-03", "exact": 300, "billable": 0, "amounts": {}, "exactAmounts": {}, "roundedToZero": true }
+      ]
+    },
+    {
+      "name": "effective date picks the version per day",
+      "note": "Feb 28: 15 up, 20 min to 30. Mar 1: 30 down, 40 min to 30.",
+      "zone": "UTC",
+      "rounding": [
+        { "from": "2000-01-01", "minutes": 15, "method": "up" },
+        { "from": "2026-03-01", "minutes": 30, "method": "down" }
+      ],
+      "rates": [],
+      "segments": [["2026-02-28T09:00:00Z", "2026-02-28T09:20:00Z"], ["2026-03-01T09:00:00Z", "2026-03-01T09:40:00Z"]],
+      "rows": [
+        { "day": "2026-02-28", "exact": 1200, "billable": 1800, "amounts": {}, "exactAmounts": {} },
+        { "day": "2026-03-01", "exact": 2400, "billable": 1800, "amounts": {}, "exactAmounts": {} }
+      ]
+    }
+  ]
+}

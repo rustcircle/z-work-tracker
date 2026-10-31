@@ -76,3 +76,4 @@ labor-data.corrupt-*.json
 
 # Agent and tool output
 .stack/
+dist-e2e/

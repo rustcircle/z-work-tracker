@@ -852,4 +852,92 @@ pub(crate) mod tests {
         let d = NaiveDate::from_ymd_opt(2026, 3, 8).unwrap();
         assert_eq!(start_of_day(d, hav).iso(), "2026-03-08T05:00:00Z");
     }
+
+    /// Shared with `src/lib/parity.test.ts`, so Rust and TypeScript cannot drift apart.
+    mod shared_fixtures {
+        use super::*;
+        use chrono::{Offset, TimeZone};
+        use serde_json::Value;
+
+        fn load(name: &str) -> Value {
+            let path = format!("{}/../../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        }
+
+        #[test]
+        fn tz_conversions_days_and_splits() {
+            let f = load("tz-fixtures.json");
+            for c in f["conversions"].as_array().unwrap() {
+                let tz = parse_zone(c["zone"].as_str().unwrap()).unwrap();
+                let t = Ts::parse(c["at"].as_str().unwrap()).unwrap();
+                let local = t.datetime().with_timezone(&tz);
+                assert_eq!(local.format("%Y-%m-%d").to_string(), c["day"].as_str().unwrap(), "{c}");
+                assert_eq!(local.format("%H:%M").to_string(), c["clock"].as_str().unwrap(), "{c}");
+                let off = tz.offset_from_utc_datetime(&t.datetime().naive_utc()).fix().local_minus_utc() / 60;
+                assert_eq!(i64::from(off), c["offsetMin"].as_i64().unwrap(), "{c}");
+            }
+            for c in f["days"].as_array().unwrap() {
+                let tz = parse_zone(c["zone"].as_str().unwrap()).unwrap();
+                let d = NaiveDate::parse_from_str(c["day"].as_str().unwrap(), "%Y-%m-%d").unwrap();
+                let start = start_of_day(d, tz);
+                assert_eq!(start.iso(), c["start"].as_str().unwrap(), "{c}");
+                let next = start_of_day(d.succ_opt().unwrap(), tz);
+                assert_eq!(next.secs() - start.secs(), c["hours"].as_i64().unwrap() * 3600, "{c}");
+            }
+            for c in f["splits"].as_array().unwrap() {
+                let tz = parse_zone(c["zone"].as_str().unwrap()).unwrap();
+                let got: Vec<(String, i64)> = split_by_day(Ts::parse(c["start"].as_str().unwrap()).unwrap(), Ts::parse(c["end"].as_str().unwrap()).unwrap(), tz)
+                    .into_iter()
+                    .map(|(d, a, b)| (d.to_string(), b.secs() - a.secs()))
+                    .collect();
+                let want: Vec<(String, i64)> = c["pieces"].as_array().unwrap().iter().map(|p| (p["day"].as_str().unwrap().to_owned(), p["secs"].as_i64().unwrap())).collect();
+                assert_eq!(got, want, "{c}");
+            }
+        }
+
+        #[test]
+        fn billing_cases() {
+            let f = load("billing-fixtures.json");
+            for case in f["cases"].as_array().unwrap() {
+                let name = case["name"].as_str().unwrap();
+                let (mut s, p, t) = fixture(None);
+                let c = ctx("2026-06-01T00:00:00Z");
+                for r in case["rounding"].as_array().unwrap() {
+                    let method = match r["method"].as_str().unwrap() {
+                        "up" => RoundMethod::Up,
+                        "down" => RoundMethod::Down,
+                        _ => RoundMethod::Nearest,
+                    };
+                    s.set_rounding(&c, &RoundingInput { project_id: None, effective_from: r["from"].as_str().unwrap().into(), increment_minutes: r["minutes"].as_u64().unwrap() as u32, method, confirm_retroactive: true }, "2026-06-01").unwrap();
+                }
+                for r in case["rates"].as_array().unwrap() {
+                    rate(&mut s, &p, r["cents"].as_i64(), r["currency"].as_str().unwrap(), r["from"].as_str().unwrap());
+                }
+                for (i, seg_pair) in case["segments"].as_array().unwrap().iter().enumerate() {
+                    seg(&mut s, &t, &format!("s{i}"), seg_pair[0].as_str().unwrap(), seg_pair[1].as_str().unwrap());
+                }
+                let got = rows(&s, case["zone"].as_str().unwrap());
+                let want = case["rows"].as_array().unwrap();
+                assert_eq!(got.len(), want.len(), "{name}");
+                for (g, w) in got.iter().zip(want) {
+                    assert_eq!(g.day.to_string(), w["day"].as_str().unwrap(), "{name}");
+                    assert_eq!(g.exact_secs, w["exact"].as_i64().unwrap(), "{name}");
+                    assert_eq!(g.billable_secs, w["billable"].as_i64().unwrap(), "{name}");
+                    assert_eq!(g.rounded_to_zero, w["roundedToZero"].as_bool().unwrap_or(false), "{name}");
+                    let amounts: BTreeMap<String, i64> = g.numerators().iter().map(|(k, n)| (k.clone(), cents_from_numerator(*n))).collect();
+                    let want_amounts: BTreeMap<String, i64> = w["amounts"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_i64().unwrap())).collect();
+                    assert_eq!(amounts, want_amounts, "{name}");
+                    let mut exact: BTreeMap<String, i64> = BTreeMap::new();
+                    for b in &g.buckets {
+                        if let (Some(r), Some(cur)) = (b.rate_cents, &b.currency) {
+                            *exact.entry(cur.clone()).or_insert(0) += r * b.exact_secs;
+                        }
+                    }
+                    let exact: BTreeMap<String, i64> = exact.iter().map(|(k, n)| (k.clone(), cents_from_numerator(*n))).collect();
+                    let want_exact: BTreeMap<String, i64> = w["exactAmounts"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_i64().unwrap())).collect();
+                    assert_eq!(exact, want_exact, "{name} exact");
+                }
+            }
+        }
+    }
 }
