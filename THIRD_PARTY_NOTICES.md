@@ -27,7 +27,7 @@ All boundary lookups go through one file, `src/features/zones/geo.ts`, and the m
 
 ## Libraries
 
-**Rust (shipped):** Tauri and its plugins, chrono, chrono-tz, rust_xlsxwriter, serde and their dependencies, under MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, Unlicense, MPL-2.0 and Unicode-3.0, each as declared by the crate.
+**Rust (shipped):** Tauri and its plugins, chrono, chrono-tz, rust_xlsxwriter, pdf-writer, png, miniz_oxide, user-idle, serde and their dependencies, under MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, Unlicense, MPL-2.0 and Unicode-3.0, each as declared by the crate.
 
 **JavaScript (shipped):** React, TipTap, ProseMirror, `@tauri-apps/api`, `topojson-client` and their dependencies, under MIT, ISC, Apache-2.0 OR MIT and CC0-1.0.
 

@@ -32,7 +32,7 @@ function build(args) {
 const HELPERS = `
 const inv = window.__TAURI_INTERNALS__.invoke;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const until = async (f, what) => { for (let i = 0; i < 80; i++) { const v = f(); if (v) return v; await wait(100); } throw new Error('timed out: ' + what); };
+const until = async (f, what) => { for (let i = 0; i < 80; i++) { const v = await f(); if (v) return v; await wait(100); } throw new Error('timed out: ' + what); };
 const button = (text) => [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === text && !b.disabled);
 const report = (o) => inv('smoke_report', { text: JSON.stringify(o) });
 const run = async (f) => { try { await report(await f()); } catch (e) { await report({ error: String(e && e.message || e) }); } };
@@ -95,7 +95,7 @@ run(async () => {
   const blank = await inv('create_task', { input: { name: 'Blank', projectId: p.id, description: null } });
   try { await inv('start_task', { id: blank.id }); r.coldBlankStart = 'accepted'; } catch (e) { r.coldBlankStart = e.code; }
   await inv('delete_draft', { id: blank.id });
-  const t = await inv('create_task', { input: { name: 'Smoke task', projectId: p.id, description: ${JSON.stringify(LIST)} } });
+  const t = await inv('create_task', { input: { name: 'Smoke task', projectId: p.id, description: ${JSON.stringify(LIST)}, tags: ['tag-concept'] } });
   r.coldBefore = (await inv('get_snapshot')).launch.warm;
   await inv('set_theme', { theme: 'solarizedDark' });
   await inv('smoke_emit_changed');
@@ -123,6 +123,34 @@ run(async () => {
   const request = { dayZone: 'America/New_York', myZone: 'Europe/Lisbon', clientZone: 'America/New_York', includeEarnings: true, segmentShifts: {}, analytics: [] };
   r.xlsx = await inv('export_xlsx', { request });
   r.csv = await inv('export_csv', { request });
+  // Phase 2 on the real backend: time away, corrections, billing, PDF, tags, backups.
+  await inv('smoke_observe', { idle: 3600 });
+  await wait(1100);
+  await inv('smoke_observe', { idle: 0 });
+  s = await inv('get_snapshot');
+  r.gapsFound = s.gaps.filter((g) => g.decision === 'pending').length;
+  s = await inv('decide_gap', { id: s.gaps[0]?.id ?? 'none', decision: 'keep' });
+  r.gapsAfterKeep = s.gaps.filter((g) => g.decision === 'pending').length;
+  r.copyTags = s.launch.copySource?.tags;
+  const day = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  const taskId = s.tasks[0].id;
+  const manual = await inv('add_manual_entry', { input: { taskId, start: day(3) + 'T09:00:00Z', end: day(3) + 'T10:00:00Z', reason: 'smoke', allowOverlap: true } });
+  r.manualRaw = manual.snapshot.rawSegments.filter((x) => x.manual).length;
+  const manualSeg = manual.id;
+  await inv('correct_segment', { input: { segmentId: manualSeg, start: day(3) + 'T09:00:00Z', end: day(3) + 'T09:30:00Z', reason: 'smoke fix', allowOverlap: true } });
+  r.auditActions = (await inv('get_audit', { entityId: manualSeg })).map((a) => a.action);
+  await inv('mark_billable_pause', { input: { taskId, start: day(3) + 'T11:00:00Z', end: day(3) + 'T11:30:00Z', note: 'call' } });
+  const period = { projectId: p.id, from: day(4), to: day(2), zone: 'UTC' };
+  const preview = await inv('summary_preview', { request: period });
+  r.previewPause = preview.pauseSecs;
+  r.previewExact = preview.exactSecs;
+  const bill = await inv('create_summary', { request: period });
+  r.reference = bill.snapshot.billing.summaries[0]?.reference;
+  r.summaryCsv = await inv('export_summary_csv', { id: bill.id });
+  r.pdf = await inv('export_pdf', { request: { projectId: p.id, from: day(4), to: day(2), zone: 'UTC', title: 'Smoke', includePrices: true } });
+  const tag = await inv('save_tag', { input: { name: 'Painted', color: '#ABCDEF' } });
+  r.tagColor = tag.snapshot.tags.find((x) => x.id === tag.id)?.color;
+  try { await inv('save_tag', { input: { name: 'Bad', color: 'red' } }); r.badTag = 'accepted'; } catch (e) { r.badTag = e.code; }
   await inv('add_sync_target', { provider: 'custom', root: ${JSON.stringify(syncRoot)} });
   await inv('sync_now');
   s = await inv('get_snapshot');
@@ -177,6 +205,15 @@ run(async () => {
   check('timestamps on disk are UTC with Z', seg.every((s) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(s.start)));
   const py = spawnSync('unzip', ['-t', r1.xlsx], { encoding: 'utf8' });
   check('Excel file is a valid archive', py.status === 0);
+  check('idle time on the real path becomes an unconfirmed gap, and keep clears it', r1.gapsFound >= 1 && r1.gapsAfterKeep === 0, JSON.stringify([r1.gapsFound, r1.gapsAfterKeep]));
+  check('a warm copy carries the tags', r1.copyTags?.includes('tag-concept'), JSON.stringify(r1.copyTags));
+  check('manual entry and correction keep an audit trail', r1.manualRaw === 1 && r1.auditActions?.length === 2, JSON.stringify(r1.auditActions));
+  check('the billing summary preview separates exact and pause, and issues A-001', r1.previewExact === 1800 && r1.previewPause === 1800 && r1.reference === 'A-001', JSON.stringify([r1.previewExact, r1.previewPause, r1.reference]));
+  const billCsv = existsSync(r1.summaryCsv ?? '') ? readFileSync(r1.summaryCsv, 'utf8') : '';
+  check('the summary CSV says it is not a tax document', /Not a tax document/.test(billCsv));
+  const pdf = existsSync(r1.pdf ?? '') ? readFileSync(r1.pdf) : Buffer.alloc(0);
+  check('a PDF timesheet is written locally', pdf.subarray(0, 5).toString() === '%PDF-' && pdf.includes('Smoke'));
+  check('tag colours are stored canonical and others refused', r1.tagColor === '#abcdef' && r1.badTag === 'validation', JSON.stringify([r1.tagColor, r1.badTag]));
 
   // Run 2: relaunch. Data and theme persist; start a task and get killed, simulating a crash.
   out = join(work, 'r2.json');
@@ -194,7 +231,7 @@ run(async () => {
   r.trayColdSegments = afterTray.segments.length;
   r.trayColdVisible = await inv('smoke_window_visible');
   r.trayColdForm = /continuing/i.test(document.body.innerText);
-  const next = await inv('create_task', { input: { name: 'Smoke continued', projectId: old.projectId, description: ${JSON.stringify(LIST)}, continuedFrom: old.id } });
+  const next = await inv('create_task', { input: { name: 'Smoke continued', projectId: old.projectId, description: ${JSON.stringify(LIST)}, continuedFrom: old.id, tags: ['tag-concept'] } });
   await inv('start_task', { id: next.id });
   const done = await inv('get_snapshot');
   r.nextLink = done.tasks.find((x) => x.id === next.id).continuedFrom === old.id;
@@ -232,13 +269,25 @@ run(async () => {
   const crashed = s.tasks.find((x) => x.name === 'Smoke continued');
   const r = { state: crashed.state, reason: crashed.pauseReason, notice: s.notices[0]?.message, open: s.segments.filter((x) => x.end === null).length };
   try { await inv('resume_task', { id: crashed.id }); r.coldResume = 'accepted'; } catch (e) { r.coldResume = e.code; }
-  const next = await inv('create_task', { input: { name: 'Smoke after crash', projectId: crashed.projectId, description: ${JSON.stringify(LIST)}, continuedFrom: crashed.id } });
+  await until(async () => (await inv('list_backups')).length > 0, 'a dated backup exists');
+  r.tasksBefore = s.tasks.length;
+  const dated = (await inv('list_backups')).find((b) => !b.safety);
+  r.datedBackup = dated?.name;
+  const emptied = await inv('restore_backup', { name: dated.name });
+  r.tasksAfterRestore = emptied.tasks.length;
+  const safety = (await inv('list_backups')).find((b) => b.safety);
+  r.safetyCopy = safety?.name;
+  const back = await inv('restore_backup', { name: safety.name });
+  r.tasksAfterUndo = back.tasks.length;
+  const next = await inv('create_task', { input: { name: 'Smoke after crash', projectId: crashed.projectId, description: ${JSON.stringify(LIST)}, continuedFrom: crashed.id, tags: ['tag-concept'] } });
   await inv('start_task', { id: next.id });
   return r;
 });
 `, out);
   const r3 = await waitFile(out);
   check('crash recovery closes at the heartbeat, pauses and shows a notice', r3?.state === 'paused' && r3?.reason?.kind === 'crashRecovery' && r3?.open === 0 && /did not shut down/.test(r3?.notice ?? '') && /next start asks for every field/.test(r3?.notice ?? ''), JSON.stringify(r3));
+  check('a dated backup exists and restoring it replaces the store', Boolean(r3?.datedBackup) && r3?.tasksAfterRestore < r3?.tasksBefore, JSON.stringify([r3?.datedBackup, r3?.tasksAfterRestore, r3?.tasksBefore]));
+  check('restore keeps a safety copy that brings everything back', Boolean(r3?.safetyCopy) && r3?.tasksAfterUndo === r3?.tasksBefore, JSON.stringify([r3?.safetyCopy, r3?.tasksAfterUndo]));
   check('after a crash the launch is cold too', r3?.coldResume === 'cold_start_required', r3?.coldResume);
   await sleep(1000);
   const quitter = spawnSync(exe, ['--quit'], { env: { ...process.env, ZWT_SMOKE_DATA_DIR: dataDir }, timeout: 15000 });

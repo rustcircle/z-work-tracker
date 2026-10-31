@@ -6,7 +6,7 @@ A desktop app for Windows 11 that accounts for labor hours by project and task. 
 
 It runs locally. It makes no network calls and sends no telemetry. Data leaves the machine only if you choose a OneDrive or Google Drive folder for sync.
 
-Status: first build. It has been run and tested on macOS, and the Windows installer has been built, but **nothing has been run on real Windows yet**. See [Known limitations](#known-limitations).
+Status: phase 2 build. It has been run and tested on macOS, and the Windows installer has been built, but the only thing to run on Windows so far is a CI run of the test gates: **the app itself has never run on real Windows**, and that CI run predates phase 2. See [Known limitations](#known-limitations).
 
 ![Timeline](docs/images/timeline-light.png)
 
@@ -96,7 +96,20 @@ Only the tray's **Quit** really exits. On a real exit a running segment closes a
 
 If the app crashes, a heartbeat saved about every 30 seconds marks the last moment it was alive. At the next launch the open segment closes at that moment, the task is paused and a notice tells you, including that the next start asks for every field.
 
-If the computer sleeps while a task is running, the sleeping time counts as work, because the segment stays open. Pause before closing the lid.
+**Time away.** While a task runs, the app watches for gaps: the machine slept, the wall clock jumped by more than two minutes between checks, or nobody touched the keyboard or mouse for the idle limit (10 minutes by default; 0 turns idle detection off, but a sleep or clock jump is always noticed). A locked screen is noticed through idle time, so a lock shorter than the limit, or any lock with the limit at 0, isn't seen. When you return, the app asks what to do with the time:
+
+| Answer | Exact | Billable and earnings |
+|---|---|---|
+| No answer yet | Doesn't count | Doesn't count |
+| **Keep** | Counts | Counts |
+| **Drop** | Doesn't count | Doesn't count |
+| **Thinking** | Counts, reported separately | Counts, reported separately |
+
+Raw UTC timestamps stay as they were, whatever you answer. An absence in progress when a segment closes, whether by Pause, Stop, Quit or a crash, is recorded the same way. This replaces the first build's behaviour, where sleeping time counted as work.
+
+![The time-away dialog](docs/images/timeaway-dialog-light.png)
+
+**Reminders.** A notification tells you when a task has run a long time (4 hours by default) or is still running after your shift ended. Both can be turned off, and a reminder can be snoozed. Snoozing doesn't pause anything.
 
 ### Timeline
 
@@ -160,6 +173,58 @@ The default is **15 minutes, rounding up**. Choices are Off (exact), 1, 5, 6, 10
 - Continued tasks round separately, so a chain can round up more than once in a day. See [Tasks and subtasks](#tasks-and-subtasks).
 
 Totals show **Billable (rounded)** and **Exact**. Exact totals are the same in every zone. Billable totals can differ, because days fall differently: a segment crossing midnight in one zone is two rows there and one elsewhere. Pauses stay excluded from Exact. The rounding adjustment metric shows what rounding adds.
+
+### Corrections, manual entries and billable pauses
+
+You can add a manual entry for time the app didn't log, correct a segment's start and end, or void a segment and bring it back. Each asks for a reason where it helps and warns about overlaps. Nothing destroys the original: the logged UTC times stay in the file, the correction sits beside them, and the audit trail lists every change with when, what and why. A running segment can't be corrected, and neither can time on a billing summary until that summary is voided.
+
+A pause can be marked **billable** when you were still working, for example on a call. It counts in Billable and earnings, is rounded once together with that task-day's exact time, and is included in the rounding adjustment, but it never counts in Exact and is reported on its own. Time covered twice bills once: a pause never bills a span a segment or another pause already covers.
+
+![Corrections on a task](docs/images/task-corrections.png)
+
+### Subtask time
+
+A task-list item in a description can be made active. Exactly one is active at a time. Each segment belongs to the subtask active when it started; switching while running closes the segment and opens the next one, so task totals remain the sum of segments. Copying a task keeps subtask text, clears the ticks and carries no time. Removing the active item from the description clears the active subtask.
+
+![Subtasks with their time](docs/images/task-subtasks.png)
+
+### Tags and templates
+
+Tags have a name and a colour, and four starter tags come with the app. A warm start copies them; a cold start requires at least one, while any tag exists. Analysis breaks time down by tag. A template stores a task's name, description, project and tags, and creates an independent draft with unticked subtasks.
+
+### Colours
+
+Projects and tags share a colour picker: a saturation and brightness area, a hue slider, R, G and B fields from 0 to 255 and a hex field, all kept in step, with a live preview. It works by keyboard in every theme, and also offers curated swatches and your recently used colours. Any colour is allowed. Chip text picks black or white for readability, and you get a gentle warning, never a refusal, if a colour is close to another project's or hard to see on the current theme. The backend stores six-digit lowercase hex, such as `#1a2b3c`, and refuses anything else.
+
+![The colour picker](docs/images/color-picker.png)
+
+### Fixed-fee projects and budget alerts
+
+A project bills **hourly** or at a **fixed fee** in EUR or USD. A fixed-fee project earns the fee, not time at a rate, so hourly earnings stay empty, and Analysis shows its effective hourly rate: the fee divided by billable hours. Budgets warn at 80% and 100%, of hours or of the fixed fee, on screen and once per threshold as a system notification. A fee-based budget values time using the project's rate as a target rate, and says so when none is set.
+
+### Billing summaries
+
+**This is for your own guidance. It is not an invoice and not a tax document, and says so on the page and in its exports.**
+
+Pick a project and period to see unbilled closed time per task and day. **Create summary** freezes it into a summary with a reference such as `A-001` and marks that time billed. Tasks then show billed and unbilled time. Copy it or export it as CSV. Voiding a summary puts the time back to unbilled; its number isn't reused.
+
+![The Billing tab](docs/images/billing-light.png)
+
+Each device has its own prefix, which you can edit. Numbers count up per prefix across all devices. Two devices offline at once could still pick the same prefix and reference, so the app warns when it finds a shared prefix or a repeated reference.
+
+The preview tells you about time away you haven't answered yet. It's left out of the summary, and answering after that requires voiding the summary, so answer first. A partly billed task-day rounds again on its unbilled part, so it can round up twice. Time belongs to the day its segment started. A correction made on another device before the summary syncs still applies, while the frozen summary keeps its numbers.
+
+### Timesheet PDF
+
+A local PDF for a period, with or without prices, in the client's zone, with your logo (PNG) if you add one. It's built on this computer by a Rust library with no network access. It uses a built-in Latin font, so characters outside Windows-1252, such as Japanese or Greek, print as `?`. Only the Excel and CSV exports hold those characters as you typed them.
+
+### Quote helper
+
+Enter a job's name and tags to get an estimate from comparable past stopped tasks: a range and the number of tasks behind it. It's labelled as an estimate, and a low sample size is shown.
+
+### Backups
+
+The app writes a dated copy of its data once a day into a `backups` folder beside it, keeping the newest 30 by default; choose 1 to 365. These stay on this computer and are separate from sync. **Restore** in Settings first saves the current data as a safety copy, which retention never deletes, then replaces the data. A running task pauses first, and the next start counts as cold. Restoring the safety copy undoes a restore. This device's settings, such as sync folders, stay as they are. With sync on, newer records in your sync folders merge back in at the next sync, so to go back in time for good, turn sync off first.
 
 ### Earnings and Hide earnings
 
@@ -241,6 +306,8 @@ The full list with formulas is in the app's searchable Metrics glossary (source:
 Definitions worth knowing:
 
 - **A pause** is the gap between two consecutive segments of the same task, or from a task's last segment to its Stop, that begins and ends on the same calendar day in the zone you're viewing. Gaps crossing midnight, such as overnight or weekend breaks, aren't pauses and are excluded from every figure. A pause belongs to the day it began, and a still-paused task's open gap isn't counted. Pauses of different tasks add up, so a day can show more paused time than worked time.
+- **Exact** leaves out time away that's unanswered or dropped, and billable pauses. **Billable** adds billable pauses and rounds once per task-day. The **rounding adjustment** is Billable minus Exact, with billable pauses shown separately. Thinking counts in both, shown separately.
+- **Effective hourly rate** on a fixed-fee project is the fee divided by Billable hours. **Billed** and **unbilled** seconds are the time on and off a live billing summary. Tag analytics count a task's time under each of its tags, so tag totals can add up to more than the total.
 - A band or shift filter hides Billable figures, because rounding works on whole task-days.
 - Client working hours apply Monday to Friday.
 - A forecast is a straight-line projection and needs 7 or more days, 20% of the period elapsed and 2 active days. Budget pace uses the last 28 days.
@@ -254,6 +321,8 @@ Definitions worth knowing:
 | **macOS** | `~/Library/Application Support/com.rustcircle.zworktracker/` |
 | **Main file** | `z-work-data.json`: versioned JSON with timestamps in UTC (`2026-03-08T07:00:00Z`) |
 | **Backup** | `z-work-data.json.bak`: the previous good version |
+| **Dated backups** | `backups/`: one copy a day, plus safety copies made before a restore |
+| **Before a migration** | `z-work-data.v1.json`: the store as it was before an upgrade |
 | **Damaged files** | Kept as `z-work-data.corrupt-<time>.json` |
 
 Saves are atomic: a temporary file, then a rename. If the main file is damaged the app restores from the backup and tells you. If both are damaged it keeps both copies, starts empty and says so. A file from a newer app version is refused and left untouched. Data is never silently wiped.
@@ -336,9 +405,9 @@ Billing and time zone rules exist in both Rust (for exports and the tray) and TS
 
 ### Data model and schema migration
 
-Two versions exist: `version` in the local file and `schemaVersion` in device files, both 1. To change the schema, raise `SCHEMA_VERSION` and add a step to `migrate()` in `persist.rs`. Optional fields need no step, because every synced record defaults missing ones. An old build skips a newer device file and never overwrites it.
+Two versions exist: `version` in the local file and `schemaVersion` in device files, both 2. Opening a version 1 store keeps a copy as `z-work-data.v1.json`, then upgrades it; a test reads a real phase 1 file. To change the schema, raise `SCHEMA_VERSION` and add a step to `migrate()` in `persist.rs`. Optional fields need no step, because every synced record defaults missing ones. An old build skips a newer device file, warns "Update this device" and never overwrites it. Task lists from version 1 get subtask ids derived from the task id and position, so every device derives the same ones without a new edit stamp.
 
-The synced state is a set of records with stable ids, merged by taking the maximum under a total order. Property tests check that the merge is idempotent, commutative and associative.
+The synced state is a set of records with stable ids, merged by taking the maximum under a total order. Property tests check that the merge is idempotent, commutative and associative, for time away, billable pauses, tags, templates, summaries, prefixes and the audit log too. Corrections, time away and billable pauses are overlays on raw segments, and `pieces.rs` turns them into the pieces every report reads. A synced file is untrusted: `validate.rs` refuses out-of-range times, amounts and references before a merge.
 
 ### Security model
 
@@ -429,7 +498,9 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 | "Windows protected your PC" | The installer is unsigned. Choose **More info**, then **Run anyway**. |
 | Blank window or WebView2 message | Run Windows Update, or reinstall the WebView2 Runtime from Microsoft. Your data is safe. |
 | The app seems gone after closing | It's in the tray; check the overflow arrow. Only tray **Quit** exits. |
-| Time kept running overnight | The app was hidden or the PC slept with a task running. Pause first. |
+| Time kept running overnight | The app asks about a sleep or idle time when you return, and it counts nowhere until you answer. Answer **Drop**, or correct the segment. |
+| A summary won't let me answer about time away | That segment is on a billing summary. Void the summary, answer, then create it again. |
+| A PDF shows `?` | The PDF's built-in font covers Latin text only. Use the Excel or CSV export for other scripts. |
 | Sync folder not detected | Use **Choose another folder**. Only common "My Drive" language variants are detected. |
 | A sync folder shows an error | Check the desktop client is running and the drive is connected. Local data and other folders are unaffected. |
 | "Written to folder" but another PC has no data | The desktop client may still be uploading. |
@@ -444,6 +515,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 
 **Verified only on macOS or against a mock.**
 
+- Every phase 2 screen is tested against the mock, which reimplements the backend's rules in TypeScript and can drift from them. The native smoke script runs time away, manual entries, corrections, billing, the PDF, tag colours and backup restore against the real backend by calling its commands, without clicking those screens. The real file dialogs and clipboard weren't exercised.
 - Warm copy, cold form, cold Resume and inline editing UI are tested against the mock. The native smoke script checks the backend rules and the tray route against the real backend.
 - Real backend, webview and exit paths were tested on macOS with the native smoke script, which doesn't click the real tray icon. Tray icon appearance is unverified.
 - The real OneDrive and Google Drive clients have not been exercised. Detection is tested with an injected environment.
@@ -454,7 +526,13 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 - OS shutdown relies on the app's exit event, which is unverified on Windows; if it doesn't fire, heartbeat recovery closes the segment within about 30 seconds of the real time.
 - Mica isn't used, so it can't wash out the themes.
 - Google Drive detection scans drive letters and common folder names and doesn't read the DriveFS registry. Use the picker otherwise.
-- Time spent asleep counts as running time.
+- A locked screen is noticed only through idle time; there's no separate lock signal. A lock shorter than the idle limit counts as work.
+- Idle reading (`user-idle`) has not run on Windows. After a wake it could report idle time spanning the sleep; the code clamps that, tested with injected values only.
+- The reminder and budget notifications come from the system's notification service, not run on Windows.
+- A restore with sync on merges newer records back, and the app warns about that.
+- The PDF prints characters outside Windows-1252 as `?`.
+- Audit entries for billable pauses name no task, so a task's history matches them by time.
+- A correction made on another device before a summary syncs lands on billed time; the summary keeps its frozen numbers.
 - At a Windows shutdown or sign-out, an edit typed in the last moment before the autosave may be lost: the page gets no save signal on that path. Tray Quit and hiding the window do flush edits, after a 300 ms wait.
 - Shift analysis can't revert a single version; retire or delete instead.
 - Heatmap and calendar cells have no keyboard drill-down; their View data tables hold the same numbers.
@@ -464,23 +542,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 
 ## Roadmap
 
-Approved for phase 2. **None of this is built yet.**
-
-1. Manual time entry and corrections, with an audit trail
-2. Idle detection: keep, drop or count as thinking time
-3. "Still working" pauses that can be marked billable
-4. Forgotten timer reminders
-5. Client-ready timesheet PDF
-6. Billing summary for your own guidance (not a tax document), with per-PC reference numbers and billed marks
-7. Budget alerts at 80% and 100%, including fixed fees
-8. Task templates
-9. Subtask checkboxes with their own tracked time
-10. Tags with analytics
-11. Effective hourly rate on fixed-fee projects
-12. Quote helper from similar past projects
-13. Automatic dated backups with self-service restore
-
-After that, a performance pass with measurements on its own branch.
+The approved phase 2 list is built, and is described in the [User guide](#user-guide). Next is a performance pass with measurements, on its own branch.
 
 ## Third-party data licences
 

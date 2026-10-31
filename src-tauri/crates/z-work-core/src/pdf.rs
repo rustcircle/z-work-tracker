@@ -443,6 +443,9 @@ mod tests {
         assert!(b.starts_with(b"%PDF-"));
         assert!(contains(&b, b"America/New_York"));
         assert!(contains(&b, b"Total time"));
+        if let Ok(path) = std::env::var("ZWT_SAMPLE_PDF") {
+            std::fs::write(path, &b).unwrap();
+        }
     }
 
     #[test]
