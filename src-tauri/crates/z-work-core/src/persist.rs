@@ -4,8 +4,11 @@
 use std::fs;
 #[cfg(unix)]
 use std::fs::File;
+use std::hash::{DefaultHasher, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 use uuid::Uuid;
@@ -20,12 +23,18 @@ pub const MAIN_FILE: &str = "z-work-data.json";
 #[derive(Clone, Debug)]
 pub struct Paths {
     pub dir: PathBuf,
+    /// Hash of the main file as it was last read and checked, or written, so an unchanged file is
+    /// not parsed again on every save. 0 until then, and no file is trusted because of it.
+    checked: Arc<AtomicU64>,
 }
 
 impl Paths {
     #[must_use]
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            dir: dir.into(),
+            checked: Arc::new(AtomicU64::new(0)),
+        }
     }
     #[must_use]
     pub fn main(&self) -> PathBuf {
@@ -41,6 +50,19 @@ impl Paths {
     fn bak_tmp(&self) -> PathBuf {
         self.dir.join(format!("{MAIN_FILE}.bak.tmp"))
     }
+    fn remember_checked(&self, bytes: &[u8]) {
+        self.checked.store(content_hash(bytes), Ordering::Relaxed);
+    }
+    fn is_checked(&self, bytes: &[u8]) -> bool {
+        self.checked.load(Ordering::Relaxed) == content_hash(bytes)
+    }
+}
+
+/// Never 0, which `Paths` uses for "nothing checked yet".
+fn content_hash(bytes: &[u8]) -> u64 {
+    let mut h = DefaultHasher::new();
+    h.write(bytes);
+    h.finish().max(1)
 }
 
 /// Creates `tmp` afresh and fills it. A leftover file or planted link is removed, never followed.
@@ -103,7 +125,7 @@ fn migrate(mut value: Value) -> Value {
 /// Reads a store file from elsewhere, such as a backup, without touching the disk.
 pub fn parse_checked(bytes: &[u8]) -> Result<LocalFile, CoreError> {
     match parse_local(bytes) {
-        Parsed::Good(f) => Ok(*f),
+        Parsed::Good(f, _) => Ok(*f),
         Parsed::Newer(found) => Err(CoreError::FutureVersion {
             found,
             supported: SCHEMA_VERSION,
@@ -116,7 +138,8 @@ pub fn parse_checked(bytes: &[u8]) -> Result<LocalFile, CoreError> {
 
 #[derive(Debug)]
 enum Parsed {
-    Good(Box<LocalFile>),
+    /// The file and the schema version it was written in.
+    Good(Box<LocalFile>, u64),
     Corrupt(String),
     Newer(u64),
 }
@@ -127,11 +150,11 @@ fn parse_local(bytes: &[u8]) -> Parsed {
         Err(e) => return Parsed::Corrupt(e.to_string()),
     };
     let version = value.get("version").and_then(Value::as_u64);
-    match version {
+    let found = match version {
         None | Some(0) => return Parsed::Corrupt("no schema version".into()),
         Some(v) if v > SCHEMA_VERSION => return Parsed::Newer(v),
-        Some(_) => {}
-    }
+        Some(v) => v,
+    };
     let value = migrate(value);
     let file: LocalFile = match serde_json::from_value(value) {
         Ok(f) => f,
@@ -140,7 +163,20 @@ fn parse_local(bytes: &[u8]) -> Parsed {
     if let Err(e) = check_core(&file.data) {
         return Parsed::Corrupt(e.to_string());
     }
-    Parsed::Good(Box::new(file))
+    Parsed::Good(Box::new(file), found)
+}
+
+/// True when the bytes this program just produced read back as a valid store. They are in the current
+/// schema by construction, so there is nothing to migrate and no need for the generic JSON tree.
+fn reads_back(bytes: &[u8], file: &LocalFile) -> Result<(), String> {
+    if file.version != SCHEMA_VERSION {
+        return match parse_local(bytes) {
+            Parsed::Corrupt(why) => Err(why),
+            _ => Ok(()),
+        };
+    }
+    let read: LocalFile = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    check_core(&read.data).map_err(|e| e.to_string())
 }
 
 fn read_opt(path: &Path) -> io::Result<Option<Vec<u8>>> {
@@ -188,11 +224,7 @@ pub fn new_local_file(device_name: &str) -> LocalFile {
 }
 
 /// Keeps the original bytes of an older-format store the first time it is upgraded.
-fn keep_before_migration(paths: &Paths, bytes: &[u8]) -> io::Result<()> {
-    let version = serde_json::from_slice::<Value>(bytes)
-        .ok()
-        .and_then(|v| v.get("version").and_then(Value::as_u64))
-        .unwrap_or(SCHEMA_VERSION);
+fn keep_before_migration(paths: &Paths, bytes: &[u8], version: u64) -> io::Result<()> {
     if version >= SCHEMA_VERSION {
         return Ok(());
     }
@@ -218,8 +250,9 @@ pub fn load(
 
     if let Some(bytes) = &main {
         match parse_local(bytes) {
-            Parsed::Good(file) => {
-                keep_before_migration(paths, bytes)?;
+            Parsed::Good(file, version) => {
+                keep_before_migration(paths, bytes, version)?;
+                paths.remember_checked(bytes);
                 return Ok((*file, outcome));
             }
             Parsed::Newer(found) => {
@@ -240,7 +273,7 @@ pub fn load(
 
     if let Some(bytes) = &bak {
         match parse_local(bytes) {
-            Parsed::Good(file) => {
+            Parsed::Good(file, _) => {
                 outcome.notices.push(if had_main {
                     "Your data was restored from the automatic backup. The most recent change may be missing.".to_owned()
                 } else {
@@ -266,29 +299,61 @@ pub fn load(
     Ok((new_local_file(device_name), outcome))
 }
 
+/// Makes the current main file the backup. A hard link does it without copying the store: the backup
+/// keeps those very bytes when the rename in `save` gives the main name to a new file. Where links
+/// aren't available, such as FAT or exFAT, it falls back to a copy.
+fn rotate_backup(paths: &Paths, current: &[u8]) -> io::Result<()> {
+    let (bak, tmp) = (paths.bak(), paths.bak_tmp());
+    let linked = with_local_retry(|| {
+        let main = fs::symlink_metadata(paths.main())?;
+        if !main.is_file() {
+            return Err(io::Error::other("the main file is not a plain file"));
+        }
+        match fs::remove_file(&tmp) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+        fs::hard_link(paths.main(), &tmp)?;
+        fs::rename(&tmp, &bak)
+    });
+    match linked {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // A failed attempt may have left the link behind. write_atomic replaces it, never follows it.
+            with_local_retry(|| write_atomic(&bak, &tmp, current))
+        }
+    }
+}
+
 /// Saves the store. The current main file is rotated to `.bak` only when it is still valid, so a
-/// main file damaged while running can never replace a good backup.
+/// main file damaged while running can never replace a good backup. Costs at 50k segments, in order:
+/// serialising, reading back what will be written, then the writes. A main file this process wrote or
+/// checked and that still hashes the same is not parsed again, and an unchanged store isn't rewritten.
 pub fn save(paths: &Paths, file: &LocalFile, now: Ts) -> Result<(), CoreError> {
     let bytes = serde_json::to_vec(file)?;
+    let current = read_opt(&paths.main())?;
+    let known_good = current.as_ref().is_some_and(|c| paths.is_checked(c));
+    if known_good && current.as_ref().is_some_and(|c| *c == bytes) {
+        return Ok(());
+    }
     // What cannot be read back must never replace the file that can.
-    if let Parsed::Corrupt(why) = parse_local(&bytes) {
+    if let Err(why) = reads_back(&bytes, file) {
         return Err(CoreError::Validation(format!(
             "refusing to save data that cannot be read back: {why}"
         )));
     }
     let tmp = paths.tmp();
     with_local_retry(|| write_new(&tmp, &bytes))?;
-    if let Some(current) = read_opt(&paths.main())? {
-        if matches!(parse_local(&current), Parsed::Corrupt(_)) {
+    if let Some(current) = current {
+        if !known_good && matches!(parse_local(&current), Parsed::Corrupt(_)) {
             quarantine(paths, &paths.main(), now)?;
-        } else if let Err(e) =
-            with_local_retry(|| write_atomic(&paths.bak(), &paths.bak_tmp(), &current))
-        {
+        } else if let Err(e) = rotate_backup(paths, &current) {
             // A locked backup must not stop time logging; the next save rotates it again.
             eprintln!("could not refresh the backup: {e}");
         }
     }
     with_local_retry(|| fs::rename(&tmp, paths.main()))?;
+    paths.remember_checked(&bytes);
     Ok(())
 }
 
@@ -462,6 +527,89 @@ mod tests {
             Err(CoreError::FutureVersion { found: 99, .. })
         ));
         assert_eq!(fs::read(p.main()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_store_that_did_not_change_is_not_written_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let one = with_project("One");
+        save(&p, &one, NOW).unwrap();
+        let written = fs::metadata(p.main()).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        save(&p, &one, NOW).unwrap();
+        assert_eq!(fs::metadata(p.main()).unwrap().modified().unwrap(), written);
+        assert!(!p.bak().exists(), "the only version has nothing to back up");
+    }
+
+    #[test]
+    fn a_file_changed_behind_the_app_is_parsed_again_even_when_it_still_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let one = with_project("One");
+        save(&p, &one, NOW).unwrap();
+        // Valid, and not what this process wrote: it is rotated like any other good file.
+        let other = with_project("Other");
+        fs::write(p.main(), serde_json::to_vec(&other).unwrap()).unwrap();
+        // The same store as last time must still be written, because the disk no longer holds it.
+        save(&p, &one, NOW).unwrap();
+        assert_eq!(load(&p, "pc", NOW).unwrap().0, one);
+        assert_eq!(
+            serde_json::from_slice::<LocalFile>(&fs::read(p.bak()).unwrap()).unwrap(),
+            other
+        );
+    }
+
+    #[test]
+    fn a_file_that_already_held_these_bytes_is_still_checked_before_it_is_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let one = with_project("One");
+        let bytes = serde_json::to_vec(&one).unwrap();
+        fs::write(p.main(), &bytes).unwrap();
+        // Nothing has checked this file yet, so it is written and rotated in the ordinary way.
+        save(&p, &one, NOW).unwrap();
+        assert_eq!(fs::read(p.bak()).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rotating_leaves_the_backup_and_the_main_file_independent() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let (one, two, three) = (with_project("1"), with_project("2"), with_project("3"));
+        for f in [&one, &two, &three] {
+            save(&p, f, NOW).unwrap();
+        }
+        assert_eq!(fs::metadata(p.main()).unwrap().nlink(), 1);
+        assert_eq!(fs::metadata(p.bak()).unwrap().nlink(), 1);
+        assert_ne!(fs::metadata(p.main()).unwrap().ino(), fs::metadata(p.bak()).unwrap().ino());
+        assert!(!p.bak_tmp().exists());
+        assert_eq!(
+            serde_json::from_slice::<LocalFile>(&fs::read(p.bak()).unwrap()).unwrap(),
+            two
+        );
+        // Damage done to one file now stays in that file.
+        fs::write(p.main(), b"junk").unwrap();
+        assert_eq!(load(&p, "pc", NOW).unwrap().0, two);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_main_file_that_is_a_link_is_copied_to_the_backup_and_its_target_is_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let target = elsewhere.path().join("store.json");
+        let one = with_project("One");
+        let bytes = serde_json::to_vec(&one).unwrap();
+        fs::write(&target, &bytes).unwrap();
+        let p = Paths::new(dir.path());
+        std::os::unix::fs::symlink(&target, p.main()).unwrap();
+        save(&p, &with_project("Two"), NOW).unwrap();
+        assert_eq!(fs::read(p.bak()).unwrap(), bytes);
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        assert!(!fs::symlink_metadata(p.bak()).unwrap().file_type().is_symlink());
     }
 
     #[test]
