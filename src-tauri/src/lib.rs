@@ -202,11 +202,20 @@ fn refresh_tray(_app: &AppHandle, core: &Core) {
     }
 }
 
+/// To the tray. The page stops its clock, whether or not its webview reports itself as hidden.
+fn hide_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+        let _ = app.emit("window-hidden", ());
+    }
+}
+
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+        let _ = app.emit("window-shown", ());
     }
     if let Some(core) = app.try_state::<Arc<Core>>() {
         core.hide_pending.store(false, Ordering::SeqCst);
@@ -276,9 +285,7 @@ fn handle_close(app: &AppHandle, core: &Core) -> bool {
         CloseDecision::Exit => false,
         CloseDecision::Hide => {
             core.hide_pending.store(false, Ordering::SeqCst);
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.hide();
-            }
+            hide_main(app);
             true
         }
         CloseDecision::HideWithNotice => {
@@ -313,8 +320,8 @@ fn handle_close(app: &AppHandle, core: &Core) -> bool {
                 let still_due = handle
                     .try_state::<Arc<Core>>()
                     .is_some_and(|c| c.hide_pending.swap(false, Ordering::SeqCst));
-                if still_due && let Some(w) = handle.get_webview_window("main") {
-                    let _ = w.hide();
+                if still_due {
+                    hide_main(&handle);
                 }
             });
             true
@@ -1002,9 +1009,7 @@ fn set_autostart(app: AppHandle, enabled: bool) -> CmdResult<bool> {
 #[tauri::command(async)]
 fn ack_hide_notice(app: AppHandle, core: CoreState<'_>) {
     core.hide_pending.store(false, Ordering::SeqCst);
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.hide();
-    }
+    hide_main(&app);
 }
 
 #[tauri::command(async)]

@@ -85,9 +85,33 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
     };
   }, [adopt]);
 
+  // The clock only ticks while someone can see it: the app may sit in the tray all day, and everything
+  // that must go on while hidden lives in the backend. Time is read afresh on waking, so nothing is lost.
   useEffect(() => {
-    const id = window.setInterval(() => setTick(Date.now()), 1000);
-    return () => window.clearInterval(id);
+    let timer: number | null = null;
+    const begin = () => {
+      timer ??= window.setInterval(() => setTick(Date.now()), 1000);
+    };
+    const pause = () => {
+      if (timer !== null) window.clearInterval(timer);
+      timer = null;
+    };
+    const wake = () => {
+      setTick(Date.now());
+      begin();
+    };
+    const onVisibility = () => (document.visibilityState === 'hidden' ? pause() : wake());
+    if (document.visibilityState !== 'hidden') begin();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', wake);
+    // Not every webview reports a hidden window as a hidden page, so the backend says so too.
+    const unlisten = [events.onWindowHidden(pause), events.onWindowShown(wake)];
+    return () => {
+      pause();
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', wake);
+      for (const u of unlisten) void u.then((f) => f()).catch(() => undefined);
+    };
   }, []);
 
   const theme = snapshot?.prefs.theme;

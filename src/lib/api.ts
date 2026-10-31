@@ -123,4 +123,8 @@ export const events = {
   onSyncMoveProgress: (handler: (p: MoveProgress) => void): Promise<UnlistenFn> => listen<MoveProgress>('sync-move-progress', (e) => handler(e.payload)),
   /** The window is hiding or the app is quitting: save any edit in progress now. */
   onFlushEdits: (handler: () => void): Promise<UnlistenFn> => listen('flush-edits', () => handler()),
+  /** The window went to the tray. The backend goes on working. */
+  onWindowHidden: (handler: () => void): Promise<UnlistenFn> => listen('window-hidden', () => handler()),
+  /** The window came back from the tray. */
+  onWindowShown: (handler: () => void): Promise<UnlistenFn> => listen('window-shown', () => handler()),
 };
