@@ -275,6 +275,8 @@ cd src-tauri
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo check -p z-work-core --tests --locked --target x86_64-pc-windows-gnu        # test code compiles for Windows
+cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 
 # Read a sample Excel file back with an independent reader
 ZWT_SAMPLE_XLSX=/tmp/sample.xlsx cargo test -p z-work-core builds_with_earnings
@@ -489,4 +491,6 @@ The full list of components, including a note on the ODbL data behind the map lo
 
 ## Licence
 
-[MIT](LICENSE). The copyright line holds a placeholder until the holder is confirmed.
+[MIT](LICENSE).
+
+**Placeholders to replace before a public release:** `COPYRIGHT-HOLDER-TO-CONFIRM` in `LICENSE` and in `bundle.copyright` of `src-tauri/tauri.conf.json`, which goes into the installer and exe metadata, and `NAME-TO-CONFIRM` in `docs/code-signing-policy.md`.

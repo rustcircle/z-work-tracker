@@ -1,7 +1,9 @@
 //! Local store: versioned JSON, atomic write (temp, fsync, rename), one `.bak`, corrupt-file recovery.
 //! Corrupt files are moved aside and kept. Nothing is ever silently wiped.
 
-use std::fs::{self, File};
+use std::fs;
+#[cfg(unix)]
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 

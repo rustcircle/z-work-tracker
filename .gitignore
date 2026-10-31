@@ -83,3 +83,6 @@ dist-e2e/
 *.p12
 *.pem
 *.key
+
+# Output of scripts/package-windows.mjs when no report folder is set
+pe-imports.txt

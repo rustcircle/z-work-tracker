@@ -755,6 +755,7 @@ mod tests {
         assert_eq!(a.data().tasks[&t].state, TaskState::Running);
     }
 
+    #[cfg(unix)]
     #[test]
     fn locked_folder_does_not_block_and_clears_after_unlock() {
         use std::os::unix::fs::PermissionsExt;
