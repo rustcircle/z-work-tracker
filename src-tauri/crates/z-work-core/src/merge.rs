@@ -289,11 +289,13 @@ mod tests {
         (
             (0u8..3, 0u8..3, any::<bool>(), stamp(), stamp(), stamp()),
             (stamp(), 0u8..4, stamp(), prop::option::of(0i64..4), 0u8..3),
+            (stamp(), stamp(), 0u8..3, 0u8..3),
         )
             .prop_map(
                 |(
                     (id, n, deleted, name_stamp, project_stamp, description_stamp),
                     (deleted_stamp, st, state_stamp, stopped, m),
+                    (tags_stamp, active_subtask_stamp, tag, active),
                 )| Task {
                     id: format!("t{id}"),
                     name: format!("name{n}"),
@@ -319,23 +321,14 @@ mod tests {
                     pause_reason: (st == 2).then_some(PauseReason::User),
                     state_stamp,
                     stopped_at: stopped.map(Ts),
-                    tags: if m == 0 {
-                        vec!["g0".into()]
-                    } else {
-                        Vec::new()
-                    },
-                    tags_stamp: name_stamp2(id),
-                    active_subtask: (n == 1).then(|| "a".into()),
-                    active_subtask_stamp: name_stamp2(n),
+                    tags: (0..tag).map(|i| format!("g{i}")).collect(),
+                    tags_stamp,
+                    active_subtask: (active > 0).then(|| format!("a{active}")),
+                    active_subtask_stamp,
                 },
             )
     }
 
-    fn name_stamp2(n: u8) -> Stamp {
-        Stamp {
-            at: Ts(i64::from(n)),
-            by: "a".into(),
-        }
     }
 
     fn segment() -> impl Strategy<Value = Segment> {
@@ -784,5 +777,46 @@ mod tests {
         };
         assert!(merge_project(&a, &gone).deleted);
         assert!(merge_project(&gone, &a).deleted);
+    }
+
+    #[test]
+    fn a_phase_1_list_and_its_upgraded_copy_converge_after_normalizing() {
+        let doc = json!({"type":"doc","content":[{"type":"taskList","content":[
+            {"type":"taskItem","attrs":{"checked":false},"content":[{"type":"paragraph","content":[{"type":"text","text":"One"}]}]}]}]});
+        let stamp = Stamp {
+            at: Ts(1),
+            by: "a".to_owned(),
+        };
+        let task = |description: Value| Task {
+            id: "t".into(),
+            name: "T".into(),
+            name_stamp: stamp.clone(),
+            project_id: "p".into(),
+            project_stamp: stamp.clone(),
+            description,
+            description_stamp: stamp.clone(),
+            deleted: false,
+            deleted_stamp: stamp.clone(),
+            continued_from: None,
+            created_at: Ts(1),
+            state: TaskState::Draft,
+            pause_reason: None,
+            state_stamp: stamp.clone(),
+            stopped_at: None,
+            tags: Vec::new(),
+            tags_stamp: stamp.clone(),
+            active_subtask: None,
+            active_subtask_stamp: stamp.clone(),
+        };
+        let mut old = Shared::default();
+        old.tasks.insert("t".into(), task(doc));
+        let mut upgraded = old.clone();
+        upgraded.normalize();
+        let mut one = merge(&old, &upgraded);
+        one.normalize();
+        let mut two = merge(&upgraded, &old);
+        two.normalize();
+        assert_eq!(one, two);
+        assert_eq!(one, upgraded);
     }
 }
