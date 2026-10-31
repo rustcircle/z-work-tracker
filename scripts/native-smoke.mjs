@@ -90,7 +90,11 @@ run(async () => {
   await inv('set_rounding', { input: { projectId: null, effectiveFrom: '2000-01-01', incrementMinutes: 15, method: 'up', confirmRetroactive: true }, today: new Date().toISOString().slice(0, 10) });
   try { await inv('start_task', { id: 'nope' }); r.badStart = 'accepted'; } catch (e) { r.badStart = e.code; }
   try { await inv('create_task', { input: { name: '  ', projectId: p.id, description: null } }); r.blankName = 'accepted'; } catch (e) { r.blankName = e.code; }
+  const blank = await inv('create_task', { input: { name: 'Blank', projectId: p.id, description: null } });
+  try { await inv('start_task', { id: blank.id }); r.coldBlankStart = 'accepted'; } catch (e) { r.coldBlankStart = e.code; }
+  await inv('delete_draft', { id: blank.id });
   const t = await inv('create_task', { input: { name: 'Smoke task', projectId: p.id, description: ${JSON.stringify(LIST)} } });
+  r.coldBefore = (await inv('get_snapshot')).launch.warm;
   await inv('set_theme', { theme: 'solarizedDark' });
   await inv('smoke_emit_changed');
   await until(() => document.documentElement.dataset.theme === 'solarizedDark', 'theme applied');
@@ -100,6 +104,14 @@ run(async () => {
   await wait(1500);
   s = await inv('get_snapshot');
   r.afterStart = s.tasks[0].state;
+  r.warmAfterStart = s.launch.warm;
+  r.copySource = s.launch.copySource && s.launch.copySource.name;
+  const segBefore = JSON.stringify(s.segments);
+  await inv('update_task', { id: s.tasks[0].id, input: { name: 'Smoke task', projectId: p.id, description: null } });
+  await inv('update_task', { id: s.tasks[0].id, input: { name: 'Smoke task', projectId: p.id, description: ${JSON.stringify(LIST)} } });
+  try { await inv('update_task', { id: s.tasks[0].id, input: { name: '  ', projectId: p.id, description: null } }); r.blankEdit = 'accepted'; } catch (e) { r.blankEdit = e.code; }
+  s = await inv('get_snapshot');
+  r.editLeavesSegments = JSON.stringify(s.segments) === segBefore && s.tasks[0].state === 'running';
   (await until(() => button('Pause'), 'Pause button')).click();
   await wait(800);
   r.afterPause = (await inv('get_snapshot')).tasks[0].state;
@@ -141,6 +153,9 @@ run(async () => {
   check('nothing syncs silently on first launch', r1.firstRunSyncPending === true && r1.firstRunTargets === 0);
   check('first-run sync prompt is on screen', r1.promptShown === true);
   check('backend rejects unknown task and blank name', r1.badStart === 'not_found' && r1.blankName === 'validation', `${r1.badStart} ${r1.blankName}`);
+  check('cold launch: a blank description cannot start, and the launch stays cold', r1.coldBlankStart === 'validation' && r1.coldBefore === false, r1.coldBlankStart);
+  check('first start turns the launch warm, with a copy source', r1.warmAfterStart === true && r1.copySource === 'Smoke task');
+  check('editing a running task leaves segments and state alone; blank name refused', r1.editLeavesSegments === true && r1.blankEdit === 'validation', r1.blankEdit);
   check('CSS loaded under the real CSP in the real webview', r1.bodyColor && r1.bodyColor !== 'rgba(0, 0, 0, 0)', r1.bodyColor);
   check('theme change applies', r1.themeBg === 'rgb(0, 43, 54)', r1.themeBg);
   check('real DOM Start, Pause, Resume drive the real backend', r1.afterStart === 'running' && r1.afterPause === 'paused' && r1.afterResume === 'running');
@@ -152,7 +167,7 @@ run(async () => {
   check('tray Pause/Resume action works (command path, not an icon click)', r1.afterTrayPause === 'paused' && r1.afterTrayResume === 'running');
   let store = readStore();
   const seg = Object.values(store.data.segments);
-  check('real exit closes the open segment and marks the task paused', seg.every((s) => s.end) && Object.values(store.data.tasks)[0].pauseReason?.kind === 'appQuit');
+  check('real exit closes the open segment and marks the task paused', seg.every((s) => s.end) && Object.values(store.data.tasks).find((t) => t.name === 'Smoke task')?.pauseReason?.kind === 'appQuit');
   check('timestamps on disk are UTC with Z', seg.every((s) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(s.start)));
   const py = spawnSync('unzip', ['-t', r1.xlsx], { encoding: 'utf8' });
   check('Excel file is a valid archive', py.status === 0);
@@ -163,14 +178,31 @@ run(async () => {
 run(async () => {
   await until(() => /Smoke task/.test(document.body.innerText), 'task shown after relaunch');
   const s = await inv('get_snapshot');
-  const r = { tasks: s.tasks.length, projects: s.projects.length, theme: document.documentElement.dataset.theme, reason: s.tasks[0].pauseReason, notices: s.notices.length, segments: s.segments.length };
-  await inv('resume_task', { id: s.tasks[0].id });
+  const old = s.tasks[0];
+  const r = { tasks: s.tasks.length, projects: s.projects.length, theme: document.documentElement.dataset.theme, reason: old.pauseReason, notices: s.notices.length, segments: s.segments.length, warm: s.launch.warm };
+  try { await inv('resume_task', { id: old.id }); r.coldResume = 'accepted'; } catch (e) { r.coldResume = e.code; }
+  await inv('smoke_tray_toggle');
+  await wait(600);
+  const afterTray = await inv('get_snapshot');
+  r.trayColdState = afterTray.tasks.find((x) => x.id === old.id).state;
+  r.trayColdSegments = afterTray.segments.length;
+  r.trayColdVisible = await inv('smoke_window_visible');
+  r.trayColdForm = /continuing/i.test(document.body.innerText);
+  const next = await inv('create_task', { input: { name: 'Smoke continued', projectId: old.projectId, description: ${JSON.stringify(LIST)}, continuedFrom: old.id } });
+  await inv('start_task', { id: next.id });
+  const done = await inv('get_snapshot');
+  r.nextLink = done.tasks.find((x) => x.id === next.id).continuedFrom === old.id;
+  const stillOld = done.tasks.find((x) => x.id === old.id);
+  r.oldUnchanged = stillOld.state === 'paused' && stillOld.name === old.name && JSON.stringify(stillOld.description) === JSON.stringify(old.description);
   return r;
 });
 `, out);
   const r2 = await waitFile(out);
   check('data and theme persist across relaunch', r2 && r2.tasks === 1 && r2.projects === 1 && r2.theme === 'solarizedDark', JSON.stringify(r2));
   check('no crash notice after a clean exit', r2?.notices === 0);
+  check('a relaunch is cold and the backend refuses resume', r2?.warm === false && r2?.coldResume === 'cold_start_required', r2?.coldResume);
+  check('tray Resume while cold opens the form and starts nothing', r2?.trayColdState === 'paused' && r2?.trayColdSegments === r2?.segments && r2?.trayColdVisible === true && r2?.trayColdForm === true, JSON.stringify(r2));
+  check('a cold continuation is a new linked task and the old stays as it was', r2?.nextLink === true && r2?.oldUnchanged === true);
   await sleep(1500);
 
   // A second launch must not start a second app.
@@ -191,19 +223,23 @@ run(async () => {
   await until(() => /Smoke task/.test(document.body.innerText), 'task');
   const s = await inv('get_snapshot');
   await until(() => /did not shut down cleanly/.test(document.body.innerText), 'crash notice on screen');
-  const r = { state: s.tasks[0].state, reason: s.tasks[0].pauseReason, notice: s.notices[0]?.message, open: s.segments.filter((x) => x.end === null).length };
-  await inv('resume_task', { id: s.tasks[0].id });
+  const crashed = s.tasks.find((x) => x.name === 'Smoke continued');
+  const r = { state: crashed.state, reason: crashed.pauseReason, notice: s.notices[0]?.message, open: s.segments.filter((x) => x.end === null).length };
+  try { await inv('resume_task', { id: crashed.id }); r.coldResume = 'accepted'; } catch (e) { r.coldResume = e.code; }
+  const next = await inv('create_task', { input: { name: 'Smoke after crash', projectId: crashed.projectId, description: ${JSON.stringify(LIST)}, continuedFrom: crashed.id } });
+  await inv('start_task', { id: next.id });
   return r;
 });
 `, out);
   const r3 = await waitFile(out);
-  check('crash recovery closes at the heartbeat, pauses and shows a notice', r3?.state === 'paused' && r3?.reason?.kind === 'crashRecovery' && r3?.open === 0 && /did not shut down/.test(r3?.notice ?? ''), JSON.stringify(r3));
+  check('crash recovery closes at the heartbeat, pauses and shows a notice', r3?.state === 'paused' && r3?.reason?.kind === 'crashRecovery' && r3?.open === 0 && /did not shut down/.test(r3?.notice ?? '') && /next start asks for every field/.test(r3?.notice ?? ''), JSON.stringify(r3));
+  check('after a crash the launch is cold too', r3?.coldResume === 'cold_start_required', r3?.coldResume);
   await sleep(1000);
   const quitter = spawnSync(exe, ['--quit'], { env: { ...process.env, LABOR_SMOKE_DATA_DIR: dataDir }, timeout: 15000 });
   const exit3 = await withTimeout(app.exited, 15000);
   check('--quit (the installer path) exits the running app cleanly', quitter.status === 0 && exit3 !== 'timeout' && exit3.code === 0, JSON.stringify(exit3));
   store = readStore();
-  check('--quit closed the running segment', Object.values(store.data.segments).every((s) => s.end) && Object.values(store.data.tasks)[0].pauseReason?.kind === 'appQuit');
+  check('--quit closed the running segment', Object.values(store.data.segments).every((s) => s.end) && Object.values(store.data.tasks).find((t) => t.name === 'Smoke after crash')?.pauseReason?.kind === 'appQuit');
   check('one backup file exists', existsSync(join(dataDir, 'labor-data.json.bak')));
   return true;
 }
@@ -228,7 +264,7 @@ async function part2() {
   const seeded = JSON.parse(readFileSync(join(dir, 'labor-data.json'), 'utf8'));
   const stamp = { at: '2026-01-01T00:00:00Z', by: device };
   seeded.data.projects.p = { id: 'p', name: 'Seed', color: '#2563eb', createdAt: '2026-01-01T00:00:00Z', stamp };
-  seeded.data.tasks.t = { id: 't', name: 'Seeded', projectId: 'p', description: null, createdAt: '2026-01-01T00:00:00Z', metaStamp: stamp, state: 'running', stateStamp: stamp };
+  seeded.data.tasks.t = { id: 't', name: 'Seeded', projectId: 'p', description: null, createdAt: '2026-01-01T00:00:00Z', nameStamp: stamp, projectStamp: stamp, descriptionStamp: stamp, deletedStamp: stamp, state: 'running', stateStamp: stamp };
   seeded.data.segments.s = { id: 's', taskId: 't', deviceId: device, start: '2026-01-01T09:00:00Z', end: null };
   seeded.lastHeartbeat = '2026-01-01T09:30:00Z';
   writeFileSync(join(dir, 'labor-data.json'), JSON.stringify(seeded));
