@@ -25,7 +25,7 @@ Status: first build. It has been run and tested on macOS, and the Windows instal
 
 ## Install and uninstall
 
-**Install.** Run `zWorkTracker_0.1.0_x64-setup.exe`. It installs for the current user and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
+**Install.** Run `zWorkTracker_0.1.0_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
 
 The installer is **not signed yet**, so Windows SmartScreen may say "Windows protected your PC". To continue, choose **More info**, then **Run anyway**. Signing removes that warning over time; see [signing](#windows-code-signing).
 
@@ -47,6 +47,8 @@ In **Projects**, create a project with a unique name and a colour. A free colour
 
 Each task has a name, a project and a rich-text description with bold, italic, headings, numbered and bulleted lists and task lists, which is where subtasks and steps go.
 
+![The empty form on a cold launch](docs/images/launch-cold-form.png)
+
 **Starting work: cold and warm.** What the new task form asks depends on whether the app has already logged work since it was launched.
 
 | | Cold | Warm |
@@ -56,6 +58,8 @@ Each task has a name, a project and a rich-text description with bold, italic, h
 | **Required** | Name, project and a description with real text. Spaces alone don't count | Name and project. The description may be blank |
 
 The backend enforces these rules, not only the form. A warm copy is a separate task: editing it never changes the original. If the original's project has been archived, you choose another project first, and the form says why.
+
+![A warm start with the copied values and note](docs/images/launch-warm-copy.png)
 
 **Editing at any time.** Name and description can be edited in one click from Timeline entries and task details, in every state, including running and stopped. Edits save automatically, and when you leave the field, hide the window or quit. They never touch the timer or the logged time. A blank name isn't saved: the last valid name stays and the field says why. A description can be cleared after the task has started. Timeline, Analysis and exports always show the current values.
 
@@ -71,6 +75,8 @@ The backend enforces these rules, not only the form. A warm copy is a separate t
 Every Start or Resume opens a work segment and every Pause or Stop closes it. Times come only from the backend clock and are stored in UTC. Paused time is excluded from the total.
 
 **Resume after a relaunch.** On a cold launch, Resume doesn't continue the task directly, and the backend refuses it. It opens the same empty form, with every field required. Submitting creates a **new task linked to the paused one** and starts timing it. The paused task keeps its name and description, stays paused, can still be stopped, and shows a link to its continuation. Cancel changes nothing and logs no time. Once a task has started in this launch, Resume works directly again.
+
+![Resume on a cold launch opens the empty form](docs/images/launch-cold-resume.png)
 
 **Continued tasks.** Warm copies and cold continuations are each their own task, linked in task details. They count separately, and each one rounds separately, so a chain of continued tasks can round up more than once in a day. The rounding adjustment metric shows the effect.
 

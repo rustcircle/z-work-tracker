@@ -8,7 +8,7 @@ import { join } from 'node:path';
 const TARGET = 'x86_64-pc-windows-gnu';
 const OBJDUMP = 'x86_64-w64-mingw32-objdump';
 const FORBIDDEN = /^(libgcc|libstdc\+\+|libwinpthread|vcruntime|msvcp|ucrtbased|libssp)/i;
-const out = process.env.LT_REPORT_DIR ?? '.';
+const out = process.env.ZWT_REPORT_DIR ?? '.';
 
 for (const tool of ['makensis', 'x86_64-w64-mingw32-gcc', OBJDUMP]) {
   if (spawnSync('which', [tool]).status !== 0) {

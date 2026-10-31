@@ -69,7 +69,7 @@ const LIST = { type: 'doc', content: [{ type: 'orderedList', attrs: { start: 1 }
 
 async function part1() {
   build(['--debug', '--no-bundle', '--features', 'smoke']);
-  const exe = resolve('src-tauri/target/debug/z-work-tracker');
+  const exe = resolve('src-tauri/target/debug/zWorkTracker');
 
   // Run 1: first launch, real prompts, real commands, real DOM buttons, hide on close, tray toggle, quit.
   let out = join(work, 'r1.json');
