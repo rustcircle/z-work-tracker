@@ -213,7 +213,7 @@ fn merge_audit(a: &AuditEntry, b: &AuditEntry) -> AuditEntry {
     }
 }
 
-fn merge_map<T: Clone>(
+fn merge_map<T: Clone + PartialEq>(
     a: &BTreeMap<String, T>,
     b: &BTreeMap<String, T>,
     f: impl Fn(&T, &T) -> T,
@@ -221,6 +221,8 @@ fn merge_map<T: Clone>(
     let mut out = a.clone();
     for (k, vb) in b {
         match out.get_mut(k) {
+            // Devices mostly hold the same records, and a merge is idempotent: nothing to work out.
+            Some(va) if *va == *vb => {}
             Some(va) => *va = f(va, vb),
             None => {
                 out.insert(k.clone(), vb.clone());
