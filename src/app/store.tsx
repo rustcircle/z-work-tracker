@@ -112,7 +112,9 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
       begin();
     };
     const onVisibility = () => (document.visibilityState === 'hidden' ? pause() : wake());
-    if (document.visibilityState !== 'hidden') begin();
+    // Started whatever the page says: a webview that loads hidden may not report being shown, and a
+    // clock left ticking costs far less than one frozen on screen. The next signal stops it if need be.
+    begin();
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', wake);
     // Not every webview reports a hidden window as a hidden page, so the backend says so too.
