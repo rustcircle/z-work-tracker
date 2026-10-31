@@ -1,10 +1,12 @@
 // Tags on a task: a read-only chip (name always printed, colour from the tag, text colour computed)
 // and a multi-select of the live tags for the new-task form and the inline editor.
-import { useId } from 'react';
+import { useEffect, useId, useRef } from 'react';
 
 import { readableText } from '../../lib/color';
 import type { Tag } from '../../lib/types';
-import { useNav } from '../../components/nav';
+import { Button } from '../../components/ui';
+import { IconPlus } from '../../components/icons';
+import { useOptionalNav } from '../../components/nav';
 import './tasksP2.css';
 
 export function TagChip({ tag }: { tag: Pick<Tag, 'name' | 'color'> }) {
@@ -45,9 +47,28 @@ interface PickerProps {
 /** A group of checkboxes drawn as chips: a chosen tag is filled with its colour, a free one is outlined. */
 export function TagPicker({ tags, value, onChange, error = null, hint, legend = 'Tags' }: PickerProps) {
   const id = useId();
-  const nav = useNav();
+  const nav = useOptionalNav();
+  const box = useRef<HTMLFieldSetElement | null>(null);
   const live = tags.filter((t) => !t.deleted);
   const chosen = new Set(value);
+  const intent = nav?.tagIntent ?? null;
+  // Coming back from Settings with a tag made for this picker: tick it, so a required tag is satisfied.
+  const created = intent && intent.origin === id ? intent.createdId : null;
+  const valueKey = value.join(',');
+  const { endTagIntent, returnFocus, clearReturnFocus } = nav ?? {};
+  useEffect(() => {
+    if (!created || !live.some((t) => t.id === created)) return;
+    if (!valueKey.split(',').includes(created)) onChange([...live.filter((t) => value.includes(t.id)).map((t) => t.id), created]);
+    // Only the first render after the tag exists ticks it; the user may untick it afterwards.
+    endTagIntent?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [created, live.length]);
+  // After "Back to task", the cursor returns to this picker.
+  useEffect(() => {
+    if (returnFocus !== id) return;
+    box.current?.querySelector<HTMLElement>('input, button')?.focus();
+    clearReturnFocus?.();
+  }, [returnFocus, id, clearReturnFocus]);
   const toggle = (tagId: string, on: boolean): void => {
     // Ids of tags that were deleted meanwhile are dropped, so a save never sends one.
     const next = live.filter((t) => (t.id === tagId ? on : chosen.has(t.id))).map((t) => t.id);
@@ -57,15 +78,12 @@ export function TagPicker({ tags, value, onChange, error = null, hint, legend = 
   const errId = `${id}-err`;
   const describedBy = [hint && live.length > 0 ? hintId : '', error ? errId : ''].filter(Boolean).join(' ') || undefined;
   return (
-    <fieldset className="field tag-picker" aria-describedby={describedBy}>
+    <fieldset className="field tag-picker" aria-describedby={describedBy} ref={box}>
       <legend className="field-label">{legend}</legend>
       {live.length === 0 ? (
         <p className="field-hint">
           No tags yet.{' '}
-          <button type="button" className="link" onClick={() => nav.openSettings('tags')}>
-            Create tags in Settings
-          </button>
-          .
+          Use New tag below to add one.
         </p>
       ) : (
         <ul className="tag-options">
@@ -83,6 +101,13 @@ export function TagPicker({ tags, value, onChange, error = null, hint, legend = 
             );
           })}
         </ul>
+      )}
+      {nav && (
+        <div className="tag-new">
+          <Button small icon={<IconPlus />} onClick={() => nav.startNewTag(id)}>
+            New tag
+          </Button>
+        </div>
       )}
       {live.length > 0 && hint && (
         <p className="field-hint" id={hintId}>

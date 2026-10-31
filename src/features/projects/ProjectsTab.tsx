@@ -25,6 +25,13 @@ export function ProjectsTab() {
   useEffect(() => {
     if (focusProject) clearFocusProject();
   }, [focusProject, clearFocusProject]);
+  // From the replaced-colour notice: the editor of that project opens (the form then takes the focus).
+  const colorProject = nav.colorTarget?.kind === 'project' ? nav.colorTarget.id : null;
+  const [seenColor, setSeenColor] = useState(colorProject);
+  if (seenColor !== colorProject) {
+    setSeenColor(colorProject);
+    if (colorProject) setEditing(colorProject);
+  }
 
   const counts = useMemo(() => {
     const m = new Map<string, number>();

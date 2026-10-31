@@ -2,6 +2,7 @@ import { useAppState } from '../app/store';
 import { api } from '../lib/api';
 import { AwayBanner, AwayDialog } from '../features/away/AwayDialog';
 import { ReminderBanner } from '../features/away/ReminderBanner';
+import { ColorNoticeBar } from './colorNotice';
 import { IconClose, IconInfo, IconWarn } from './icons';
 import { useCommands } from './useCommands';
 
@@ -26,6 +27,7 @@ export function Banners() {
           <span>{w}</span>
         </div>
       ))}
+      <ColorNoticeBar />
       <ReminderBanner />
       <AwayBanner />
       <AwayDialog />

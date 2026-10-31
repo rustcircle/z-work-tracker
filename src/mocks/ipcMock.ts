@@ -4,8 +4,8 @@
 import { emit } from '@tauri-apps/api/event';
 import { mockIPC } from '@tauri-apps/api/mocks';
 
-import { PROJECT_PALETTE } from '../lib/color';
-import { isCurrency } from '../lib/billing';
+import { PROJECT_PALETTE, distinctColor } from '../lib/color';
+import { RateBook, isCurrency, taskDays } from '../lib/billing';
 import { docHasText } from '../lib/docText';
 import { assignSubtaskIds, resetSubtasks, subtaskItems } from '../lib/subtasks';
 import { isZone, parseIso, toIso } from '../lib/tz';
@@ -27,6 +27,7 @@ import type {
   MoveResult,
   PauseInput,
   PauseReason,
+  PauseRequest,
   PdfRequest,
   PendingCopy,
   Project,
@@ -34,6 +35,8 @@ import type {
   RateInput,
   RateVersion,
   RequiredField,
+  RichDoc,
+  SelectedEntry,
   RoundingInput,
   RoundingVersion,
   Reminder,
@@ -64,6 +67,8 @@ export interface MockFolder {
   available: boolean;
   /** Test hook: the next move into this folder fails once, before anything changes. */
   failNext?: boolean;
+  /** Test hook: records that arrive in this store when the folder is connected, like a first sync from another PC. */
+  data?: { projects?: MockProject[]; settings?: Settings; rounding?: RoundingVersion[]; shifts?: ShiftVersion[] };
 }
 
 /** A project as the mock stores it: the backend's derived fields are computed when a snapshot is taken. */
@@ -133,10 +138,24 @@ export interface MockState {
   notices: Snapshot['notices'];
   warnings: string[];
   exports: { kind: 'xlsx' | 'csv'; request: ExportRequest }[];
+  /** The PDF timesheets asked for, kept apart so `exports` stays Excel and CSV only. */
+  pdfExports: PdfRequest[];
   calls: { cmd: string; args: unknown }[];
   /** Test hook: these commands fail once each, like a failed save. */
   failNext?: string[];
   autostart: boolean;
+  /** The first-run setup was finished or skipped. A fresh store is `setupDone: false, syncPromptDone: false`. */
+  setupDone: boolean;
+  setupStep: number;
+  mica: boolean;
+  /** Only Windows 11 can show Mica; the mock says so when a test asks. */
+  micaAvailable: boolean;
+  /** Asks made to pause tasks running on another device. */
+  pauseRequests: PauseRequest[];
+  /** Durable local drafts by task id (`stash_draft`). They never sync. */
+  drafts: Record<string, RichDoc>;
+  /** Randomness for replacing a clashing colour, in [0, 1). Defaults to a fixed seed so runs repeat. */
+  random?: () => number;
   nextId: number;
   /** Launch-scoped, like the Rust service: false until the first task of this launch has started. */
   warm: boolean;
@@ -183,8 +202,15 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     notices: [],
     warnings: [],
     exports: [],
+    pdfExports: [],
     calls: [],
     autostart: false,
+    setupDone: true,
+    setupStep: 0,
+    mica: false,
+    micaAvailable: false,
+    pauseRequests: [],
+    drafts: {},
     nextId: 1,
     warm: false,
     lastWorked: null,
@@ -302,6 +328,17 @@ async function moveSyncTarget(s: MockState, a: Record<string, unknown>): Promise
     checksum: checksumOf(counts),
     warnings: sourceMissing ? ['The previous folder could not be read, so this used the data on this computer. You can retry the copy later.'] : [],
   };
+}
+
+/** A folder that holds another PC's records brings them in when it is connected (the first sync). */
+function mergeFolderData(s: MockState, root: string): void {
+  const data = s.folders[root]?.data;
+  if (!data) return;
+  for (const p of data.projects ?? []) if (!s.projects.some((x) => x.id === p.id)) s.projects.push(p);
+  s.settings = { ...data.settings, ...s.settings, ...Object.fromEntries(Object.entries(data.settings ?? {}).filter(([k]) => (s.settings as Record<string, unknown>)[k] === undefined)) };
+  for (const r of data.rounding ?? []) if (!s.rounding.some((x) => x.id === r.id)) s.rounding.push(r);
+  for (const v of data.shifts ?? []) if (!s.shifts.some((x) => x.id === v.id)) s.shifts.push(v);
+  delete s.folders[root]?.data;
 }
 
 const COLD_REQUIRED: RequiredField[] = ['name', 'project', 'description'];
@@ -451,6 +488,45 @@ function referenceWarnings(s: MockState): string[] {
   return out;
 }
 
+/** `service.rs`: two active projects (or two tags) with the same colour, which only a merge can produce. */
+function colorWarnings(s: MockState): string[] {
+  const out: string[] = [];
+  const groups: [string, { name: string; color: string }[]][] = [
+    ['projects', s.projects.filter((p) => !p.archived)],
+    ['tags', s.tags.filter((t) => !t.deleted)],
+  ];
+  for (const [kind, items] of groups) {
+    const by = new Map<string, string[]>();
+    for (const i of items) by.set(i.color.toLowerCase(), [...(by.get(i.color.toLowerCase()) ?? []), i.name]);
+    for (const names of by.values()) {
+      if (names.length > 1) out.push(`These ${kind} have the same colour, probably from two devices: ${names.join(', ')}. Change one if that is confusing.`);
+    }
+  }
+  return out;
+}
+
+/** A small seeded generator (mulberry32), so a mock run picks the same replacement colours every time. */
+function seeded(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+const defaultRandom = seeded(20_261_031);
+
+/**
+ * `colors::resolve`: the colour to save is as asked, unless it exactly matches (any case) a colour in `taken`,
+ * when a random distinct one replaces it. `unchanged` (an update that keeps its colour) is never replaced.
+ */
+function resolveColor(s: MockState, wanted: string, taken: readonly string[], unchanged: boolean): { color: string; replacedFrom: string | null } {
+  const color = cleanColor(wanted);
+  if (unchanged || !taken.some((t) => t.toLowerCase() === color)) return { color, replacedFrom: null };
+  return { color: distinctColor(taken, s.random ?? defaultRandom), replacedFrom: color };
+}
+
 function snapshot(s: MockState): Snapshot {
   const withTasks = new Set(s.tasks.map((t) => t.projectId));
   const input = pieceInput(s);
@@ -530,9 +606,11 @@ function snapshot(s: MockState): Snapshot {
       hideEarnings: s.hideEarnings,
       lastCurrency: s.lastCurrency,
       clientZonePromptDone: s.clientZonePromptDone,
+      mica: s.mica,
+      micaAvailable: s.micaAvailable,
     },
     notices: s.notices,
-    warnings: [...s.warnings, ...referenceWarnings(s)],
+    warnings: [...s.warnings, ...colorWarnings(s), ...referenceWarnings(s)],
     sync: { targets: s.targets, detected: s.detected, promptPending: !s.syncPromptDone && s.targets.length === 0, pendingCopy: s.pendingCopy },
     launch: { warm: s.warm, coldRequired: coldRequired(s), copySource: s.warm ? copySource(s) : null },
     rawSegments,
@@ -541,6 +619,8 @@ function snapshot(s: MockState): Snapshot {
     tags,
     templates: s.templates.filter((x) => !x.deleted),
     billing: { prefix: prefixOf(s), clashes: prefixClashes(s), summaries: s.summaries },
+    setup: { pending: !s.setupDone && !s.syncPromptDone, step: s.setupStep },
+    pauseRequests: s.pauseRequests,
     reminder: currentReminder(s),
     reminderSettings: {
       idleMinutes: minutesSetting(s, 'idleMinutes', 10),
@@ -694,6 +774,24 @@ function refuseOverlap(names: string[]): void {
 }
 
 const BILLED = 'this time is on a billing summary; void that summary first';
+
+/**
+ * `ExportSource::narrowed`: a selection must be non-empty, name tasks that exist, and name days on which
+ * the task has counted time in the request's zone. Nothing else is checked, and nothing is trusted.
+ */
+function checkSelection(s: MockState, selection: SelectedEntry[] | null | undefined, zone: string): void {
+  if (selection === null || selection === undefined) return;
+  if (selection.length === 0) throw err('validation', 'select at least one entry to export');
+  const input = pieceInput(s);
+  const spans = computePieces(input, endOf(s)).map((p) => ({ taskId: p.taskId, projectId: s.tasks.find((t) => t.id === p.taskId)?.projectId ?? '', start: p.start, end: p.end, kind: p.kind }));
+  const book = new RateBook(s.projects, s.rates.filter((r) => !r.deleted));
+  const have = new Set(taskDays(spans, zone, book, s.rounding.filter((r) => !r.deleted)).map((r) => `${r.taskId}|${r.day}`));
+  for (const e of selection) {
+    if (!s.tasks.some((t) => t.id === e.taskId)) throw err('not_found', 'task not found');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(e.day)) throw err('validation', 'the selected day is not a date');
+    if (!have.has(`${e.taskId}|${e.day}`)) throw err('validation', `that task has no time on ${e.day}`);
+  }
+}
 
 function correctable(s: MockState, id: string): MockSegment {
   const seg = s.segments.find((x) => x.id === id);
@@ -859,17 +957,19 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
     case 'save_tag': {
       const input = a.input as TagInput;
       const name = cleanText(input.name, 'Tag name', 40);
-      const color = cleanColor(input.color);
+      cleanColor(input.color);
       if (s.tags.some((t) => !t.deleted && t.id !== (input.id ?? null) && t.name.toLowerCase() === name.toLowerCase())) throw err('conflict', `a tag named "${name}" already exists`);
-      if (input.id) {
-        const old = s.tags.find((t) => t.id === input.id);
-        if (!old) throw err('not_found', 'tag not found');
-        Object.assign(old, { name, color, deleted: false, stamp: stamp(s) });
-        return { id: old.id, snapshot: snapshot(s) };
+      const own = input.id ? s.tags.find((t) => t.id === input.id) : undefined;
+      if (input.id && !own) throw err('not_found', 'tag not found');
+      const taken = s.tags.filter((t) => !t.deleted && t.id !== (input.id ?? null)).map((t) => t.color);
+      const { color, replacedFrom } = resolveColor(s, input.color, taken, own?.color.toLowerCase() === input.color.toLowerCase());
+      if (own) {
+        Object.assign(own, { name, color, deleted: false, stamp: stamp(s) });
+        return { id: own.id, snapshot: snapshot(s), color, replacedFrom };
       }
       const id = newId(s, 'tag');
       s.tags.push({ id, name, color, deleted: false, stamp: stamp(s) });
-      return { id, snapshot: snapshot(s) };
+      return { id, snapshot: snapshot(s), color, replacedFrom };
     }
     case 'delete_tag': {
       const tag = s.tags.find((t) => t.id === a.id);
@@ -957,8 +1057,48 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
     }
     case 'export_pdf': {
       const req = a.request as PdfRequest;
+      if (!isZone(req.zone)) throw err('validation', `unknown time zone: ${req.zone}`);
+      checkSelection(s, req.selection, req.zone);
+      s.pdfExports.push(req);
       return `/mock/timesheet-${req.from}-to-${req.to}.pdf`;
     }
+    case 'revert_shift_version': {
+      const v = s.shifts.find((x) => x.id === a.versionId && !x.deleted);
+      if (!v) throw err('not_found', 'shift version not found');
+      if (s.shifts.filter((x) => x.shiftId === v.shiftId && !x.deleted).length < 2) throw err('conflict', "this is the shift's only version; delete the shift instead");
+      v.deleted = true;
+      v.stamp = stamp(s);
+      return snapshot(s);
+    }
+    case 'request_remote_pause': {
+      const t = task(s, a.taskId as string);
+      const open = s.segments.find((x) => x.taskId === t.id && x.end === null && x.deviceId !== DEVICE_ID);
+      if (!open) throw err('conflict', "this task isn't running on another device");
+      if (!s.pauseRequests.some((q) => q.segmentId === open.id)) {
+        const id = newId(s, 'pausereq');
+        s.pauseRequests.push({ id, taskId: t.id, segmentId: open.id, requestedBy: DEVICE_ID, at: toIso(s.now), stamp: stamp(s) });
+        addAudit(s, 'task', t.id, 'requestPause', '', null, { segmentId: open.id, at: toIso(s.now) });
+      }
+      return snapshot(s);
+    }
+    case 'stash_draft':
+      if (!docHasText(a.description as RichDoc) && a.description === undefined) throw err('validation', 'a draft needs a description');
+      s.drafts[a.taskId as string] = a.description as RichDoc;
+      return null;
+    case 'clear_draft':
+      delete s.drafts[a.taskId as string];
+      return null;
+    case 'set_setup_step':
+      s.setupStep = Math.max(0, Math.trunc(a.step as number));
+      return snapshot(s);
+    case 'finish_setup':
+      s.setupDone = true;
+      s.syncPromptDone = true;
+      s.clientZonePromptDone = true;
+      return snapshot(s);
+    case 'set_mica':
+      s.mica = a.on === true;
+      return snapshot(s);
     case 'pick_pdf_logo':
       s.hasPdfLogo = true;
       return snapshot(s);
@@ -1041,16 +1181,19 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       return snapshot(s);
     case 'create_project': {
       const input = cleanProject(s, a.input as ProjectInput, null);
+      const { color, replacedFrom } = resolveColor(s, input.color, s.projects.filter((p) => !p.archived).map((p) => p.color), false);
       const id = newId(s, 'project');
-      s.projects.push({ id, ...input, archived: false, createdAt: toIso(s.now) });
-      return { id, snapshot: snapshot(s) };
+      s.projects.push({ id, ...input, color, archived: false, createdAt: toIso(s.now) });
+      return { id, snapshot: snapshot(s), color, replacedFrom };
     }
     case 'update_project': {
       const input = cleanProject(s, a.input as ProjectInput, a.id as string);
       const p = s.projects.find((x) => x.id === a.id);
       if (!p) throw err('not_found', 'project not found');
-      Object.assign(p, input);
-      return snapshot(s);
+      const taken = s.projects.filter((x) => !x.archived && x.id !== p.id).map((x) => x.color);
+      const { color, replacedFrom } = resolveColor(s, input.color, taken, p.color.toLowerCase() === input.color.toLowerCase());
+      Object.assign(p, input, { color });
+      return { id: p.id, snapshot: snapshot(s), color, replacedFrom };
     }
     case 'set_project_archived': {
       const p = s.projects.find((x) => x.id === a.id);
@@ -1216,6 +1359,7 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       return snapshot(s);
     case 'add_sync_target':
       s.syncPromptDone = true;
+      mergeFolderData(s, a.root as string);
       s.targets.push({
         provider: a.provider as Snapshot['sync']['targets'][number]['provider'],
         root: a.root as string,
@@ -1228,8 +1372,10 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       return snapshot(s);
     case 'pick_sync_folder':
       return '/mock/picked-folder';
-    case 'preview_sync_folder':
-      return { hasData: false, devices: [], projects: 0, tasks: 0, segments: 0, warnings: [] };
+    case 'preview_sync_folder': {
+      const f = folderOf(s, a.root as string);
+      return { hasData: folderHasData(f), devices: othersIn(f), ...f.counts, warnings: f.available ? [] : [FOLDER_NOT_FOUND] };
+    }
     case 'sync_now':
       return snapshot(s);
     case 'preview_sync_move':
@@ -1237,11 +1383,13 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     case 'move_sync_target':
       return moveSyncTarget(s, a);
     case 'export_xlsx':
-      s.exports.push({ kind: 'xlsx', request: a.request as ExportRequest });
-      return '/mock/export.xlsx';
-    case 'export_csv':
-      s.exports.push({ kind: 'csv', request: a.request as ExportRequest });
-      return '/mock/export.csv';
+    case 'export_csv': {
+      const request = a.request as ExportRequest;
+      if (!isZone(request.dayZone)) throw err('validation', `unknown time zone: ${request.dayZone}`);
+      checkSelection(s, request.selection, request.dayZone);
+      s.exports.push({ kind: cmd === 'export_xlsx' ? 'xlsx' : 'csv', request });
+      return cmd === 'export_xlsx' ? '/mock/export.xlsx' : '/mock/export.csv';
+    }
     case 'get_autostart':
       return s.autostart;
     case 'set_autostart':

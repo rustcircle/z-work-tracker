@@ -27,19 +27,86 @@ export const PROJECT_PALETTE = [
   '#0891b2', '#65a30d', '#ea580c', '#4f46e5', '#0d9488', '#be123c',
 ] as const;
 
-/** The first palette colour no project uses, else the least used. */
-export function suggestColor(used: readonly string[]): string {
-  const lower = used.map((c) => c.toLowerCase());
-  let best: string = PROJECT_PALETTE[0];
-  let bestCount = Number.POSITIVE_INFINITY;
-  for (const c of PROJECT_PALETTE) {
-    const count = lower.filter((u) => u === c).length;
-    if (count < bestCount) {
-      best = c;
-      bestCount = count;
-    }
+/**
+ * Page and card backgrounds of the four themes. The backend's `colors.rs` holds the same values
+ * (colors.test.ts pins both to themes.ts), so a colour is judged readable by the same rule on each side.
+ */
+export const THEME_BACKGROUNDS: readonly string[] = ['#f3f4f6', '#ffffff', '#fdf6e3', '#002b36', '#17181b', '#212226', '#073642'];
+/** Below this contrast a colour is hard to see against a background. */
+const MIN_CONTRAST = 2;
+/** OKLab distance that reads as a different colour. */
+const DISTINCT = 0.09;
+const TRIES = 400;
+
+const toLinear = (c: number): number => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+const toGamma = (c: number): number => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055);
+
+function oklab(hex: string): [number, number, number] | null {
+  const norm = normalizeHexStrict(hex);
+  if (!norm) return null;
+  const n = Number.parseInt(norm.slice(1), 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => toLinear(v / 255)) as [number, number, number];
+  const l = Math.cbrt(0.41222147 * r + 0.53633254 * g + 0.05144599 * b);
+  const m = Math.cbrt(0.2119035 * r + 0.68069955 * g + 0.10739696 * b);
+  const s = Math.cbrt(0.08830246 * r + 0.28171884 * g + 0.62997870 * b);
+  return [0.21045426 * l + 0.79361779 * m - 0.00407205 * s, 1.9779985 * l - 2.42859221 * m + 0.45059371 * s, 0.02590404 * l + 0.78277177 * m - 0.80867577 * s];
+}
+
+/** Exactly `#rrggbb` (any case) or null: the shape the backend stores. */
+function normalizeHexStrict(hex: string): string | null {
+  return /^#[0-9a-fA-F]{6}$/.test(hex) ? hex.toLowerCase() : null;
+}
+
+/** The sRGB colour of these OKLCH values, or null when they fall outside sRGB. Ported from `colors.rs`. */
+export function fromOklch(l: number, c: number, hueDegrees: number): string | null {
+  const rad = (hueDegrees * Math.PI) / 180;
+  const a = c * Math.cos(rad);
+  const b = c * Math.sin(rad);
+  const lp = (l + 0.39633778 * a + 0.21580376 * b) ** 3;
+  const mp = (l - 0.10556135 * a - 0.06385417 * b) ** 3;
+  const sp = (l - 0.08948418 * a - 1.29148555 * b) ** 3;
+  const rgb = [4.07674166 * lp - 3.30771159 * mp + 0.23096993 * sp, -1.26843800 * lp + 2.60975740 * mp - 0.34131940 * sp, -0.00419609 * lp - 0.70341861 * mp + 1.70761470 * sp];
+  if (rgb.some((v) => !(v >= -0.0001 && v <= 1.0001))) return null;
+  return `#${rgb.map((v) => Math.round(toGamma(Math.min(1, Math.max(0, v))) * 255).toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** Distance between two colours in OKLab. A colour that can't be read counts as far away. */
+export function distance(a: string, b: string): number {
+  const x = oklab(a);
+  const y = oklab(b);
+  if (!x || !y) return Number.MAX_VALUE;
+  return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]);
+}
+
+const readableEverywhere = (hex: string): boolean => THEME_BACKGROUNDS.every((bg) => contrast(hex, bg) >= MIN_CONTRAST);
+
+/**
+ * A random colour, readable on all four themes, as far as it can be from every colour in `taken`; never
+ * exactly one of them. `random` returns a number in [0, 1) and is injected so tests can fix it.
+ */
+export function distinctColor(taken: readonly string[], random: () => number = Math.random): string {
+  let best: { nearest: number; hex: string } | null = null;
+  for (let i = 0; i < TRIES; i += 1) {
+    const l = 0.52 + 0.14 * random();
+    const c = 0.09 + 0.09 * random();
+    const h = 360 * random();
+    const hex = fromOklch(l, c, h);
+    if (!hex || !readableEverywhere(hex)) continue;
+    if (taken.some((t) => t.toLowerCase() === hex)) continue;
+    const nearest = taken.reduce((m, t) => Math.min(m, distance(t, hex)), Number.MAX_VALUE);
+    if (nearest >= DISTINCT) return hex;
+    if (!best || nearest > best.nearest) best = { nearest, hex };
   }
-  return best;
+  return best?.hex ?? '#7c5cbf';
+}
+
+/**
+ * The first curated colour nobody uses. Once the palette runs out the generator takes over, so a
+ * suggestion never repeats a colour in use.
+ */
+export function suggestColor(used: readonly string[], random: () => number = Math.random): string {
+  const lower = new Set(used.map((c) => c.toLowerCase()));
+  return PROJECT_PALETTE.find((c) => !lower.has(c)) ?? distinctColor(used, random);
 }
 
 // ---- The colour picker's pure logic: conversions, parsing, distance and keyboard steps. ----

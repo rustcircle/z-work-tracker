@@ -1,12 +1,14 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import { useApp } from '../../app/store';
 import { api } from '../../lib/api';
 import { normalizeHex, suggestColor } from '../../lib/color';
+import { useColorNotices } from '../../components/colorNotice';
+import { useOptionalNav } from '../../components/nav';
 import { errorMessage } from '../../lib/errorMessage';
 import { rememberColor } from '../../lib/recentColors';
 import { dayOf, startOfDay, toIso, zoneLabel } from '../../lib/tz';
-import type { BillingType, Currency, Project, ProjectInput, RateInput, Snapshot } from '../../lib/types';
+import type { BillingType, Currency, Project, ProjectInput, RateInput, SavedColor } from '../../lib/types';
 import { ColorPicker } from '../../components/ColorPicker';
 import { dayLabel } from '../../components/format';
 import { RoundingFields, incrementLabel, METHOD_LABEL, type RoundingValue } from '../../components/RoundingFields';
@@ -19,6 +21,9 @@ import { NEEDS_TARGET_RATE_TEXT, centsToInput, parseBudget, parseFee, parsePrice
 export function ProjectForm({ project, onDone }: { project?: Project; onDone: () => void }) {
   const { snapshot, nowSec, zones, adopt } = useApp();
   const { act } = useCommands();
+  const notices = useColorNotices();
+  const nav = useOptionalNav();
+  const colorRef = useRef<HTMLDivElement | null>(null);
   const today = dayOf(nowSec, zones.active);
   const current = project ? rateAt(snapshot.rates, project.id, nowSec) : null;
 
@@ -42,6 +47,15 @@ export function ProjectForm({ project, onDone }: { project?: Project; onDone: ()
   const [touched, setTouched] = useState(false);
   const [confirm, setConfirm] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // "Choose again" on the replaced-colour notice opens this editor with the cursor in the colour choice.
+  const chosen = nav?.colorTarget?.kind === 'project' && project !== undefined && nav.colorTarget.id === project.id;
+  const clearColorTarget = nav?.clearColorTarget;
+  useEffect(() => {
+    if (!chosen) return;
+    colorRef.current?.querySelector<HTMLElement>('[role="radio"][tabindex="0"], input, button')?.focus();
+    clearColorTarget?.();
+  }, [chosen, clearColorTarget]);
 
   const nameError = validateProjectName(name, snapshot.projects, project?.id ?? null);
   const fixed = billable && billingType === 'fixedFee';
@@ -76,14 +90,15 @@ export function ProjectForm({ project, onDone }: { project?: Project; onDone: ()
   }
 
   /** Runs the project call and keeps a refusal next to the form, as plain text, instead of only in the app banner. */
-  async function saveProject(call: () => Promise<Snapshot>): Promise<boolean> {
+  async function saveProject(call: () => Promise<SavedColor>): Promise<SavedColor | null> {
     try {
-      adopt(await call());
+      const saved = await call();
+      adopt(saved.snapshot);
       setServerError(null);
-      return true;
+      return saved;
     } catch (e) {
       setServerError(errorMessage(e));
-      return false;
+      return null;
     }
   }
 
@@ -98,18 +113,13 @@ export function ProjectForm({ project, onDone }: { project?: Project; onDone: ()
         input.fixedFeeCents = feeResult.cents;
         input.feeCurrency = feeCurrency;
       }
-      let id = project?.id ?? '';
-      if (project) {
-        if (!(await saveProject(() => api.updateProject(project.id, input)))) return;
-      } else {
-        const ok = await saveProject(async () => {
-          const r = await api.createProject(input);
-          id = r.id;
-          return r.snapshot;
-        });
-        if (!ok) return;
-      }
-      rememberColor(input.color);
+      const saved = await saveProject(() => (project ? api.updateProject(project.id, input) : api.createProject(input)));
+      if (!saved) return;
+      const id = saved.id || project?.id || '';
+      rememberColor(saved.color || input.color);
+      // The backend swapped an exact clash for a random colour: say so, with a way to choose again.
+      if (saved.replacedFrom) notices.report({ kind: 'project', itemId: id, name: input.name, asked: saved.replacedFrom, got: saved.color });
+      else notices.dismissFor('project', id);
       if (rateChanged && priceResult.ok) {
         const body: RateInput = { projectId: id, rateCents: priceResult.cents, currency: rateCurrency };
         if (from === 'date') {
@@ -145,6 +155,7 @@ export function ProjectForm({ project, onDone }: { project?: Project; onDone: ()
         </Field>
       </div>
 
+      <div ref={colorRef}>
       <ColorPicker
         label="Colour"
         value={normalizeHex(color) ?? color}
@@ -155,6 +166,7 @@ export function ProjectForm({ project, onDone }: { project?: Project; onDone: ()
         theme={snapshot.prefs.theme}
         error={colorError}
       />
+      </div>
 
       <label className="check">
         <input type="checkbox" checked={billable} onChange={(e) => setBillable(e.target.checked)} /> Billable project

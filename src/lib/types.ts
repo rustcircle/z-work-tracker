@@ -11,7 +11,9 @@ export type PauseReason =
   | { kind: 'appQuit' }
   | { kind: 'crashRecovery' }
   | { kind: 'syncReconciled' }
-  | { kind: 'backupRestored' };
+  | { kind: 'backupRestored' }
+  /** Another device asked this one to pause the task. */
+  | { kind: 'remoteRequest' };
 
 export type BillingType = 'hourly' | 'fixedFee';
 
@@ -174,6 +176,17 @@ export interface BillablePause {
   stamp: Stamp;
 }
 
+/** A synced request to pause a task that seems to have been left running on another device. */
+export interface PauseRequest {
+  id: string;
+  taskId: string;
+  /** The open segment the request is about. That device's record is never changed from here. */
+  segmentId: string;
+  requestedBy: string;
+  at: string;
+  stamp: Stamp;
+}
+
 export interface Tag {
   id: string;
   name: string;
@@ -279,6 +292,13 @@ export interface BackupInfo {
   safety: boolean;
 }
 
+/** One Timeline entry: one task on one day, the same unit as an Excel row. */
+export interface SelectedEntry {
+  taskId: string;
+  /** `YYYY-MM-DD`, in the zone of the request. */
+  day: string;
+}
+
 export interface PdfRequest {
   projectId: string | null;
   from: string;
@@ -287,6 +307,8 @@ export interface PdfRequest {
   title: string;
   includePrices: boolean;
   useLogo: boolean;
+  /** Only these task-days, or null for everything in the period. Client totals are never sent. */
+  selection: SelectedEntry[] | null;
 }
 
 export interface ManualEntryInput {
@@ -488,6 +510,10 @@ export interface Snapshot {
     hideEarnings: boolean;
     lastCurrency: Currency | null;
     clientZonePromptDone: boolean;
+    /** Windows 11's Mica backdrop is switched on (it only shows where `micaAvailable`). */
+    mica: boolean;
+    /** This system can show Mica: false everywhere except Windows 11. */
+    micaAvailable: boolean;
   };
   notices: Notice[];
   warnings: string[];
@@ -500,6 +526,10 @@ export interface Snapshot {
   tags: Tag[];
   templates: Template[];
   billing: BillingView;
+  /** First-run setup: pending only on a fresh store, and the step to resume at. */
+  setup: { pending: boolean; step: number };
+  /** Asks made from this or other devices to pause a task left running. */
+  pauseRequests: PauseRequest[];
   reminder: Reminder | null;
   reminderSettings: ReminderSettings;
   backupKeep: number;
@@ -585,6 +615,8 @@ export interface ExportRequest {
   includeEarnings: boolean;
   segmentShifts: Record<string, string>;
   analytics: AnalyticsSheet[];
+  /** Only these task-days, or null for everything. The backend checks every id and leaves analytics out. */
+  selection: SelectedEntry[] | null;
 }
 
 export interface TransitionResult {
@@ -596,4 +628,10 @@ export interface TransitionResult {
 export interface WithId {
   id: string;
   snapshot: Snapshot;
+}
+
+/** A saved project or tag: the colour it got, and what was asked for when that clashed and was replaced. */
+export interface SavedColor extends WithId {
+  color: string;
+  replacedFrom: string | null;
 }

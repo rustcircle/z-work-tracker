@@ -47,6 +47,9 @@ export function Shell() {
   const [exporting, setExporting] = useState(false);
   const [focusTask, setFocusTask] = useState<Nav['focusTask']>(null);
   const [continueTaskId, setContinueTaskId] = useState<string | null>(null);
+  const [colorTarget, setColorTarget] = useState<Nav['colorTarget']>(null);
+  const [tagIntent, setTagIntent] = useState<Nav['tagIntent']>(null);
+  const [returnFocus, setReturnFocus] = useState<string | null>(null);
   const seq = useRef(0);
   const tabRefs = useRef(new Map<TabId, HTMLButtonElement>());
   const hide = snapshot.prefs.hideEarnings;
@@ -66,6 +69,7 @@ export function Shell() {
         setTab('settings');
       },
       settingsSection,
+      clearSettingsSection: () => setSettingsSection(null),
       focusTask,
       goToTask: (id, edit = false) => {
         seq.current += 1;
@@ -75,8 +79,36 @@ export function Shell() {
       continueTaskId,
       openContinue: setContinueTaskId,
       clearContinue: () => setContinueTaskId(null),
+      colorTarget,
+      chooseColor: (kind, id) => {
+        setColorTarget({ kind, id });
+        if (kind === 'project') {
+          setFocusProject(id);
+          setTab('projects');
+        } else {
+          setSettingsSection('tags');
+          setTab('settings');
+        }
+      },
+      clearColorTarget: () => setColorTarget(null),
+      tagIntent,
+      startNewTag: (origin) => {
+        setTagIntent({ origin, back: tab, createdId: null });
+        setSettingsSection('tags');
+        setTab('settings');
+      },
+      tagCreated: (id) => setTagIntent((t) => (t ? { ...t, createdId: id } : t)),
+      backToTask: () => {
+        if (tagIntent) {
+          setTab(tagIntent.back);
+          setReturnFocus(tagIntent.origin);
+        }
+      },
+      returnFocus,
+      clearReturnFocus: () => setReturnFocus(null),
+      endTagIntent: () => setTagIntent(null),
     }),
-    [tab, focusProject, settingsSection, focusTask, continueTaskId],
+    [tab, focusProject, settingsSection, focusTask, continueTaskId, colorTarget, tagIntent, returnFocus],
   );
 
   // A marker only the page can read: scripts/perf-native.mjs times cold start up to here.

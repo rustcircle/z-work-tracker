@@ -1,7 +1,8 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 
 import { useNav } from '../../components/nav';
-import { Card } from '../../components/ui';
+import { Button, Card } from '../../components/ui';
+import { IconBack } from '../../components/icons';
 import { AuditSection } from './AuditSection';
 import { BackupsSection } from './BackupsSection';
 import { BillingPrefixSection } from './BillingPrefixSection';
@@ -36,11 +37,14 @@ export function SettingsTab() {
   const nav = useNav();
   const root = useRef<HTMLDivElement | null>(null);
   const target = nav.settingsSection;
+  const { clearSettingsSection } = nav;
 
+  // Scrolls to the requested section once, then forgets it, so asking for the same section again works.
   useEffect(() => {
     if (!target) return;
     root.current?.querySelector<HTMLElement>(`#settings-${target}`)?.scrollIntoView?.({ block: 'start' });
-  }, [target]);
+    clearSettingsSection();
+  }, [target, clearSettingsSection]);
 
   const jump = (id: string) => root.current?.querySelector<HTMLElement>(`#settings-${id}`)?.scrollIntoView?.({ block: 'start', behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
 
@@ -56,6 +60,14 @@ export function SettingsTab() {
           ))}
         </nav>
       </div>
+      {nav.tagIntent && (
+        <div className="banner banner-info back-to-task" role="status" data-testid="back-to-task-bar">
+          <span>{nav.tagIntent.createdId ? 'Tag added and ticked on your task. Your unsaved task is as you left it.' : 'Adding a tag for your task. What you typed there is kept.'}</span>
+          <Button id="back-to-task" variant={nav.tagIntent.createdId ? 'primary' : 'secondary'} icon={<IconBack />} onClick={nav.backToTask}>
+            Back to task
+          </Button>
+        </div>
+      )}
       {SECTIONS.map((s) => (
         <Card key={s.id} className="page-card" label={s.title}>
           <h3 id={`settings-${s.id}`} className="section-title">

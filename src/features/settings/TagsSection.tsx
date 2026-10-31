@@ -8,6 +8,8 @@ import { errorCode, errorMessage } from '../../lib/errorMessage';
 import { rememberColor } from '../../lib/recentColors';
 import type { Tag } from '../../lib/types';
 import { ColorPicker } from '../../components/ColorPicker';
+import { useColorNotices } from '../../components/colorNotice';
+import { useOptionalNav } from '../../components/nav';
 import { IconEdit, IconPlus, IconTrash } from '../../components/icons';
 import { Button, ConfirmDialog, Field, ProjectChip } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
@@ -26,6 +28,9 @@ export function validateTagName(name: string, tags: readonly Tag[], exceptId: st
 
 function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string | null) => void }) {
   const { snapshot, adopt } = useAppState();
+  const notices = useColorNotices();
+  const colorRef = useRef<HTMLDivElement | null>(null);
+  const nav = useOptionalNav();
   const [name, setName] = useState(tag?.name ?? '');
   const [color, setColor] = useState(tag?.color ?? suggestColor(snapshot.tags.map((t) => t.color)));
   const [touched, setTouched] = useState(false);
@@ -33,8 +38,16 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
   const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null);
   // The editor opens with the cursor in the name. (`data-autofocus` only works inside a Modal.)
   const nameInput = useRef<HTMLInputElement | null>(null);
+  // "Choose again" on the replaced-colour notice opens this editor with the cursor in the colour choice.
+  const chosen = nav?.colorTarget?.kind === 'tag' && tag !== null && nav.colorTarget.id === tag.id;
+  const clearColorTarget = nav?.clearColorTarget;
   useEffect(() => {
-    nameInput.current?.focus();
+    if (chosen) {
+      colorRef.current?.querySelector<HTMLElement>('[role="radio"][tabindex="0"], input, button')?.focus();
+      clearColorTarget?.();
+    } else nameInput.current?.focus();
+    // Focus once, when the editor opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const nameError = validateTagName(name, snapshot.tags, tag?.id ?? null);
@@ -53,7 +66,9 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
     try {
       const r = await api.saveTag({ id: tag?.id ?? null, name: name.trim(), color: hex });
       adopt(r.snapshot);
-      rememberColor(hex);
+      rememberColor(r.color || hex);
+      if (r.replacedFrom) notices.report({ kind: 'tag', itemId: r.id, name: name.trim(), asked: r.replacedFrom, got: r.color });
+      else notices.dismissFor('tag', r.id);
       onDone(r.id);
     } catch (err) {
       setRefusal({ code: errorCode(err), message: errorMessage(err) });
@@ -83,6 +98,7 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
           />
         )}
       </Field>
+      <div ref={colorRef}>
       <ColorPicker
         label="Tag colour"
         value={normalizeHex(color) ?? color}
@@ -96,6 +112,7 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
         theme={snapshot.prefs.theme}
         error={colorRefusal}
       />
+      </div>
       {otherRefusal && (
         <p className="form-error" role="alert">
           {otherRefusal}
@@ -116,7 +133,19 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
 export function TagsSection() {
   const { snapshot } = useAppState();
   const { act } = useCommands();
-  const [editing, setEditing] = useState<string | 'new' | null>(null);
+  const nav = useOptionalNav();
+  // "New tag" next to a tag picker opens this section with the Add tag form already open; "Choose again" opens one tag.
+  const [editing, setEditing] = useState<string | 'new' | null>(() => (nav?.tagIntent && nav.tagIntent.createdId === null ? 'new' : nav?.colorTarget?.kind === 'tag' ? nav.colorTarget.id : null));
+  const intent = nav?.tagIntent ?? null;
+  const intentOpen = intent !== null && intent.createdId === null;
+  const colorTag = nav?.colorTarget?.kind === 'tag' ? nav.colorTarget.id : null;
+  // A request arriving while this section is already open (the rail is visible on every tab): follow it.
+  const [seen, setSeen] = useState({ intentOpen, colorTag });
+  if (seen.intentOpen !== intentOpen || seen.colorTag !== colorTag) {
+    setSeen({ intentOpen, colorTag });
+    if (intentOpen && !seen.intentOpen) setEditing('new');
+    else if (colorTag && colorTag !== seen.colorTag) setEditing(colorTag);
+  }
   const [deleting, setDeleting] = useState<Tag | null>(null);
 
   const uses = (id: string): number => snapshot.tasks.filter((t) => t.tags.includes(id)).length;
@@ -158,7 +187,17 @@ export function TagsSection() {
         ))}
       </ul>
       {editing === 'new' ? (
-        <TagEditor tag={null} onDone={() => closeEditor('tag-add')} />
+        <TagEditor
+          tag={null}
+          onDone={(savedId) => {
+            if (intent && savedId) {
+              // Made for a task: the picker selects it on return, so the required-tag rule is met.
+              nav?.tagCreated(savedId);
+              setEditing(null);
+              window.setTimeout(() => document.getElementById('back-to-task')?.focus(), 0);
+            } else closeEditor('tag-add');
+          }}
+        />
       ) : (
         <div>
           <Button id="tag-add" icon={<IconPlus />} onClick={() => setEditing('new')}>

@@ -11,6 +11,7 @@ import type {
   ManualEntryInput,
   PauseInput,
   PdfRequest,
+  SavedColor,
   SummaryPreview,
   SummaryRequest,
   TagInput,
@@ -20,6 +21,7 @@ import type {
   MoveProgress,
   MoveResult,
   ProjectInput,
+  RichDoc,
   RateInput,
   RoundingInput,
   ShiftInput,
@@ -33,8 +35,8 @@ import type {
 
 export const api = {
   getSnapshot: () => invoke<Snapshot>('get_snapshot'),
-  createProject: (input: ProjectInput) => invoke<WithId>('create_project', { input }),
-  updateProject: (id: string, input: ProjectInput) => invoke<Snapshot>('update_project', { id, input }),
+  createProject: (input: ProjectInput) => invoke<SavedColor>('create_project', { input }),
+  updateProject: (id: string, input: ProjectInput) => invoke<SavedColor>('update_project', { id, input }),
   setProjectArchived: (id: string, archived: boolean) => invoke<Snapshot>('set_project_archived', { id, archived }),
   deleteProject: (id: string) => invoke<Snapshot>('delete_project', { id }),
   createTask: (input: TaskInput) => invoke<WithId>('create_task', { input }),
@@ -85,7 +87,7 @@ export const api = {
   unmarkBillablePause: (id: string) => invoke<Snapshot>('unmark_billable_pause', { id }),
   setActiveSubtask: (taskId: string, subtaskId: string | null) => invoke<Snapshot>('set_active_subtask', { taskId, subtaskId }),
   // Tags and templates.
-  saveTag: (input: TagInput) => invoke<WithId>('save_tag', { input }),
+  saveTag: (input: TagInput) => invoke<SavedColor>('save_tag', { input }),
   deleteTag: (id: string) => invoke<Snapshot>('delete_tag', { id }),
   saveTemplate: (input: TemplateInput) => invoke<WithId>('save_template', { input }),
   deleteTemplate: (id: string) => invoke<Snapshot>('delete_template', { id }),
@@ -105,6 +107,15 @@ export const api = {
   restoreBackup: (name: string) => invoke<Snapshot>('restore_backup', { name }),
   setBackupKeep: (keep: number) => invoke<Snapshot>('set_backup_keep', { keep }),
   snoozeReminder: (minutes: number) => invoke<Snapshot>('snooze_reminder', { minutes }),
+  // Gap-fill round.
+  revertShiftVersion: (versionId: string) => invoke<Snapshot>('revert_shift_version', { versionId }),
+  requestRemotePause: (taskId: string) => invoke<Snapshot>('request_remote_pause', { taskId }),
+  /** A durable local draft of what is being typed. Cheap; never syncs. */
+  stashDraft: (taskId: string, description: RichDoc) => invoke<void>('stash_draft', { taskId, description }),
+  clearDraft: (taskId: string) => invoke<void>('clear_draft', { taskId }),
+  setSetupStep: (step: number) => invoke<Snapshot>('set_setup_step', { step }),
+  finishSetup: () => invoke<Snapshot>('finish_setup'),
+  setMica: (on: boolean) => invoke<Snapshot>('set_mica', { on }),
 };
 
 export interface HideNoticePayload {

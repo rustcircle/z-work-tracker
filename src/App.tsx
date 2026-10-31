@@ -1,5 +1,6 @@
 import { AppProvider, useAppState } from './app/store';
 import { Banners } from './components/Banners';
+import { ColorNoticeProvider } from './components/colorNotice';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { HideNoticeDialog } from './components/HideNoticeDialog';
 import { Shell } from './components/Shell';
@@ -41,7 +42,9 @@ export default function App() {
       )}
     >
       <ToastProvider>
-        <Root />
+        <ColorNoticeProvider>
+          <Root />
+        </ColorNoticeProvider>
       </ToastProvider>
     </AppProvider>
     </ErrorBoundary>

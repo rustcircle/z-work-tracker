@@ -132,6 +132,8 @@ export function pauseReasonText(reason: PauseReason | null, tasks: ReadonlyMap<s
       return 'Paused while merging with another device.';
     case 'backupRestored':
       return 'Paused: the restored backup held this running. Time stopped at the last moment the backup knows about.';
+    case 'remoteRequest':
+      return 'Paused because another device asked for it. Time stopped at the moment of the request.';
   }
 }
 

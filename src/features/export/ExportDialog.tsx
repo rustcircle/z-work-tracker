@@ -50,6 +50,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         includeEarnings,
         segmentShifts: segmentShiftText(toSegs(snapshot, nowSec), snapshot.shifts),
         analytics: kind === 'xlsx' ? buildAnalyticsSheets(snapshot, zone, nowSec).filter((s) => includeEarnings || !s.containsPrices) : [],
+        selection: null,
       };
       const path = await (kind === 'xlsx' ? api.exportXlsx(request) : api.exportCsv(request));
       setResult({ path });

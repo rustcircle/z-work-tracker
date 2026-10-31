@@ -262,7 +262,7 @@ describe('PDF timesheet', () => {
     await user.selectOptions(dialog.getByLabelText('Project'), 'p-brand');
     await user.click(dialog.getByRole('button', { name: 'Export PDF' }));
     await waitFor(() => expect(requests()).toHaveLength(1));
-    expect(requests()[0]).toEqual({ projectId: 'p-brand', from: '2026-03-01', to: '2026-03-31', zone: 'America/New_York', title: 'Timesheet: Brand refresh', includePrices: true, useLogo: false });
+    expect(requests()[0]).toEqual({ projectId: 'p-brand', from: '2026-03-01', to: '2026-03-31', zone: 'America/New_York', title: 'Timesheet: Brand refresh', includePrices: true, useLogo: false, selection: null });
   });
 
   it('Hide earnings: off by default, a visible note when switched on, and the request follows', async () => {

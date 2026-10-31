@@ -88,10 +88,13 @@ describe('project form: the colour picker', () => {
   it('warns about a colour close to another project, and still lets the project be saved', async () => {
     const { user, form } = await newProject(demoState());
     await user.type(within(form).getByRole('textbox', { name: 'Project name' }), 'Retail');
-    await user.click(within(form).getByRole('radio', { name: 'Colour #2563eb' }));
+    // Close to Brand refresh (#2563eb) but not the same: kept as typed, with the warning.
+    const hex = within(form).getByRole('textbox', { name: 'Hex' });
+    await user.clear(hex);
+    await user.type(hex, '#2564eb');
     expect(within(form).getByTestId('cp-warn-similar')).toHaveTextContent('Close to Brand refresh (#2563eb)');
     await user.click(within(form).getByRole('button', { name: 'Create project' }));
-    await waitFor(() => expect(state.projects.find((p) => p.name === 'Retail')?.color).toBe('#2563eb'));
+    await waitFor(() => expect(state.projects.find((p) => p.name === 'Retail')?.color).toBe('#2564eb'));
   });
 
   it('shows a refusal about the colour beside the picker, as text, and one about anything else above the buttons', async () => {

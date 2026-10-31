@@ -60,7 +60,7 @@ export function usePdfForm(): PdfForm {
   const includePrices = pricesChoice ?? !hidden;
   const useLogo = snapshot.hasPdfLogo && (logoChoice ?? true);
   const span = spanDays(range);
-  const request: PdfRequest = { projectId: project?.id ?? null, from: span.fromDay, to: span.toDay, zone, title: title.trim(), includePrices, useLogo };
+  const request: PdfRequest = { projectId: project?.id ?? null, from: span.fromDay, to: span.toDay, zone, title: title.trim(), includePrices, useLogo, selection: null };
   const key = JSON.stringify(request);
 
   async function run(): Promise<void> {
