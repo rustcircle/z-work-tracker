@@ -3,10 +3,12 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 
 import { abbrAt, cityOf, clockAt, formatOffset, offsetAt } from '../../lib/tz';
-import { CITY_PINS, LAT_MAX, LAT_MIN, resolveZone, UNITS_PER_DEG, WORLD_H, WORLD_W } from './geo';
-import { GRID_NX, GRID_NY, GRID_STEP, sharedGrid, type ZoneGrid } from './grid';
+import { CITY_PINS, LAT_MAX, LAT_MIN, resolveZone, WORLD_H, WORLD_W } from './geo';
+import { sharedGrid, type ZoneGrid } from './grid';
 import { graticulePath, loadCountryPaths, type CountryPath } from './mapData';
-import { baseScale, clampView, fitView, geoToScreen, panBy, screenToGeo, zoomAbout, type View } from './viewport';
+import { MaskPainter } from './maskDraw';
+import { placePins, type Pin, type PlacedPin, type Size } from './pins';
+import { baseScale, clampView, fitView, panBy, screenToGeo, zoomAbout, type View } from './viewport';
 
 import './zones.css';
 
@@ -22,27 +24,6 @@ export interface WorldMapProps {
   onPick: (zone: string) => void;
   /** Reports the zone under the pointer, or null when the pointer is off the map. */
   onHover: (zone: string | null) => void;
-}
-
-interface Size {
-  w: number;
-  h: number;
-}
-
-type PinKind = 'city' | 'mine' | 'client';
-interface Pin {
-  key: string;
-  kind: PinKind;
-  zone: string;
-  label: string;
-  lat: number;
-  lon: number;
-}
-interface PlacedPin extends Pin {
-  x: number;
-  y: number;
-  /** Where the label goes relative to the pin; null when it would collide with another label. */
-  labelAt: { x: number; anchor: 'start' | 'end' } | null;
 }
 
 const CLICK_SLOP = 4;
@@ -64,28 +45,6 @@ function describe(zone: string, sec: number): string {
   return `${cityOf(zone)}, ${zone.replaceAll('_', ' ')}, ${abbrAt(sec, zone)} ${formatOffset(offsetAt(sec, zone))}, ${clockAt(sec, zone)} local time`;
 }
 
-function placePins(pins: readonly Pin[], view: View, size: Size): PlacedPin[] {
-  const taken: { x0: number; y0: number; x1: number; y1: number }[] = [];
-  const overlaps = (r: { x0: number; y0: number; x1: number; y1: number }): boolean =>
-    taken.some((t) => r.x0 < t.x1 && r.x1 > t.x0 && r.y0 < t.y1 && r.y1 > t.y0);
-  const placed: PlacedPin[] = [];
-  for (const pin of pins) {
-    const { x, y } = geoToScreen(view, size.w, pin.lat, pin.lon);
-    if (x < -20 || y < -20 || x > size.w + 20 || y > size.h + 20) continue;
-    const marker = { x0: x - 7, y0: y - 7, x1: x + 7, y1: y + 7 };
-    const textW = pin.label.length * 6.3 + 8;
-    const right = { x0: x + 9, y0: y - 8, x1: x + 9 + textW, y1: y + 8 };
-    const left = { x0: x - 9 - textW, y0: y - 8, x1: x - 9, y1: y + 8 };
-    let labelAt: PlacedPin['labelAt'] = null;
-    if (right.x1 <= size.w - 2 && !overlaps(right)) labelAt = { x: x + 10, anchor: 'start' };
-    else if (left.x0 >= 2 && !overlaps(left)) labelAt = { x: x - 10, anchor: 'end' };
-    taken.push(marker);
-    if (labelAt) taken.push(labelAt.anchor === 'start' ? right : left);
-    placed.push({ ...pin, x, y, labelAt });
-  }
-  return placed;
-}
-
 function WorldMap({ selected, preview, myZone, clientZone, nowSec, onPick, onHover }: WorldMapProps) {
   const frameRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -104,7 +63,7 @@ function WorldMap({ selected, preview, myZone, clientZone, nowSec, onPick, onHov
     sizeRef.current = size;
     viewRef.current = view;
   }, [size, view]);
-  const layers = useRef(new Map<string, HTMLCanvasElement>());
+  const painter = useRef<MaskPainter | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -140,7 +99,7 @@ function WorldMap({ selected, preview, myZone, clientZone, nowSec, onPick, onHov
   // Theme changes recolour the canvas masks; the SVG follows the CSS variables on its own.
   useEffect(() => {
     const mo = new MutationObserver(() => {
-      layers.current.clear();
+      painter.current?.clearCache();
       setThemeTick((t) => t + 1);
     });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -169,64 +128,33 @@ function WorldMap({ selected, preview, myZone, clientZone, nowSec, onPick, onHov
     onHover(hover?.zone ?? null);
   }, [hover?.zone, onHover]);
 
-  // Highlight masks: the selected zone and the hovered or previewed one, from the lookup grid.
+  const land = useMemo(() => {
+    if (!paths || typeof Path2D === 'undefined') return null;
+    return new Path2D(paths.map((p) => p.d).join(''));
+  }, [paths]);
+
+  // Highlight masks: the chosen zone and the hovered or previewed one.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || size.w === 0 || size.h === 0) return;
-    const dpr = window.devicePixelRatio || 1;
-    const pw = Math.round(size.w * dpr);
-    const ph = Math.round(size.h * dpr);
-    if (canvas.width !== pw) canvas.width = pw;
-    if (canvas.height !== ph) canvas.height = ph;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, size.w, size.h);
-    if (!grid) return;
+    painter.current ??= new MaskPainter();
     const css = getComputedStyle(canvas);
-    const layerFor = (zone: string, color: string): HTMLCanvasElement | null => {
-      const key = `${zone}|${color}`;
-      const hit = layers.current.get(key);
-      if (hit) return hit;
-      const mask = grid.maskFor(zone);
-      if (!mask) return null;
-      const off = document.createElement('canvas');
-      off.width = GRID_NX;
-      off.height = GRID_NY;
-      const octx = off.getContext('2d');
-      if (!octx) return null;
-      octx.putImageData(new ImageData(mask, GRID_NX, GRID_NY), 0, 0);
-      octx.globalCompositeOperation = 'source-in';
-      octx.fillStyle = color;
-      octx.fillRect(0, 0, GRID_NX, GRID_NY);
-      const oldest = layers.current.keys().next();
-      if (layers.current.size >= 16 && !oldest.done) layers.current.delete(oldest.value);
-      layers.current.set(key, off);
-      return off;
-    };
-    const topLeft = screenToGeo(view, size.w, 0, 0);
-    const bottomRight = screenToGeo(view, size.w, size.w, size.h);
-    const c0 = Math.max(0, Math.floor((topLeft.lon + 180) / GRID_STEP) - 1);
-    const c1 = Math.min(GRID_NX, Math.ceil((bottomRight.lon + 180) / GRID_STEP) + 1);
-    const r0 = Math.max(0, Math.floor((90 - topLeft.lat) / GRID_STEP) - 1);
-    const r1 = Math.min(GRID_NY, Math.ceil((90 - bottomRight.lat) / GRID_STEP) + 1);
-    if (c1 <= c0 || r1 <= r0) return;
-    const origin = geoToScreen(view, size.w, 90 - r0 * GRID_STEP, -180 + c0 * GRID_STEP);
-    const cell = GRID_STEP * UNITS_PER_DEG * baseScale(size.w) * view.k;
-    const draw = (zone: string | null, token: string, alpha: number) => {
-      if (!zone) return;
-      const color = css.getPropertyValue(token).trim() || '#f59e0b';
-      const layer = layerFor(zone, color);
-      if (!layer) return;
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.globalAlpha = alpha;
-      ctx.drawImage(layer, c0, r0, c1 - c0, r1 - r0, origin.x, origin.y, (c1 - c0) * cell, (r1 - r0) * cell);
-      ctx.globalAlpha = 1;
-    };
-    draw(selected, '--map-selected', 0.62);
-    if (highlight && highlight !== selected) draw(highlight, '--map-highlight', 0.55);
-  }, [grid, size, view, selected, highlight, themeTick]);
+    const color = (token: string, fallback: string) => css.getPropertyValue(token).trim() || fallback;
+    const started = performance.now();
+    painter.current.paint({
+      canvas,
+      size,
+      dpr: window.devicePixelRatio || 1,
+      view,
+      grid,
+      land,
+      masks: [
+        { zone: selected, color: color('--map-selected', '#0f766e'), landAlpha: 0.6, seaAlpha: 0.2 },
+        { zone: highlight && highlight !== selected ? highlight : null, color: color('--map-highlight', '#f59e0b'), landAlpha: 0.55, seaAlpha: 0.18 },
+      ],
+    });
+    canvas.dataset.paintMs = (performance.now() - started).toFixed(1);
+  }, [grid, land, size, view, selected, highlight, themeTick]);
 
   const pins = useMemo<Pin[]>(() => {
     const out: Pin[] = [];
@@ -367,6 +295,7 @@ function WorldMap({ selected, preview, myZone, clientZone, nowSec, onPick, onHov
         aria-label={label}
         tabIndex={0}
         data-testid="zone-map"
+        data-zoom={view.k.toFixed(2)}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}

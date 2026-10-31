@@ -55,8 +55,8 @@ const Option = memo(function Option({ row, id, active, chosen, tags, onChoose, o
         <span className="zn-opt-time tabular">{row.clock}</span>
       </span>
       <span className="zn-opt-sub">
-        <span>{row.zone === 'UTC' ? 'Coordinated Universal Time' : row.path}</span>
-        <span className="tabular">{row.zone === 'UTC' ? 'UTC+0' : `${row.abbr} · ${row.offsetText}`}</span>
+        <span title={row.path}>{row.zone === 'UTC' ? 'Coordinated Universal Time' : row.path}</span>
+        <span className="tabular">{row.zone === 'UTC' ? 'UTC+0' : row.abbr === row.offsetText ? row.offsetText : `${row.abbr} · ${row.offsetText}`}</span>
       </span>
     </li>
   );
@@ -264,32 +264,40 @@ function PickerBody({ title, value, onPick, onClose }: ZonePickerProps) {
               </li>
             </ul>
             <div className="zn-notices" data-testid="zone-notices">
-              <h3>Clock changes</h3>
-              <ul>
-                {clockLines.map((l) => (
-                  <li key={l.zone}>
-                    <strong>{l.roles.join(', ')}</strong> · {zoneLabel(l.zone, minuteSec)}
-                    <br />
-                    <span className={l.hasChange ? '' : 'muted'}>{l.text}</span>
-                  </li>
+              <div>
+                <h3>Clock changes</h3>
+                <ul>
+                  {clockLines.map((l) => (
+                    <li key={l.zone}>
+                      <strong>{l.roles.join(', ')}</strong> · {zoneLabel(l.zone, minuteSec)}
+                      <br />
+                      <span className={l.hasChange ? '' : 'muted'}>{l.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <h3>Time difference</h3>
+                {gaps.length === 0 && <p className="muted zn-gap">Choose a zone other than My zone to compare.</p>}
+                {gaps.map((g) => (
+                  <p key={`${g.a}|${g.b}`} className="zn-gap">
+                    <strong>Now:</strong> {g.now}.
+                    {g.changes.length > 0 ? (
+                      <>
+                        {' '}
+                        It changes during the next year because the two places change clocks on different dates:
+                        <span className="zn-gap-list">
+                          {g.changes.map((c) => (
+                            <span key={c}>{c}</span>
+                          ))}
+                        </span>
+                      </>
+                    ) : (
+                      ' It stays the same for the next 12 months.'
+                    )}
+                  </p>
                 ))}
-              </ul>
-              {gaps.map((g) => (
-                <p key={`${g.a}|${g.b}`} className="zn-gap">
-                  <strong>Time difference now:</strong> {g.now}.
-                  {g.changes.length > 0 && (
-                    <>
-                      {' '}
-                      It changes during the next year because the two places change clocks on different dates:
-                      <span className="zn-gap-list">
-                        {g.changes.map((c) => (
-                          <span key={c}>{c}</span>
-                        ))}
-                      </span>
-                    </>
-                  )}
-                </p>
-              ))}
+              </div>
             </div>
           </section>
         </div>

@@ -236,14 +236,34 @@ describe('ZonePickerDialog', () => {
     renderPicker('America/New_York');
     const dialog = await screen.findByRole('dialog');
     const notices = within(dialog).getByTestId('zone-notices');
-    expect(notices).toHaveTextContent('Time difference now: New York is 4h behind Lisbon');
+    expect(notices).toHaveTextContent('Now: New York is 4h behind Lisbon');
     expect(notices).toHaveTextContent('different dates');
     expect(notices).toHaveTextContent('New York is 5h behind Lisbon from 29 Mar');
 
     await user.click(within(dialog).getByRole('button', { name: 'stub-hover-honolulu' }));
     await waitFor(() => expect(notices).toHaveTextContent('Honolulu'));
     // Honolulu never changes clocks, but Lisbon does, so the gap still moves and says so.
-    expect(notices).toHaveTextContent('Time difference now: Honolulu is 10h behind Lisbon');
+    expect(notices).toHaveTextContent('Now: Honolulu is 10h behind Lisbon');
+  });
+});
+
+describe('ZonePickerDialog without daylight saving on either side', () => {
+  it('says the difference stays the same, and raises no clock-change notice for either zone', async () => {
+    setup((s) => {
+      s.settings.myZone = 'America/Phoenix';
+      s.settings.clientZone = null;
+      s.settings.activeZone = null;
+    });
+    render(
+      <AppProvider fallback={() => <p>loading</p>}>
+        <ZonePickerDialog open title="Client zone" value="Pacific/Honolulu" onPick={() => undefined} onClose={() => undefined} />
+      </AppProvider>,
+    );
+    const dialog = await screen.findByRole('dialog');
+    const notices = within(dialog).getByTestId('zone-notices');
+    expect(notices).toHaveTextContent('Now: Honolulu is 3h behind Phoenix. It stays the same for the next 12 months.');
+    expect(notices).not.toHaveTextContent('different dates');
+    expect(within(notices).getAllByText('No clock change is scheduled.')).toHaveLength(2);
   });
 });
 

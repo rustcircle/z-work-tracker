@@ -10,7 +10,8 @@ export interface View {
 }
 
 export const MIN_K = 1;
-export const MAX_K = 48;
+/** Past this the zone boundary data (quad-tree tiles, accurate to a few km at best) shows its blocks. */
+export const MAX_K = 24;
 
 /** CSS pixels per world unit at zoom 1. */
 export const baseScale = (width: number): number => width / WORLD_W;
