@@ -1401,7 +1401,7 @@ mod tests {
             fn is_dir(&self, p: &Path) -> bool {
                 if p.starts_with(&self.0) {
                     self.1.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(3000));
+                    std::thread::sleep(Duration::from_secs(10));
                 }
                 RealIo.is_dir(p)
             }
@@ -1428,8 +1428,8 @@ mod tests {
         let a = device(&clock, &[stuck.path(), good.path()]);
         let calls = Arc::new(AtomicU32::new(0));
         let io = Hangs(stuck.path().to_path_buf(), Arc::clone(&calls));
-        run_cycle_within(&a.svc, &io, Duration::from_secs(3));
-        run_cycle_within(&a.svc, &io, Duration::from_secs(3));
+        run_cycle_within(&a.svc, &io, Duration::from_secs(2));
+        run_cycle_within(&a.svc, &io, Duration::from_secs(2));
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
