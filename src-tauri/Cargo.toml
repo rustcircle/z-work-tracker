@@ -28,7 +28,8 @@ rust-version.workspace = true
 
 [lib]
 name = "z_work_tracker_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop only: a cdylib is for mobile, and MinGW refuses one with this many exported symbols.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
