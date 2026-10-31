@@ -539,7 +539,7 @@ impl Service {
 
     fn figures(&self) -> BTreeMap<String, ProjectFigures> {
         let tz = crate::validate::parse_zone(&self.system_zone).unwrap_or(chrono_tz::UTC);
-        let source = self.export_source();
+        let source = self.end_source();
         project_figures(&self.file.data, tz, &|s: &Segment| source.end_of(s))
     }
 
@@ -951,6 +951,16 @@ impl Service {
         }
     }
 
+    /// What `end_of` reads, without a copy of the data it doesn't read. For reports use `export_source`.
+    fn end_source(&self) -> ExportSource {
+        ExportSource {
+            data: Shared::default(),
+            device_id: self.file.device_id.clone(),
+            remote_devices: self.file.remote_devices.clone(),
+            now: self.now(),
+        }
+    }
+
     pub fn dismiss_notice(&mut self, id: &str) {
         self.notices.retain(|n| n.id != id);
     }
@@ -986,7 +996,7 @@ impl Service {
             .collect();
 
         let figures = self.figures();
-        let source = self.export_source();
+        let source = self.end_source();
         let end_of = |s: &Segment| source.end_of(s);
         let all_pieces = pieces::pieces(data, &end_of);
         let totals = task_totals(data, &all_pieces);
