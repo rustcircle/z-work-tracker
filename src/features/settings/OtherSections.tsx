@@ -66,7 +66,7 @@ export function AutostartSection() {
   }, []);
   return (
     <Switch
-      label="Start Labor Tracker when I sign in to Windows"
+      label="Start zWorkTracker when I sign in to Windows"
       hint="Off by default. It starts hidden in the system tray."
       checked={on === true}
       disabled={on === null}

@@ -1,4 +1,4 @@
-// Derived rounding and earnings, matching `labor-core`'s billing.rs. Pinned on both sides by
+// Derived rounding and earnings, matching `z-work-core`'s billing.rs. Pinned on both sides by
 // fixtures/billing-fixtures.json. Nothing here is stored.
 // Rules: a row is one task on one day in the zone. Its exact time is rounded once; larger totals
 // are sums of rows. Earnings keep the exact numerator (rate cents x seconds) and round half up to

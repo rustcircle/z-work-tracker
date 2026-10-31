@@ -2079,39 +2079,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "labor-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "chrono-tz",
- "proptest",
- "rust_xlsxwriter",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "uuid",
-]
-
-[[package]]
-name = "labor-tracker"
-version = "0.1.0"
-dependencies = [
- "chrono-tz",
- "hostname",
- "iana-time-zone",
- "labor-core",
- "rfd 0.15.4",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-dialog",
- "tauri-plugin-single-instance",
-]
-
-[[package]]
 name = "libappindicator"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5324,6 +5291,39 @@ dependencies = [
  "quote",
  "syn 3.0.9",
  "synstructure",
+]
+
+[[package]]
+name = "z-work-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "proptest",
+ "rust_xlsxwriter",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "z-work-tracker"
+version = "0.1.0"
+dependencies = [
+ "chrono-tz",
+ "hostname",
+ "iana-time-zone",
+ "rfd 0.15.4",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-dialog",
+ "tauri-plugin-single-instance",
+ "z-work-core",
 ]
 
 [[package]]

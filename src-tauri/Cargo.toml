@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = [".", "crates/labor-core"]
+members = [".", "crates/z-work-core"]
 
 [workspace.package]
 edition = "2024"
@@ -17,21 +17,21 @@ panic = "warn"
 indexing_slicing = "warn"
 
 [package]
-name = "labor-tracker"
+name = "z-work-tracker"
 version = "0.1.0"
 description = "Local-first labor hours tracker"
 edition.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "labor_tracker_lib"
+name = "z_work_tracker_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-labor-core = { path = "crates/labor-core" }
+z-work-core = { path = "crates/z-work-core" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"

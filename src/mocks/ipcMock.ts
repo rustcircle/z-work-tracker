@@ -1,5 +1,5 @@
 // Test-only stand-in for the Rust backend, installed in the `e2e` build mode and in component tests.
-// It mirrors labor-core's command behaviour. Real-backend behaviour is covered by the Rust tests and
+// It mirrors z-work-core's command behaviour. Real-backend behaviour is covered by the Rust tests and
 // by scripts/native-smoke.mjs; anything verified only against this mock is reported as such.
 import { mockIPC } from '@tauri-apps/api/mocks';
 
@@ -410,7 +410,7 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       s.targets.push({
         provider: a.provider as Snapshot['sync']['targets'][number]['provider'],
         root: a.root as string,
-        folder: `${a.root as string}/LaborTracker`,
+        folder: `${a.root as string}/zWorkTracker`,
         status: { lastWrittenAt: toIso(s.now), lastReadAt: toIso(s.now), lastError: null, lastErrorAt: null, warnings: [], ignoredFiles: 0, devicesSeen: 0 },
       });
       return snapshot(s);

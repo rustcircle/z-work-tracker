@@ -10,7 +10,7 @@ export function HideNoticeDialog() {
     api.ackHideNotice().catch((e: unknown) => showError(e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : String(e)));
   };
   return (
-    <Modal open={hideNotice !== null} title="Labor Tracker is still running" onClose={done} footer={<Button variant="primary" onClick={done}>OK</Button>}>
+    <Modal open={hideNotice !== null} title="zWorkTracker is still running" onClose={done} footer={<Button variant="primary" onClick={done}>OK</Button>}>
       <p>
         Closing the window hides it. The app stays in the system tray, and your time keeps being saved.{' '}
         {hideNotice?.running ? (

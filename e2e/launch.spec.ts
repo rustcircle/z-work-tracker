@@ -79,7 +79,7 @@ test.describe('warm start copies the last task', () => {
   test('hiding to the tray and showing the window again stays warm', async ({ page }) => {
     const found = await open(page, 'seed=demo');
     await page.evaluate(() => window.__mockEmit('first-hide-notice', { running: true, taskName: 'Logo concepts' }));
-    const dialog = page.getByRole('dialog', { name: 'Labor Tracker is still running' });
+    const dialog = page.getByRole('dialog', { name: 'zWorkTracker is still running' });
     await expect(dialog.getByTestId('hide-running')).toContainText('“Logo concepts” is still being timed');
     await dialog.getByRole('button', { name: 'OK' }).click();
     await page.evaluate(() => window.__mockEmit('flush-edits'));

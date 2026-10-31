@@ -200,9 +200,9 @@ mod tests {
     #[test]
     fn mac_cloud_storage() {
         let mut f = Fake::default();
-        f.vars.insert("HOME".into(), "/Users/p".into());
+        f.vars.insert("HOME".into(), "/Users/someone".into());
         f.lists.insert(
-            "/Users/p/Library/CloudStorage".into(),
+            "/Users/someone/Library/CloudStorage".into(),
             vec![
                 "OneDrive-Personal".into(),
                 "GoogleDrive-x@y.z".into(),
@@ -210,14 +210,14 @@ mod tests {
             ],
         );
         f.dirs
-            .insert("/Users/p/Library/CloudStorage/OneDrive-Personal".into());
+            .insert("/Users/someone/Library/CloudStorage/OneDrive-Personal".into());
         f.dirs
-            .insert("/Users/p/Library/CloudStorage/GoogleDrive-x@y.z/My Drive".into());
+            .insert("/Users/someone/Library/CloudStorage/GoogleDrive-x@y.z/My Drive".into());
         let d = detect(&f, HostOs::Mac);
         assert_eq!(d.len(), 2);
         assert_eq!(
             d[1].root,
-            "/Users/p/Library/CloudStorage/GoogleDrive-x@y.z/My Drive"
+            "/Users/someone/Library/CloudStorage/GoogleDrive-x@y.z/My Drive"
         );
     }
 }

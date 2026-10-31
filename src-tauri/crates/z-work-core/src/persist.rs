@@ -13,7 +13,7 @@ use crate::model::{LocalFile, SCHEMA_VERSION, Shared};
 use crate::time::Ts;
 use crate::validate::check_core;
 
-pub const MAIN_FILE: &str = "labor-data.json";
+pub const MAIN_FILE: &str = "z-work-data.json";
 
 #[derive(Clone, Debug)]
 pub struct Paths {
@@ -133,9 +133,9 @@ fn quarantine(paths: &Paths, from: &Path, now: Ts) -> io::Result<PathBuf> {
     let stamp = now.datetime().format("%Y%m%dT%H%M%SZ");
     for n in 0..1000 {
         let name = if n == 0 {
-            format!("labor-data.corrupt-{stamp}.json")
+            format!("z-work-data.corrupt-{stamp}.json")
         } else {
-            format!("labor-data.corrupt-{stamp}-{n}.json")
+            format!("z-work-data.corrupt-{stamp}-{n}.json")
         };
         let target = paths.dir.join(name);
         if !target.exists() {

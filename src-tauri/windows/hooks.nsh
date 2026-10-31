@@ -26,7 +26,7 @@
   StrCmp $0 "" 0 lt_webview_ok
   ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
   StrCmp $0 "" 0 lt_webview_ok
-  MessageBox MB_OK|MB_ICONEXCLAMATION "Microsoft Edge WebView2 Runtime was not found. It normally comes with Windows 11.$\r$\n$\r$\nLabor Tracker needs it and will show this message again when opened. Run Windows Update or reinstall the WebView2 Runtime from Microsoft."
+  MessageBox MB_OK|MB_ICONEXCLAMATION "Microsoft Edge WebView2 Runtime was not found. It normally comes with Windows 11.$\r$\n$\r$\nzWorkTracker needs it and will show this message again when opened. Run Windows Update or reinstall the WebView2 Runtime from Microsoft."
   lt_webview_ok:
   !insertmacro LT_QUIT_RUNNING_APP
 !macroend

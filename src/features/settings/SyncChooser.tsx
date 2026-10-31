@@ -26,11 +26,11 @@ function PreviewText({ p }: { p: Preview }) {
     <div className="sync-preview" data-testid="sync-preview">
       {v.hasData ? (
         <p>
-          This folder already holds Labor Tracker data from {plural(v.devices.length, 'device')}
+          This folder already holds zWorkTracker data from {plural(v.devices.length, 'device')}
           {v.devices.length > 0 && ` (${v.devices.join(', ')})`}: {plural(v.projects, 'project')}, {plural(v.tasks, 'task')}, {plural(v.segments, 'time segment')}. Connecting merges it with this computer's data. Nothing is deleted on either side.
         </p>
       ) : (
-        <p className="muted">No Labor Tracker data in this folder yet. A LaborTracker folder will be created inside it.</p>
+        <p className="muted">No zWorkTracker data in this folder yet. A zWorkTracker folder will be created inside it.</p>
       )}
       {v.warnings.map((w) => (
         <p key={w} className="field-warning">

@@ -61,10 +61,10 @@ desktop.ini
 $RECYCLE.BIN/
 
 # Local user data, if ever copied next to the project (the app stores it in the OS app data dir)
-labor-data.json
-labor-data.json.bak
-labor-data.json.tmp
-labor-data.corrupt-*.json
+z-work-data.json
+z-work-data.json.bak
+z-work-data.json.tmp
+z-work-data.corrupt-*.json
 /local-data/
 
 # Exports

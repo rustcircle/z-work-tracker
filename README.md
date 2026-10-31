@@ -1,4 +1,4 @@
-# Labor Tracker
+# zWorkTracker
 
 A desktop app for Windows 11 that accounts for labor hours by project and task. It logs start and end times automatically in UTC, shows them on a timeline in any time zone, works out billable time and earnings, analyses how the time was spent, and exports to Excel and CSV.
 
@@ -23,7 +23,7 @@ Status: first build. It has been run and tested on macOS, and the Windows instal
 
 ## Install and uninstall
 
-**Install.** Run `Labor Tracker_0.1.0_x64-setup.exe`. It installs for the current user and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
+**Install.** Run `zWorkTracker_0.1.0_x64-setup.exe`. It installs for the current user and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
 
 The installer is **not signed yet**, so Windows SmartScreen may say "Windows protected your PC". To continue, choose **More info**, then **Run anyway**. Signing removes that warning over time; see [signing](#windows-code-signing).
 
@@ -183,11 +183,11 @@ CSV has `record_type` rows: `segment` rows carry raw UTC, zone times and exact d
 The app stores everything locally first, and works offline. To sync, it uses the folders of the OneDrive or Google Drive desktop clients, which do the upload. The app itself makes no network calls.
 
 - **Setup.** On first launch, and in Settings, detected folders are listed with checkboxes, plus **Choose another folder**. You can enable either or both. Nothing turns on silently. If nothing is detected, the screen explains that a desktop client is needed and offers the picker.
-- **Second PC.** If a folder already holds `LaborTracker/devices/`, the app previews the counts and offers to connect and merge.
+- **Second PC.** If a folder already holds `zWorkTracker/devices/`, the app previews the counts and offers to connect and merge.
 - **When.** After each saved change (debounced), at launch, on window focus, on quit and every 3 minutes, including while hidden in the tray.
 - **Status.** Each folder shows its own status, such as "Written to OneDrive folder, 2 min ago". The app can't confirm the upload finished, so it only claims the write. A failing folder never affects another one, and never blocks time logging.
 
-Each PC writes only its own file, `<folder>/LaborTracker/devices/<device-uuid>.json`, and reads the others, so cloud clients have no shared file to fork into conflict copies.
+Each PC writes only its own file, `<folder>/zWorkTracker/devices/<device-uuid>.json`, and reads the others, so cloud clients have no shared file to fork into conflict copies.
 
 **Merge rules, in plain language.**
 
@@ -227,11 +227,11 @@ Definitions worth knowing:
 
 | | |
 |---|---|
-| **Windows** | `%APPDATA%\com.labortracker.desktop\` |
-| **macOS** | `~/Library/Application Support/com.labortracker.desktop/` |
-| **Main file** | `labor-data.json`: versioned JSON with timestamps in UTC (`2026-03-08T07:00:00Z`) |
-| **Backup** | `labor-data.json.bak`: the previous good version |
-| **Damaged files** | Kept as `labor-data.corrupt-<time>.json` |
+| **Windows** | `%APPDATA%\com.rustcircle.zworktracker\` |
+| **macOS** | `~/Library/Application Support/com.rustcircle.zworktracker/` |
+| **Main file** | `z-work-data.json`: versioned JSON with timestamps in UTC (`2026-03-08T07:00:00Z`) |
+| **Backup** | `z-work-data.json.bak`: the previous good version |
+| **Damaged files** | Kept as `z-work-data.corrupt-<time>.json` |
 
 Saves are atomic: a temporary file, then a rename. If the main file is damaged the app restores from the backup and tells you. If both are damaged it keeps both copies, starts empty and says so. A file from a newer app version is refused and left untouched. Data is never silently wiped.
 
@@ -269,7 +269,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
 # Read a sample Excel file back with an independent reader
-LABOR_SAMPLE_XLSX=/tmp/sample.xlsx cargo test -p labor-core builds_with_earnings
+ZWT_SAMPLE_XLSX=/tmp/sample.xlsx cargo test -p z-work-core builds_with_earnings
 cd .. && uv run --no-project --with openpyxl scripts/verify_xlsx.py /tmp/sample.xlsx
 ```
 
@@ -281,7 +281,7 @@ The state machine, persistence, recovery, merge, rounding, earnings and exports 
 
 ```
 src-tauri/
-  crates/labor-core/src/   Pure core
+  crates/z-work-core/src/   Pure core
     machine.rs             Task state machine, projects, shifts, rates
     model.rs               Persisted and synced data model
     persist.rs             Atomic save, backup, recovery, migrations
@@ -335,7 +335,7 @@ The synced state is a set of records with stable ids, merged by taking the maxim
 pnpm package:windows
 ```
 
-This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/Labor Tracker_0.1.0_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the files are signed. `WebView2Loader.dll` ships inside the installer next to the exe.
+This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_0.1.0_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the files are signed. `WebView2Loader.dll` ships inside the installer next to the exe.
 
 ### Windows installer from GitHub
 

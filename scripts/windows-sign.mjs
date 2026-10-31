@@ -42,7 +42,7 @@ export function buildCommand(route, env, file) {
     case 'azure':
       return {
         program: 'trusted-signing-cli',
-        args: ['-e', env.AZURE_SIGNING_ENDPOINT, '-a', env.AZURE_SIGNING_ACCOUNT, '-c', env.AZURE_SIGNING_PROFILE, '-d', 'Labor Tracker', file],
+        args: ['-e', env.AZURE_SIGNING_ENDPOINT, '-a', env.AZURE_SIGNING_ACCOUNT, '-c', env.AZURE_SIGNING_PROFILE, '-d', 'zWorkTracker', file],
         shown: `trusted-signing-cli (account ${env.AZURE_SIGNING_ACCOUNT}) ${file}`,
       };
     case 'thumbprint':

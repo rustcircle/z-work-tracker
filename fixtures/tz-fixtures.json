@@ -1,5 +1,5 @@
 {
-  "comment": "Checked by both Rust (labor-core tests) and Vitest. Instants are UTC; offsets are minutes east.",
+  "comment": "Checked by both Rust (z-work-core tests) and Vitest. Instants are UTC; offsets are minutes east.",
   "conversions": [
     { "zone": "America/New_York", "at": "2026-03-08T06:59:59Z", "day": "2026-03-08", "clock": "01:59", "offsetMin": -300 },
     { "zone": "America/New_York", "at": "2026-03-08T07:00:00Z", "day": "2026-03-08", "clock": "03:00", "offsetMin": -240 },

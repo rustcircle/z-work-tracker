@@ -30,7 +30,7 @@ if (!installer) {
   process.exit(1);
 }
 const installerPath = join(nsisDir, installer);
-const exe = join(release, 'labor-tracker.exe');
+const exe = join(release, 'zWorkTracker.exe');
 
 function imports(file) {
   const r = spawnSync(OBJDUMP, ['-p', file], { encoding: 'utf8', maxBuffer: 1 << 28 });

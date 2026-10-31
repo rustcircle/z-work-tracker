@@ -1,4 +1,4 @@
-//! Tauri shell around `labor-core`: commands, tray, heartbeat, sync thread and the real-exit path.
+//! Tauri shell around `z-work-core`: commands, tray, heartbeat, sync thread and the real-exit path.
 //! Timers live in Rust threads, so they keep going while the window is hidden.
 
 use std::path::{Path, PathBuf};
@@ -7,20 +7,6 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use labor_core::detect::{RealEnv, detect, host_os};
-use labor_core::machine::{
-    ProjectInput, RateInput, RoundingInput, ShiftInput, TaskInput, TaskPatch,
-};
-use labor_core::model::{SyncProvider, SyncTarget, Theme};
-use labor_core::report::ExportRequest;
-use labor_core::service::Service;
-use labor_core::sync::{FolderPreview, RealIo, TARGET_TIMEOUT, bounded, preview_folder, run_cycle};
-use labor_core::tray::{
-    CloseDecision, ToggleRoute, TrayAction, close_decision, toggle_route, tray_state,
-};
-use labor_core::validate::parse_zone;
-use labor_core::view::Snapshot;
-use labor_core::{CoreError, SystemClock, csv, xlsx};
 use serde::Serialize;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -28,6 +14,22 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
+use z_work_core::detect::{RealEnv, detect, host_os};
+use z_work_core::machine::{
+    ProjectInput, RateInput, RoundingInput, ShiftInput, TaskInput, TaskPatch,
+};
+use z_work_core::model::{SyncProvider, SyncTarget, Theme};
+use z_work_core::report::ExportRequest;
+use z_work_core::service::Service;
+use z_work_core::sync::{
+    FolderPreview, RealIo, TARGET_TIMEOUT, bounded, preview_folder, run_cycle,
+};
+use z_work_core::tray::{
+    CloseDecision, ToggleRoute, TrayAction, close_decision, toggle_route, tray_state,
+};
+use z_work_core::validate::parse_zone;
+use z_work_core::view::Snapshot;
+use z_work_core::{CoreError, SystemClock, csv, xlsx};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const TRAY_TICK: Duration = Duration::from_secs(5);
@@ -556,7 +558,7 @@ fn save_via_dialog(
     bytes: &[u8],
 ) -> CmdResult<Option<String>> {
     #[cfg(feature = "smoke")]
-    let chosen = std::env::var("LABOR_SMOKE_EXPORT_DIR")
+    let chosen = std::env::var("ZWT_SMOKE_EXPORT_DIR")
         .ok()
         .map(|d| PathBuf::from(d).join(name));
     #[cfg(not(feature = "smoke"))]
@@ -571,7 +573,7 @@ fn save_via_dialog(
     });
     let Some(path) = chosen else { return Ok(None) };
     let tmp = path.with_extension("tmp-export");
-    labor_core::persist::write_atomic(&path, &tmp, bytes).map_err(CoreError::from)?;
+    z_work_core::persist::write_atomic(&path, &tmp, bytes).map_err(CoreError::from)?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
@@ -584,7 +586,7 @@ fn export_xlsx(
     let source = guard(&*core.svc()?).export_source();
     let bytes = xlsx::build(&source, &request)?;
     let name = format!(
-        "labor-tracker-{}.xlsx",
+        "zWorkTracker-{}.xlsx",
         source.now.datetime().format("%Y-%m-%d")
     );
     save_via_dialog(&app, &name, "Excel workbook", "xlsx", &bytes)
@@ -599,7 +601,7 @@ fn export_csv(
     let source = guard(&*core.svc()?).export_source();
     let text = csv::build(&source, &request)?;
     let name = format!(
-        "labor-tracker-{}.csv",
+        "zWorkTracker-{}.csv",
         source.now.datetime().format("%Y-%m-%d")
     );
     save_via_dialog(&app, &name, "CSV file", "csv", text.as_bytes())
@@ -646,7 +648,7 @@ mod smoke {
 
     #[tauri::command(async)]
     pub fn smoke_report(text: String) -> Result<(), String> {
-        let path = std::env::var("LABOR_SMOKE_OUT").map_err(|e| e.to_string())?;
+        let path = std::env::var("ZWT_SMOKE_OUT").map_err(|e| e.to_string())?;
         std::fs::write(path, text).map_err(|e| e.to_string())
     }
 
@@ -819,7 +821,7 @@ fn spawn_sync(app: AppHandle, core: Arc<Core>, svc: Arc<Mutex<Service>>) {
 
 fn data_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
     #[cfg(feature = "smoke")]
-    if let Ok(dir) = std::env::var("LABOR_SMOKE_DATA_DIR") {
+    if let Ok(dir) = std::env::var("ZWT_SMOKE_DATA_DIR") {
         return Ok(PathBuf::from(dir));
     }
     app.path().app_data_dir()
@@ -840,11 +842,11 @@ fn webview_available() -> bool {
         return true;
     }
     rfd::MessageDialog::new()
-        .set_title("Labor Tracker")
+        .set_title("zWorkTracker")
         .set_level(rfd::MessageLevel::Error)
         .set_description(
             "Microsoft Edge WebView2 Runtime was not found or is disabled. It normally comes with Windows 11.\n\n\
-             Run Windows Update or reinstall the WebView2 Runtime from Microsoft, then open Labor Tracker again. Your data is safe.",
+             Run Windows Update or reinstall the WebView2 Runtime from Microsoft, then open zWorkTracker again. Your data is safe.",
         )
         .show();
     false
@@ -912,7 +914,7 @@ pub fn run() {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
                 #[cfg(feature = "smoke")]
-                if let Ok(path) = std::env::var("LABOR_SMOKE_SCRIPT")
+                if let Ok(path) = std::env::var("ZWT_SMOKE_SCRIPT")
                     && let Ok(js) = std::fs::read_to_string(path)
                 {
                     let target = w.clone();
@@ -1025,7 +1027,7 @@ pub fn run() {
     let app = match builder.build(tauri::generate_context!()) {
         Ok(app) => app,
         Err(e) => {
-            eprintln!("could not start Labor Tracker: {e}");
+            eprintln!("could not start zWorkTracker: {e}");
             std::process::exit(1);
         }
     };

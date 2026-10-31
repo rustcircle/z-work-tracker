@@ -15,7 +15,7 @@ const check = (name, ok, detail = '') => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const work = mkdtempSync(join(tmpdir(), 'labor-smoke-'));
+const work = mkdtempSync(join(tmpdir(), 'z-work-smoke-'));
 const dataDir = join(work, 'data');
 const syncRoot = join(work, 'sync');
 const exportDir = join(work, 'exports');
@@ -41,7 +41,7 @@ function launch(exe, script, out, env = {}) {
   writeFileSync(scriptPath, HELPERS + script);
   const child = spawn(exe, [], {
     stdio: 'ignore',
-    env: { ...process.env, LABOR_SMOKE_DATA_DIR: dataDir, LABOR_SMOKE_SCRIPT: scriptPath, LABOR_SMOKE_OUT: out, LABOR_SMOKE_EXPORT_DIR: exportDir, ...env },
+    env: { ...process.env, ZWT_SMOKE_DATA_DIR: dataDir, ZWT_SMOKE_SCRIPT: scriptPath, ZWT_SMOKE_OUT: out, ZWT_SMOKE_EXPORT_DIR: exportDir, ...env },
   });
   const exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })));
   return { child, exited };
@@ -63,13 +63,13 @@ async function waitFile(path, ms = 40000) {
 }
 
 const withTimeout = (p, ms) => Promise.race([p, sleep(ms).then(() => 'timeout')]);
-const readStore = () => JSON.parse(readFileSync(join(dataDir, 'labor-data.json'), 'utf8'));
+const readStore = () => JSON.parse(readFileSync(join(dataDir, 'z-work-data.json'), 'utf8'));
 
 const LIST = { type: 'doc', content: [{ type: 'orderedList', attrs: { start: 1 }, content: ['First step', 'Second step'].map((text) => ({ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] })) }] };
 
 async function part1() {
   build(['--debug', '--no-bundle', '--features', 'smoke']);
-  const exe = resolve('src-tauri/target/debug/labor-tracker');
+  const exe = resolve('src-tauri/target/debug/z-work-tracker');
 
   // Run 1: first launch, real prompts, real commands, real DOM buttons, hide on close, tray toggle, quit.
   let out = join(work, 'r1.json');
@@ -160,7 +160,7 @@ run(async () => {
   check('theme change applies', r1.themeBg === 'rgb(0, 43, 54)', r1.themeBg);
   check('real DOM Start, Pause, Resume drive the real backend', r1.afterStart === 'running' && r1.afterPause === 'paused' && r1.afterResume === 'running');
   check('Excel and CSV exports written', existsSync(r1.xlsx ?? '') && existsSync(r1.csv ?? ''));
-  const deviceFiles = readdirSync(join(syncRoot, 'LaborTracker', 'devices'));
+  const deviceFiles = readdirSync(join(syncRoot, 'zWorkTracker', 'devices'));
   check('sync wrote this device file', Boolean(r1.syncStatus?.lastWrittenAt) && !r1.syncStatus?.lastError && deviceFiles.length === 1, JSON.stringify({ status: r1.syncStatus, deviceFiles }));
   check('closing the window hides it after the one-time notice', r1.visibleBefore === true && r1.visibleAfterClose === false, r1.noticeText);
   check('a running task keeps running while hidden', r1.runningWhileHidden === 'running' && r1.openWhileHidden === 1);
@@ -206,7 +206,7 @@ run(async () => {
   await sleep(1500);
 
   // A second launch must not start a second app.
-  const second = spawn(exe, [], { stdio: 'ignore', env: { ...process.env, LABOR_SMOKE_DATA_DIR: dataDir } });
+  const second = spawn(exe, [], { stdio: 'ignore', env: { ...process.env, ZWT_SMOKE_DATA_DIR: dataDir } });
   const secondExit = await withTimeout(new Promise((r) => second.on('exit', (code) => r({ code }))), 10000);
   check('single instance: a second launch exits and the first stays', secondExit !== 'timeout' && app.child.exitCode === null, JSON.stringify(secondExit));
 
@@ -235,43 +235,43 @@ run(async () => {
   check('crash recovery closes at the heartbeat, pauses and shows a notice', r3?.state === 'paused' && r3?.reason?.kind === 'crashRecovery' && r3?.open === 0 && /did not shut down/.test(r3?.notice ?? '') && /next start asks for every field/.test(r3?.notice ?? ''), JSON.stringify(r3));
   check('after a crash the launch is cold too', r3?.coldResume === 'cold_start_required', r3?.coldResume);
   await sleep(1000);
-  const quitter = spawnSync(exe, ['--quit'], { env: { ...process.env, LABOR_SMOKE_DATA_DIR: dataDir }, timeout: 15000 });
+  const quitter = spawnSync(exe, ['--quit'], { env: { ...process.env, ZWT_SMOKE_DATA_DIR: dataDir }, timeout: 15000 });
   const exit3 = await withTimeout(app.exited, 15000);
   check('--quit (the installer path) exits the running app cleanly', quitter.status === 0 && exit3 !== 'timeout' && exit3.code === 0, JSON.stringify(exit3));
   store = readStore();
   check('--quit closed the running segment', Object.values(store.data.segments).every((s) => s.end) && Object.values(store.data.tasks).find((t) => t.name === 'Smoke after crash')?.pauseReason?.kind === 'appQuit');
-  check('one backup file exists', existsSync(join(dataDir, 'labor-data.json.bak')));
+  check('one backup file exists', existsSync(join(dataDir, 'z-work-data.json.bak')));
   return true;
 }
 
 async function part2() {
   build(['--bundles', 'app']);
-  const exe = resolve('src-tauri/target/release/bundle/macos/Labor Tracker.app/Contents/MacOS/labor-tracker');
+  const exe = resolve('src-tauri/target/release/bundle/macos/zWorkTracker.app/Contents/MacOS/zWorkTracker');
   const home = join(work, 'home');
-  const dir = join(home, 'Library', 'Application Support', 'com.labortracker.desktop');
+  const dir = join(home, 'Library', 'Application Support', 'com.rustcircle.zworktracker');
 
   // Fresh start of the unmodified build: the store appears in the OS app data folder.
   let child = spawn(exe, [], { stdio: 'ignore', env: { ...process.env, HOME: home } });
   let exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })));
   await sleep(5000);
   check('release build starts and stays up', child.exitCode === null);
-  check('release build creates its store in the app data folder', existsSync(join(dir, 'labor-data.json')));
-  const device = JSON.parse(readFileSync(join(dir, 'labor-data.json'), 'utf8')).deviceId;
+  check('release build creates its store in the app data folder', existsSync(join(dir, 'z-work-data.json')));
+  const device = JSON.parse(readFileSync(join(dir, 'z-work-data.json'), 'utf8')).deviceId;
   child.kill('SIGTERM');
   await withTimeout(exited, 8000);
 
   // Seed an open segment and a heartbeat: the release build must recover them on its own.
-  const seeded = JSON.parse(readFileSync(join(dir, 'labor-data.json'), 'utf8'));
+  const seeded = JSON.parse(readFileSync(join(dir, 'z-work-data.json'), 'utf8'));
   const stamp = { at: '2026-01-01T00:00:00Z', by: device };
   seeded.data.projects.p = { id: 'p', name: 'Seed', color: '#2563eb', createdAt: '2026-01-01T00:00:00Z', stamp };
   seeded.data.tasks.t = { id: 't', name: 'Seeded', projectId: 'p', description: null, createdAt: '2026-01-01T00:00:00Z', nameStamp: stamp, projectStamp: stamp, descriptionStamp: stamp, deletedStamp: stamp, state: 'running', stateStamp: stamp };
   seeded.data.segments.s = { id: 's', taskId: 't', deviceId: device, start: '2026-01-01T09:00:00Z', end: null };
   seeded.lastHeartbeat = '2026-01-01T09:30:00Z';
-  writeFileSync(join(dir, 'labor-data.json'), JSON.stringify(seeded));
+  writeFileSync(join(dir, 'z-work-data.json'), JSON.stringify(seeded));
   child = spawn(exe, [], { stdio: 'ignore', env: { ...process.env, HOME: home } });
   exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })));
   await sleep(5000);
-  const after = JSON.parse(readFileSync(join(dir, 'labor-data.json'), 'utf8'));
+  const after = JSON.parse(readFileSync(join(dir, 'z-work-data.json'), 'utf8'));
   check('release build recovers a crash at launch', after.data.segments.s.end === '2026-01-01T09:30:00Z' && after.data.tasks.t.state === 'paused');
   check('release build kept the seeded data across relaunch', after.data.projects.p?.name === 'Seed');
   const q = spawnSync(exe, ['--quit'], { env: { ...process.env, HOME: home }, timeout: 15000 });

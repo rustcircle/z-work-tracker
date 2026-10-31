@@ -1,7 +1,7 @@
 //! Generates `src/generated/tzdata.json` for the frontend from the same tz database Rust links,
 //! so both sides use identical rules. Every transition from 2000 to 2045 is listed.
 //!
-//! Run: cargo run -p labor-core --example gen_tzdata -- ../src/generated/tzdata.json
+//! Run: cargo run -p z-work-core --example gen_tzdata -- ../src/generated/tzdata.json
 
 use std::collections::BTreeMap;
 

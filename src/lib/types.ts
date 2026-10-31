@@ -1,4 +1,4 @@
-// The backend's read model. Field names match `labor-core`'s `view.rs` exactly.
+// The backend's read model. Field names match `z-work-core`'s `view.rs` exactly.
 export type TaskState = 'draft' | 'running' | 'paused' | 'stopped';
 export type RoundMethod = 'nearest' | 'up' | 'down';
 export type Currency = 'EUR' | 'USD';

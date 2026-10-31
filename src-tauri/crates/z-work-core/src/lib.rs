@@ -1,4 +1,4 @@
-//! Pure core of Labor Tracker. Nothing here depends on Tauri, and time only comes from a [`Clock`].
+//! Pure core of zWorkTracker. Nothing here depends on Tauri, and time only comes from a [`Clock`].
 #![cfg_attr(
     test,
     allow(

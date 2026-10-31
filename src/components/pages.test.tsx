@@ -236,7 +236,7 @@ describe('settings', () => {
     expect(document.documentElement.dataset.theme).toBe('solarizedLight');
     fireEvent.change(screen.getByLabelText('Client working hours start'), { target: { value: '08:30' } });
     await waitFor(() => expect(state.settings.clientWorkStart).toBe('08:30'));
-    const autostart = await screen.findByRole('switch', { name: /Start Labor Tracker/ });
+    const autostart = await screen.findByRole('switch', { name: /Start zWorkTracker/ });
     await waitFor(() => expect(autostart).toBeEnabled());
     expect(autostart).not.toBeChecked();
     await user.click(autostart);
@@ -289,7 +289,7 @@ describe('sync', () => {
   const target = (written: string | null) => ({
     provider: 'oneDrive' as const,
     root: 'C:\\Users\\me\\OneDrive',
-    folder: 'C:\\Users\\me\\OneDrive\\LaborTracker',
+    folder: 'C:\\Users\\me\\OneDrive\\zWorkTracker',
     status: { lastWrittenAt: written, lastReadAt: toIso(parseIso(DEMO_NOW) - 600), lastError: 'Access denied', lastErrorAt: toIso(parseIso(DEMO_NOW) - 3600), warnings: ['Another device has a newer app version.'], ignoredFiles: 2, devicesSeen: 1 },
   });
 
@@ -331,7 +331,7 @@ describe('sync', () => {
     expect(screen.getByRole('button', { name: 'Connect folder' })).toBeDisabled();
     await user.click(one);
     const preview = await screen.findByTestId('sync-preview');
-    expect(preview).toHaveTextContent('already holds Labor Tracker data from 1 device (Office PC): 4 projects, 12 tasks, 300 time segments');
+    expect(preview).toHaveTextContent('already holds zWorkTracker data from 1 device (Office PC): 4 projects, 12 tasks, 300 time segments');
     expect(preview).toHaveTextContent('merges it');
     await user.click(google);
     await user.click(screen.getByRole('button', { name: 'Connect 2 folders' }));

@@ -12,7 +12,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: 
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
     // Only the console: nothing leaves the machine.
-    console.error('Labor Tracker could not draw the window', error, info.componentStack);
+    console.error('zWorkTracker could not draw the window', error, info.componentStack);
   }
 
   override render(): ReactNode {

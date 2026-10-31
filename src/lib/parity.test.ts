@@ -1,4 +1,4 @@
-// The same fixtures run in Rust (labor-core billing tests), so both sides stay in agreement.
+// The same fixtures run in Rust (z-work-core billing tests), so both sides stay in agreement.
 import { describe, expect, it } from 'vitest';
 
 import billing from '../../fixtures/billing-fixtures.json';

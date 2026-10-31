@@ -1,8 +1,9 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Labor Tracker",
+  "productName": "zWorkTracker",
+  "mainBinaryName": "zWorkTracker",
   "version": "0.1.0",
-  "identifier": "com.labortracker.desktop",
+  "identifier": "com.rustcircle.zworktracker",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +15,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Labor Tracker",
+        "title": "zWorkTracker",
         "width": 1320,
         "height": 860,
         "minWidth": 980,

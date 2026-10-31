@@ -38,7 +38,7 @@ jobs:
         run: |
           pnpm exec tsc --noEmit
           pnpm exec vitest run
-          cargo test --manifest-path src-tauri/Cargo.toml -p labor-core
+          cargo test --manifest-path src-tauri/Cargo.toml -p z-work-core
       - name: Prepare signing
         shell: pwsh
         env:
@@ -72,7 +72,7 @@ jobs:
           WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
         run: |
-          $files = @('src-tauri\target\release\labor-tracker.exe') + (Get-ChildItem 'src-tauri\target\release\bundle\nsis\*-setup.exe').FullName
+          $files = @('src-tauri\target\release\zWorkTracker.exe') + (Get-ChildItem 'src-tauri\target\release\bundle\nsis\*-setup.exe').FullName
           $wanted = $env:AZURE_SIGNING_ACCOUNT -or $env:WINDOWS_CERT_THUMBPRINT -or $env:WINDOWS_CERT_PFX_BASE64
           foreach ($file in $files) {
             if ($wanted) {
@@ -88,6 +88,6 @@ jobs:
         run: if ($env:WINDOWS_CERT_PFX_PATH) { Remove-Item $env:WINDOWS_CERT_PFX_PATH -Force -ErrorAction SilentlyContinue }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: labor-tracker-windows
+          name: z-work-tracker-windows
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
           retention-days: 14

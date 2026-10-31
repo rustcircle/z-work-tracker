@@ -231,7 +231,7 @@ pub enum SyncProvider {
     Custom,
 }
 
-/// A local folder kept in the cloud by a desktop client. Data lives in `<root>/LaborTracker/`.
+/// A local folder kept in the cloud by a desktop client. Data lives in `<root>/zWorkTracker/`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncTarget {
@@ -278,7 +278,7 @@ pub struct RemoteDevice {
     pub written_at: Ts,
 }
 
-/// The local store: `labor-data.json`.
+/// The local store: `z-work-data.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalFile {
@@ -295,7 +295,7 @@ pub struct LocalFile {
     pub data: Shared,
 }
 
-/// What each device writes to `<root>/LaborTracker/devices/<device-uuid>.json`.
+/// What each device writes to `<root>/zWorkTracker/devices/<device-uuid>.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceFile {

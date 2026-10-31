@@ -1,4 +1,4 @@
-//! Folder sync. Each device writes only `<root>/LaborTracker/devices/<device-uuid>.json` to every
+//! Folder sync. Each device writes only `<root>/zWorkTracker/devices/<device-uuid>.json` to every
 //! enabled folder and reads the other devices' files from all of them. A desktop client (OneDrive,
 //! Google Drive) does the upload; this code never touches the network. Nothing here can block time
 //! logging or damage the local store: every failure only ends up in the status.
@@ -18,7 +18,7 @@ use crate::service::Service;
 use crate::time::Ts;
 use crate::validate::check_device_file;
 
-pub const APP_FOLDER: &str = "LaborTracker";
+pub const APP_FOLDER: &str = "zWorkTracker";
 pub const DEVICES_FOLDER: &str = "devices";
 pub const MAX_REMOTE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;

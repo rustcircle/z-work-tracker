@@ -781,7 +781,7 @@ pub(crate) mod tests {
         let (src, req) = sample();
         let bytes = build(&src, &req).unwrap();
         assert!(bytes.starts_with(b"PK"));
-        if let Ok(path) = std::env::var("LABOR_SAMPLE_XLSX") {
+        if let Ok(path) = std::env::var("ZWT_SAMPLE_XLSX") {
             std::fs::write(path, &bytes).unwrap();
         }
     }
