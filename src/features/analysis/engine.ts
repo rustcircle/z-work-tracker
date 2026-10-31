@@ -873,3 +873,12 @@ export function liveDaily(snapshot: Snapshot, zone: string, nowSec: number): Map
   }
   return out;
 }
+
+/** Every span of the period, closed and running, after the filters: what drill-down looks into. */
+export function drillSpans(prep: Prepared, nowSec: number): SpanRec[] {
+  const base = prep.cur;
+  const liveAll = liveSegs(prep.snapshot, nowSec);
+  if (liveAll.length === 0) return base.spans;
+  const live = clipSpans(buildSpans(liveAll, base.env.period.from, base.env.period.to, base.env), base.env.period.from, base.env.period.to, prep.params.zone);
+  return sortSpans([...base.spans, ...live]);
+}

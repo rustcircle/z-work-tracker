@@ -5,7 +5,7 @@ import { consistencyOf, focusOf, type Consistency, type Focus } from './fam-focu
 import { budgetsOf, forecastOf, goalsOf, moneyOf, type BudgetBurn, type Forecast, type Goals, type Money } from './fam-goals';
 import { projectsOf, tasksOf, type ProjectStat, type Tasks } from './fam-projects';
 import { shiftsOf, zonesOf, type Shifts, type ZonesView } from './fam-shifts';
-import { seriesOf, timeOfDayOf, volumeOf, type Series, type TimeOfDay, type Volume } from './fam-volume';
+import { bucketsOf, seriesOf, timeOfDayOf, volumeOf, type Bucket, type Series, type TimeOfDay, type Volume } from './fam-volume';
 import type { Basis, Ctx } from './mctx';
 import { periodOf, previousRange, type Period } from './range';
 import type { Snapshot } from '../../lib/types';
@@ -27,6 +27,8 @@ export interface Metrics {
   hasData: boolean;
   volume: Volume;
   series: Series;
+  /** Day-based buckets: the chart's own, or one per day when the chart is hourly. */
+  dayBuckets: Bucket[];
   time: TimeOfDay;
   projects: ProjectStat[];
   tasks: Tasks;
@@ -80,6 +82,7 @@ export function computeMetrics(snapshot: Snapshot, params: Params, ev: Evaluated
     hasData: ev.cur.agg.total > 0,
     volume,
     series,
+    dayBuckets: series.unit === 'hour' ? bucketsOf(ev.cur.period, 'day') : series.points,
     time,
     projects: projectsOf(ctx),
     tasks: tasksOf(ctx),
