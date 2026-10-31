@@ -21,6 +21,9 @@ const STORE = arg('store', null);
 const OUT = arg('out', null);
 const WINDOW_S = Number(arg('seconds', 150));
 const COLD_RUNS = Number(arg('cold', 7));
+/** How long to wait before measuring. WebKit may suspend a page some minutes after it was hidden. */
+const SETTLE_S = Number(arg('settle', 5));
+const IDLE_CASES = arg('idle', 'hidden,visible').split(',').filter(Boolean);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
@@ -106,7 +109,7 @@ function topSample(procs, seconds) {
   const last = blocks[blocks.length - 1].split('\n').slice(1);
   const out = {};
   for (const line of last) {
-    const m = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)/.exec(line);
+    const m = /^\s*(\d+)\S*\s+([\d.]+)\s+(\d+)\S*\s+(\S+)/.exec(line);
     if (!m) continue;
     const p = procs.find((x) => x.pid === Number(m[1]));
     if (p) out[p.name] = { cpuPct: Number(m[2]), idleWakeups: Number(m[3]), mem: m[4] };
@@ -164,12 +167,13 @@ try {
   console.log('cold', JSON.stringify(results.cold), 'first launch', results.coldFirstLaunchMs);
 
   for (const [label, hide] of [['hidden, task running', true], ['visible, task running', false]]) {
+    if (!IDLE_CASES.includes(hide ? 'hidden' : 'visible')) continue;
     freshStore();
     const app = launch(work, SETUP_SCRIPT(hide));
     current = app;
     const r = await waitJson(app.out);
     if (!r || r.error) throw new Error(`setup failed: ${JSON.stringify(r)}`);
-    await sleep(5000);
+    await sleep(SETTLE_S * 1000);
     const procs = [{ pid: app.child.pid, name: 'main' }, ...helpers(app.t0)];
     const a = sampleProcs(procs);
     const started = Date.now();

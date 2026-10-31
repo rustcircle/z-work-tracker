@@ -154,6 +154,16 @@ enum Parsed {
 }
 
 fn parse_local(bytes: &[u8]) -> Parsed {
+    // A store in the current schema needs no migration, and so no generic JSON tree, whose peak is
+    // many times the size of the file. Anything this doesn't take goes the long way and gets its verdict.
+    if let Ok(file) = serde_json::from_slice::<LocalFile>(bytes)
+        && file.version == SCHEMA_VERSION
+    {
+        return match check_core(&file.data) {
+            Ok(()) => Parsed::Good(Box::new(file), SCHEMA_VERSION),
+            Err(e) => Parsed::Corrupt(e.to_string()),
+        };
+    }
     let value: Value = match serde_json::from_slice(bytes) {
         Ok(v) => v,
         Err(e) => return Parsed::Corrupt(e.to_string()),
@@ -639,6 +649,41 @@ mod tests {
         let (loaded, _) = load(&p, "pc", NOW).unwrap();
         assert_eq!(loaded.device_id, one.device_id);
         assert_eq!(loaded.last_heartbeat, Some(NOW));
+    }
+
+    /// The short way must reach the same verdict as the long way, whatever is in the file.
+    #[test]
+    fn current_schema_files_read_the_same_with_and_without_the_json_tree() {
+        let long_way = |bytes: &[u8]| -> Option<LocalFile> {
+            let value = migrate(serde_json::from_slice(bytes).ok()?);
+            let file: LocalFile = serde_json::from_value(value).ok()?;
+            check_core(&file.data).ok()?;
+            Some(file)
+        };
+        let one = with_project("One");
+        let good = serde_json::to_vec(&one).unwrap();
+        let Parsed::Good(short, 2) = parse_local(&good) else {
+            panic!("a good file must parse");
+        };
+        assert_eq!(*short, long_way(&good).unwrap());
+        // Duplicate keys are refused by the short way, and resolved by the long way as they always were.
+        let text = String::from_utf8(good).unwrap();
+        let dup = text.replacen("\"deviceName\":\"pc\"", "\"deviceName\":\"a\",\"deviceName\":\"pc\"", 1);
+        assert_ne!(dup, text);
+        let Parsed::Good(via_dup, 2) = parse_local(dup.as_bytes()) else {
+            panic!("the long way still takes a duplicate key");
+        };
+        assert_eq!(*via_dup, one);
+        // An id that doesn't match its key is damage on both ways.
+        let wrong = serde_json::to_value(&one).unwrap();
+        let mut wrong = wrong;
+        let projects = wrong["data"]["projects"].as_object_mut().unwrap();
+        let (id, project) = projects.iter().next().map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        projects.remove(&id);
+        projects.insert("other".to_owned(), project);
+        let bytes = serde_json::to_vec(&wrong).unwrap();
+        assert!(matches!(parse_local(&bytes), Parsed::Corrupt(_)));
+        assert!(long_way(&bytes).is_none());
     }
 
     #[test]
