@@ -14,8 +14,8 @@ use crate::machine::{
 };
 use crate::merge::merge;
 use crate::model::{
-    DeviceFile, LocalFile, PauseReason, RemoteDevice, SCHEMA_VERSION, Shared, SyncTarget, Task,
-    TaskState, Theme,
+    DeviceFile, LocalFile, PauseReason, PendingCopy, RemoteDevice, SCHEMA_VERSION, Shared,
+    SyncTarget, Task, TaskState, Theme,
 };
 use crate::persist::{self, Paths};
 use crate::report::ExportSource;
@@ -469,6 +469,49 @@ impl Service {
         }
     }
 
+    /// A save of merged data failed. Folder writes don't clear this.
+    #[must_use]
+    pub fn local_error(&self) -> Option<&str> {
+        self.local_error.as_deref()
+    }
+
+    /// Any enabled folder's last attempt failed, so the schedule should retry.
+    #[must_use]
+    pub fn any_target_failed(&self) -> bool {
+        self.local_error.is_some()
+            || self.file.prefs.sync_targets.iter().any(|t| {
+                self.targets
+                    .get(&t.root)
+                    .is_some_and(|s| s.last_error.is_some())
+            })
+    }
+
+    /// Makes `to` a sync folder, in place of `replacing` when given. One atomic settings change.
+    pub fn switch_targets(
+        &mut self,
+        replacing: Option<&str>,
+        to: SyncTarget,
+        pending: Option<PendingCopy>,
+    ) -> Result<(), CoreError> {
+        let result = self.mutate(|f, _| {
+            f.prefs.sync_prompt_done = true;
+            if let Some(old) = replacing {
+                f.prefs.sync_targets.retain(|t| t.root != old);
+            }
+            if !f.prefs.sync_targets.iter().any(|t| t.root == to.root) {
+                f.prefs.sync_targets.push(to);
+            }
+            f.prefs.pending_copy = pending;
+            Ok(())
+        });
+        if result.is_ok()
+            && let Some(old) = replacing
+        {
+            self.targets.remove(old);
+        }
+        result
+    }
+
     pub fn record_sync_failure(&mut self, message: &str) {
         let now = self.now();
         for status in self.targets.values_mut() {
@@ -686,6 +729,7 @@ impl Service {
                 detected: self.detected.clone(),
                 prompt_pending: !self.file.prefs.sync_prompt_done
                     && self.file.prefs.sync_targets.is_empty(),
+                pending_copy: self.file.prefs.pending_copy.clone(),
             },
             launch: LaunchView {
                 warm: self.warm,

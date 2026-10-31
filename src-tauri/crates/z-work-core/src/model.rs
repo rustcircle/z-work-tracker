@@ -268,6 +268,16 @@ pub struct LocalPrefs {
     pub hide_earnings: bool,
     #[serde(default)]
     pub last_currency: Option<String>,
+    /// A sync folder move whose previous folder couldn't be read, to retry later.
+    #[serde(default)]
+    pub pending_copy: Option<PendingCopy>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingCopy {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

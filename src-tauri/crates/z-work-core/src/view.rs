@@ -8,7 +8,8 @@ use serde_json::Value;
 use crate::detect::Detected;
 use crate::machine::RequiredField;
 use crate::model::{
-    PauseReason, RateVersion, RoundingVersion, ShiftVersion, SyncProvider, TaskState, Theme,
+    PauseReason, PendingCopy, RateVersion, RoundingVersion, ShiftVersion, SyncProvider, TaskState,
+    Theme,
 };
 use crate::sync::TargetStatus;
 use crate::time::Ts;
@@ -98,6 +99,7 @@ pub struct SyncView {
     pub targets: Vec<TargetView>,
     pub detected: Vec<Detected>,
     pub prompt_pending: bool,
+    pub pending_copy: Option<PendingCopy>,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Tauri-independent core: state machine, persistence, sync merge, reports"
 license = "MIT"
-authors = ["zWorkTracker project <p@rustcircle.com>"]
+authors = ["Pedro Jorge <p@rustcircle.com>"]
 repository = "https://github.com/rustcircle/z-work-tracker"
 
 [dependencies]

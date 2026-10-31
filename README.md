@@ -192,7 +192,8 @@ The app stores everything locally first, and works offline. To sync, it uses the
 
 - **Setup.** On first launch, and in Settings, detected folders are listed with checkboxes, plus **Choose another folder**. You can enable either or both. Nothing turns on silently. If nothing is detected, the screen explains that a desktop client is needed and offers the picker.
 - **Second PC.** If a folder already holds `zWorkTracker/devices/`, the app previews the counts and offers to connect and merge.
-- **When.** After each saved change (debounced), at launch, on window focus, on quit and every 3 minutes, including while hidden in the tray.
+- **When.** Once you've turned it on, it's automatic, with no further prompts: at launch, about 2 seconds after each major action (Start, Pause, Resume, Stop, or a change to a project, shift, rate or setting), about 15 seconds after a task's text was edited, every 30 minutes while the app runs, including hidden in the tray and during a running task, and at a real quit. A failed attempt retries after 30 seconds, 1 minute, 2 minutes and so on, up to every 15 minutes.
+- **Changing the folder.** You can switch to another folder or provider at any time in Settings; see below.
 - **Status.** Each folder shows its own status, such as "Written to OneDrive folder, 2 min ago". The app can't confirm the upload finished, so it only claims the write. A failing folder never affects another one, and never blocks time logging.
 
 Each PC writes only its own file, `<folder>/zWorkTracker/devices/<device-uuid>.json`, and reads the others, so cloud clients have no shared file to fork into conflict copies.
@@ -209,6 +210,16 @@ Each PC writes only its own file, `<folder>/zWorkTracker/devices/<device-uuid>.j
 - If tasks run on two PCs at once, both are kept, a warning stays visible, and neither PC alters the other's segments. A task running on another PC can be stopped here, but its open segment is left for that PC to close. Until then it counts up to that PC's last known heartbeat.
 
 Two projects created offline with the same name on two PCs stay as two projects.
+
+**Changing the sync folder.** In Settings, choose **Change folder**, or add a second one. A preview shows the source, the destination and the counts in each. The app then:
+
+1. Reads the previous folder's device files and merges them into local data by the rules above. If the new folder already has zWorkTracker data, that's merged too, not overwritten.
+2. Copies the other devices' files across and writes this device's merged file. A fresher file already in the new folder is left alone. Conflict copies aren't copied, and damaged or newer-version files are skipped with a warning.
+3. Reads the new folder back and compares counts and a content checksum before calling it done. Only then does the setting change.
+
+The old folder is never changed or deleted: it just stops being written to, and you can remove it yourself. Time logging carries on during the copy. If a copy fails, the setting stays on the old folder and local data is unharmed, and running it again is safe. If the previous folder can't be read, for instance when it's offline or its client was removed, the move goes ahead from local data, says so, and offers **Retry copy** for later.
+
+**Each PC needs switching.** Other PCs keep using the old folder until you change them too, and PCs on different folders don't see each other's changes.
 
 **Keep the sync folder to yourself.** The files there are plain data, and whoever can write to that folder can change your hours and rates on every connected PC. The app rejects implausible files, such as impossible dates, oversized files or too many devices, but it can't tell a false entry from a real one. Don't use a folder shared with other people.
 
@@ -355,7 +366,7 @@ This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-window
 
 The artifacts are **unsigned** until you add credentials. No certificate is included, and none is created. Signing runs through `bundle.windows.signCommand` for the exe, the installer, the uninstaller and the bundled DLLs. It always uses SHA-256 with an RFC 3161 timestamp. With no credentials the build prints `UNSIGNED` and succeeds. Partly set credentials fail the build, so a release isn't silently unsigned.
 
-**First, check the metadata.** In `src-tauri/tauri.conf.json`, `bundle.publisher` is what Installed Apps shows, and `bundle.copyright` holds a placeholder until the copyright holder is confirmed. With your own certificate, set the publisher to the name on it. The name Windows shows in security prompts always comes from the certificate.
+**First, check the metadata.** In `src-tauri/tauri.conf.json`, `bundle.publisher` is what Installed Apps shows, and `bundle.copyright` names the copyright holder. With your own certificate, keep the publisher the same as the name on it. The name Windows shows in security prompts always comes from the certificate.
 
 **Route 1: Azure Artifact Signing (formerly Trusted Signing), recommended.**
 
@@ -492,5 +503,3 @@ The full list of components, including a note on the ODbL data behind the map lo
 ## Licence
 
 [MIT](LICENSE).
-
-**Placeholders to replace before a public release:** `COPYRIGHT-HOLDER-TO-CONFIRM` in `LICENSE` and in `bundle.copyright` of `src-tauri/tauri.conf.json`, which goes into the installer and exe metadata, and `NAME-TO-CONFIRM` in `docs/code-signing-policy.md`.
