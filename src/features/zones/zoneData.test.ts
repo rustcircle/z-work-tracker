@@ -29,6 +29,8 @@ describe('zone list', () => {
     for (let lat = -89.9; lat < 90; lat += 0.1) {
       for (let lon = -179.9; lon < 180; lon += 0.1) seen.add(tzlookup(lat, lon));
     }
+    // Every name the lookup package can return (ocean bands included) exists in the app's zone data, so no mapping is needed.
+    for (const z of seen) expect(isZone(z), z).toBe(true);
     const named = [...seen].filter((z) => !z.startsWith('Etc/'));
     expect(named.length).toBeGreaterThan(350);
     for (const z of named) expect(listed.has(z), z).toBe(true);
