@@ -42,7 +42,7 @@ export function Controls(p: ControlsProps) {
   const filtered = filters.projectIds.length > 0 || filters.taskIds.length > 0 || filters.band !== null || filters.shiftKey !== null;
   const setKind = (kind: RangeKind): void => {
     if (kind === 'custom') p.setRange({ kind, anchor: span.fromDay, from: span.fromDay, to: span.toDay });
-    else p.setRange({ kind, anchor: kind === range.kind ? range.anchor : span.fromDay });
+    else p.setRange({ kind, anchor: kind === range.kind ? range.anchor : p.today >= span.fromDay && p.today <= span.toDay ? p.today : span.fromDay });
   };
   const toggleProject = (id: string): void =>
     p.setFilters({ ...filters, projectIds: filters.projectIds.includes(id) ? filters.projectIds.filter((x) => x !== id) : [...filters.projectIds, id] });

@@ -152,7 +152,7 @@ export function EmptyChart({ message }: { message: string }) {
 
 // ------------------------------------------------------------------ axes
 
-const LADDER = [600, 900, 1800, 3600, 7200, 10800, 14400, 21600, 28800, 43200, 86400, 172800, 604800, 1209600, 2419200];
+const LADDER = [600, 900, 1800, 3600, 7200, 10800, 14400, 21600, 28800, 43200, 86400, 172800, 259200, 345600, 604800, 1209600, 2419200];
 
 export interface Scale {
   top: number;
@@ -551,13 +551,11 @@ export function Donut({ slices, centerTop, centerBottom, ariaLabel, empty }: { s
   return (
     <ChartBox>
       {(width, tip) => {
-        const size = clamp(width, 260, 460);
-        const height = Math.min(size, 330);
+        const R = clamp(Math.min(width / 2 - 120, 120), 56, 120);
+        const height = Math.round(2 * R + 56);
         const cx = width / 2;
         const cy = height / 2;
-        const ro = Math.min(height / 2 - 34, width / 2 - 130);
-        const R = Math.max(54, ro);
-        const r = R * 0.6;
+        const r = R * 0.64;
         let a0 = -Math.PI / 2;
         const labels: { key: string; x: number; y: number; right: boolean; text: string; lx: number; ly: number }[] = [];
         const arcs = slices.map((s) => {
@@ -596,7 +594,7 @@ export function Donut({ slices, centerTop, centerBottom, ariaLabel, empty }: { s
                 </text>
               </g>
             ))}
-            <text x={cx} y={cy - 2} textAnchor="middle" className="a-donut-total">
+            <text x={cx} y={cy - 2} textAnchor="middle" className="a-donut-total" fontSize={R < 80 ? 14 : 18}>
               {centerTop}
             </text>
             <text x={cx} y={cy + 16} textAnchor="middle" className="a-axis-text">
@@ -827,12 +825,18 @@ export function Progress({ label, valueText, targetText, fraction, ariaLabel }: 
           {valueText} of {targetText}
         </span>
       </div>
-      <svg width="100%" height="22" role="img" aria-label={ariaLabel} className="a-svg a-progress-svg" preserveAspectRatio="none" viewBox="0 0 100 22">
-        <rect x="0" y="3" width="100" height="16" rx="3" fill="url(#pat-target)" className="a-mark" />
-        <rect x="0" y="3" width={shown * 100} height="16" rx="3" fill="url(#pat-worked)" className="a-mark a-progress-fill" />
-        {f > 1 ? <path d="M96 3l4 8l-4 8" className="a-over" fill="none" /> : null}
-      </svg>
-      <div className="a-progress-foot tabular">{Math.round(f * 100)}% of target{f > 1 ? ' (target exceeded)' : ''}</div>
+      <ChartBox>
+        {(width) => (
+          <svg width={width} height={24} role="img" aria-label={ariaLabel} className="a-svg">
+            <rect x="0" y="3" width={width} height="18" rx="4" fill="url(#pat-target)" className="a-mark" />
+            {shown > 0 ? <rect x="0" y="3" width={Math.max(2, shown * width)} height="18" rx="4" fill="url(#pat-worked)" className="a-mark a-progress-fill" /> : null}
+            {f > 1 ? <path d={`M${width - 8} 3l6 9l-6 9`} className="a-over" fill="none" /> : null}
+          </svg>
+        )}
+      </ChartBox>
+      <div className="a-progress-foot tabular">
+        {Math.round(f * 100)}% of target{f > 1 ? ' (target exceeded)' : ''}
+      </div>
     </div>
   );
 }

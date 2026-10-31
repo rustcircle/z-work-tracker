@@ -1,6 +1,6 @@
 // Overview, time of day, projects and tasks.
 import { Columns, CalendarHeat, Donut, HBars, HeatLegend, Legend, StackedArea, WeekdayHourHeat, timeScale, type Col, type HRow, type LegendEntry, type Slice } from './charts';
-import { fmtHM, fmtHMS, fmtPct, fmtSignedPct } from './format';
+import { fmtHM, fmtHMS, fmtLong, fmtPct, fmtSignedPct } from './format';
 import { projectLegend, projectTipLines, segsOf, tipTime, basisWord, type SecEnv } from './secenv';
 import { Card, Section, Stat, dayText } from './ui';
 import { WEEKDAY_NAMES, WEEKDAY_SHORT, dayStr, weekdayIndex } from './range';
@@ -105,7 +105,7 @@ export function Overview({ env }: { env: SecEnv }) {
         openGlossary={env.openGlossary}
         wide
         data={{ caption: 'Days with logged time in the calendar year', columns: ['Day', 'Exact time'], rows: m.time.calendar.days.filter((d) => d.secs > 0).map((d) => [d.day, fmtHMS(d.secs)]) }}
-        note={`${m.time.calendar.year}, Exact time per day in the zone shown. Darker is more.`}
+        note={`${m.time.calendar.year}, Exact time per day in the zone shown. Shading runs from less to more as in the legend.`}
       >
         <CalendarHeat
           days={m.time.calendar.days}
@@ -301,7 +301,7 @@ export function Tasks({ env }: { env: SecEnv }) {
           <Stat label="Average duration" value={t.avg === null ? 'Not enough data' : fmtHM(t.avg)} sub=" Exact" />
           <Stat label="Median duration" value={t.median === null ? 'Not enough data' : fmtHM(t.median)} sub=" Exact" />
           <Stat label="Longest" value={t.longest ? fmtHM(t.longest.exact) : 'Not enough data'} sub={t.longest ? ` ${t.longest.name}` : ''} />
-          <Stat label="Calendar age when completed" value={t.ageMedian === null ? 'Not enough data' : fmtHM(t.ageMedian)} sub={t.ageAvg === null ? '' : ` median; average ${fmtHM(t.ageAvg)}, longest ${fmtHM(t.ageLongest ?? 0)}`} info="tasks.age" openGlossary={env.openGlossary} />
+          <Stat label="Calendar age when completed" value={t.ageMedian === null ? 'Not enough data' : fmtLong(t.ageMedian)} sub={t.ageAvg === null ? '' : ` median; average ${fmtLong(t.ageAvg)}, longest ${fmtLong(t.ageLongest ?? 0)}`} info="tasks.age" openGlossary={env.openGlossary} />
           <Stat label="Spanning several days" value={String(t.multiDay)} info="tasks.multiDay" openGlossary={env.openGlossary} />
         </dl>
       </Card>

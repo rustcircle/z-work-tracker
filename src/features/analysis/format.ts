@@ -32,3 +32,10 @@ export function fmtClock(minutes: number): string {
 }
 
 export const NOT_ENOUGH = 'Not enough data';
+
+/** "14d 14h" for spans of two days or more, else "5h 30m". For pauses and task ages. */
+export function fmtLong(secs: number): string {
+  if (secs < 2 * 86400) return fmtHM(secs);
+  const h = Math.round(secs / 3600);
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}

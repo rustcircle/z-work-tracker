@@ -5,7 +5,7 @@ import { MASK, money as fmtMoney, centsFromNumerator } from '../../lib/billing';
 import type { Currency } from '../../lib/types';
 import { dayOfInstant } from './engine';
 import { BurnUp, Columns, HBars, LineChart, Legend, Progress, StartFinishPlot, countScale, percentScale, timeScale, type Col, type DotColumn, type HRow, type Scale } from './charts';
-import { fmtClock, fmtHM, fmtHMS, fmtPct } from './format';
+import { fmtClock, fmtHM, fmtHMS, fmtLong, fmtPct } from './format';
 import { moneyText } from './insights';
 import { WEEKDAY_NAMES, WEEKDAY_SHORT, dayStr } from './range';
 import { projectLegend, segsOf, tipTime, type SecEnv } from './secenv';
@@ -72,7 +72,7 @@ export function Focus({ env }: { env: SecEnv }) {
           <Stat label="Longest session" value={f.longest === null ? 'Not enough data' : fmtHM(f.longest)} />
           <Stat label="Longest uninterrupted stretch" value={f.streak ? fmtHM(f.streak.secs) : 'Not enough data'} info="focus.streak" openGlossary={env.openGlossary} />
           <Stat label="Fragmentation" value={f.fragmentation === null ? 'Not enough data' : fmtPct(f.fragmentation)} sub=" in sessions under 25 min" info="focus.fragmentation" openGlossary={env.openGlossary} />
-          <Stat label="Pauses" value={String(f.pauseCount)} sub={f.pauseAvg === null ? '' : ` avg ${fmtHM(f.pauseAvg)}, total ${fmtHM(f.pauseSecs)}`} info="focus.pauses" openGlossary={env.openGlossary} />
+          <Stat label="Pauses" value={String(f.pauseCount)} sub={f.pauseAvg === null ? '' : ` avg ${fmtLong(f.pauseAvg)}, total ${fmtLong(f.pauseSecs)}`} info="focus.pauses" openGlossary={env.openGlossary} />
           <Stat label="Pauses per task" value={f.pausesPerTask === null ? 'Not enough data' : f.pausesPerTask.toFixed(1)} />
           <Stat label="Focus ratio" value={f.focusRatio === null ? 'Not enough data' : fmtPct(f.focusRatio)} info="focus.ratio" openGlossary={env.openGlossary} />
           <Stat label="Context switches" value={String(f.switchesTotal)} sub={f.switchesPerActiveDay === null ? '' : ` ${f.switchesPerActiveDay.toFixed(1)} per active day`} info="focus.switches" openGlossary={env.openGlossary} />
