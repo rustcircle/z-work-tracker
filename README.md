@@ -431,13 +431,13 @@ Measured on an Apple M3 Ultra on AC power, with a synthetic store of 12 projects
 
 | | 5,000 segments, before → after | 50,000 segments, before → after |
 |---|---|---|
-| Cold start to first render, real app | 574 → 486 ms | 1,373 → 839 ms |
-| Save after one action | 61 → 30 ms | 249 → 89 ms |
-| Heartbeat, every 30 s with a task running | 60 → 14 ms | 252 → 15 ms |
-| Disk written per heartbeat | 4 MB → 79 bytes | 32 MB → 79 bytes |
-| Opening the store | 81 → 9 ms | 383 → 62 ms |
-| Building and encoding a snapshot | 18 → 10 ms | 169 → 83 ms |
-| Sync cycle with three other devices, nothing new | 150 → 77 ms | 916 → 319 ms |
+| Cold start to first render, real app | 573 → 490 ms | 1,262 → 832 ms |
+| Save after one action | 61 → 44 ms | 249 → 107 ms |
+| Heartbeat, every 30 s with a task running | 60 → 13 ms | 252 → 15 ms |
+| Disk written per heartbeat, with one store copy to `.bak` on the first beat after a save | 4 MB → 79 bytes | 32 MB → 79 bytes |
+| Opening the store | 81 → 9 ms | 383 → 61 ms |
+| Building and encoding a snapshot | 18 → 10 ms | 169 → 85 ms |
+| Sync cycle with three other devices, nothing new | 150 → 70 ms | 916 → 319 ms |
 
 With a task running and the window hidden, the real app at 50,000 segments used 8.4% of one core before and about 1% after, across all its processes, in the first minutes. WebKit suspends a hidden page after about five minutes, and from then on the main process goes from 2.5% to 0.4% and from 17 to 0.3 idle wakeups a second.
 
