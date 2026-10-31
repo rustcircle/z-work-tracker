@@ -2,7 +2,7 @@
 // A billable pause counts in Billable and never in Exact.
 import { useId, useMemo, useState, type FormEvent } from 'react';
 
-import { useApp } from '../../../app/store';
+import { useAppState } from '../../../app/store';
 import { formatDuration } from '../../../components/format';
 import { Badge, Button } from '../../../components/ui';
 import { api } from '../../../lib/api';
@@ -16,7 +16,7 @@ import { dayOf } from '../../../lib/tz';
 const FIRST = 10;
 
 export function PausesList({ task }: { task: Task }) {
-  const { snapshot, zones } = useApp();
+  const { snapshot, zones } = useAppState();
   const zone = zones.active;
   const [all, setAll] = useState(false);
   const [betweenDays, setBetweenDays] = useState(false);
@@ -93,7 +93,7 @@ function PauseItem({ span, marked, billed, zone, taskId, onNotice }: { span: Spa
 }
 
 function BillForm({ span, taskId, describedBy, zone, onNotice }: { span: Span; taskId: string; describedBy: string; zone: string; onNotice: (t: string | null) => void }) {
-  const { adopt } = useApp();
+  const { adopt } = useAppState();
   const noteId = useId();
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -149,7 +149,7 @@ function BillForm({ span, taskId, describedBy, zone, onNotice }: { span: Span; t
 }
 
 function MarkedPause({ pause, billed, zone, describedBy, onNotice }: { pause: BillablePause; billed: boolean; zone: string; describedBy: string; onNotice: (t: string | null) => void }) {
-  const { adopt } = useApp();
+  const { adopt } = useAppState();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const span = { start: parseIso(pause.start), end: parseIso(pause.end) };

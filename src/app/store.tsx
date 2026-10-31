@@ -33,12 +33,23 @@ export interface AppValue {
   clearHideNotice: () => void;
 }
 
-const Ctx = createContext<AppValue | null>(null);
+type AppState = Omit<AppValue, 'nowSec'>;
 
-export function useApp(): AppValue {
+const Ctx = createContext<AppState | null>(null);
+const NowCtx = createContext(0);
+
+/** Everything but the clock. A reader of this one does not re-render on a tick. */
+export function useAppState(): AppState {
   const v = useContext(Ctx);
   if (!v) throw new Error('useApp needs AppProvider');
   return v;
+}
+
+/** The state and the clock: the reader re-renders every second. Use `useAppState` if time isn't shown. */
+export function useApp(): AppValue {
+  const v = useAppState();
+  const nowSec = useContext(NowCtx);
+  return { ...v, nowSec };
 }
 
 export function deriveZones(s: Snapshot): Zones {
@@ -136,12 +147,11 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
   const zones = useMemo(() => (snapshot ? deriveZones(snapshot) : null), [snapshot]);
   const nowSec = Math.floor((tick + skew) / 1000);
 
-  const value = useMemo<AppValue | null>(
+  const value = useMemo<AppState | null>(
     () =>
       snapshot && zones
         ? {
             snapshot,
-            nowSec,
             zones,
             act,
             adopt,
@@ -152,9 +162,13 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
             clearHideNotice: () => setHideNotice(null),
           }
         : null,
-    [snapshot, zones, nowSec, act, adopt, error, hideNotice],
+    [snapshot, zones, act, adopt, error, hideNotice],
   );
 
   if (!value) return <>{fallback(loadError)}</>;
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={value}>
+      <NowCtx.Provider value={nowSec}>{children}</NowCtx.Provider>
+    </Ctx.Provider>
+  );
 }

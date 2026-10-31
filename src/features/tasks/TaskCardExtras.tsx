@@ -1,29 +1,40 @@
 // Parts of a task card added in phase 2, kept out of TaskCard.tsx so that file stays easy to merge:
 // tag chips, billed and unbilled time, and the task-list items with their time and "Make active".
-import { useEffect, useId, useMemo, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
 
-import { useApp } from '../../app/store';
+import { useApp, useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { parseIso } from '../../lib/tz';
-import type { Task } from '../../lib/types';
+import type { Segment, Task } from '../../lib/types';
 import { formatDuration } from '../../components/format';
 import { Badge, Button } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { TagChips } from './TagPicker';
-import { taskTime, type SubtaskRow } from './taskFigures';
+import { hasOpenPiece, piecesOf, taskTime, type SubtaskRow } from './taskFigures';
 import './tasksP2.css';
 
 /** The task's live tags as chips, under the project. */
 export function TaskTags({ task }: { task: Task }) {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   return <TagChips ids={task.tags} tags={snapshot.tags} />;
 }
 
 /** Billed and unbilled time, thinking and unconfirmed time, then the task-list items with their time. */
 export function TaskTimeParts({ task }: { task: Task }) {
-  const { snapshot, nowSec } = useApp();
-  const pieces = useMemo(() => snapshot.segments.filter((s) => s.taskId === task.id), [snapshot.segments, task.id]);
-  const t = taskTime(task, pieces, nowSec, parseIso(snapshot.now));
+  const { snapshot } = useAppState();
+  const pieces = piecesOf(snapshot.segments, task.id);
+  const snapshotSec = parseIso(snapshot.now);
+  // A task with nothing growing reads the same at any time, so only a running one follows the clock.
+  return hasOpenPiece(pieces) ? <LiveTimeParts task={task} pieces={pieces} snapshotSec={snapshotSec} /> : <TimeParts task={task} pieces={pieces} nowSec={snapshotSec} snapshotSec={snapshotSec} />;
+}
+
+function LiveTimeParts(p: { task: Task; pieces: readonly Segment[]; snapshotSec: number }) {
+  const { nowSec } = useApp();
+  return <TimeParts {...p} nowSec={nowSec} />;
+}
+
+function TimeParts({ task, pieces, nowSec, snapshotSec }: { task: Task; pieces: readonly Segment[]; nowSec: number; snapshotSec: number }) {
+  const t = taskTime(task, pieces, nowSec, snapshotSec);
   const billable = t.billedSecs + t.unbilledSecs > 0;
   const running = task.state === 'running';
   return (

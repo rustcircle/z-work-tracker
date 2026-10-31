@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { dayOf, parseIso } from '../../lib/tz';
 import { resetSubtasks } from '../../lib/subtasks';
@@ -24,7 +24,7 @@ const liveIds = (ids: readonly string[], tags: readonly Tag[]): string[] => tags
  * - cold resume (`continueFrom`): opens empty, and submitting creates a new task linked to the old one.
  */
 export function TaskForm({ continueFrom, onDone }: { continueFrom?: Task; onDone: () => void }) {
-  const { snapshot, zones } = useApp();
+  const { snapshot, zones } = useAppState();
   const { act, transition } = useCommands();
   const launch = snapshot.launch;
   const source = continueFrom ? null : launch.warm ? launch.copySource : null;

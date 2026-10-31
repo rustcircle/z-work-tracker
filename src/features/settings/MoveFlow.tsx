@@ -3,7 +3,7 @@
 // confirms, and a failed copy changes nothing.
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api, events } from '../../lib/api';
 import type { DataCounts, Detected, MovePreview, MoveProgress, MoveResult, PendingCopy, SyncProvider } from '../../lib/types';
 import { Button } from '../../components/ui';
@@ -55,7 +55,7 @@ export interface MoveActions {
 }
 
 export function useMoveFlow(restoreRoot: RefObject<HTMLElement | null>): MoveActions {
-  const { adopt } = useApp();
+  const { adopt } = useAppState();
   const [flow, setFlow] = useState<Flow>({ phase: 'idle' });
   const seq = useRef(0);
   const opener = useRef<HTMLElement | null>(null);

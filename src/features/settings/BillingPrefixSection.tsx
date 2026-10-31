@@ -1,7 +1,7 @@
 // Device reference prefix, with a clash warning. References are `<prefix>-<number>`, unique per device.
 import { useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { Button, Field } from '../../components/ui';
 import { api } from '../../lib/api';
 import '../billing/billing.css';
@@ -14,7 +14,7 @@ export function nextReference(prefix: string, taken: readonly { prefix: string; 
 }
 
 export function BillingPrefixSection() {
-  const { snapshot, adopt } = useApp();
+  const { snapshot, adopt } = useAppState();
   const { prefix, clashes, summaries } = snapshot.billing;
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

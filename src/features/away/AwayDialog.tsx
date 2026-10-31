@@ -2,7 +2,7 @@
 // banner that stays until every one is answered. Unanswered time counts nowhere.
 import { useMemo, useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useApp, useAppState } from '../../app/store';
 import { IconWarn } from '../../components/icons';
 import { useToast } from '../../components/Toasts';
 import { Badge, Button, Modal, ProjectChip } from '../../components/ui';
@@ -152,7 +152,7 @@ export function AwayDialog() {
 
 /** Stays at the top while any time away is unanswered, with a way back into the dialog. */
 export function AwayBanner() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const pending = useMemo(() => pendingGaps(snapshot.gaps), [snapshot.gaps]);
   const tasks = useMemo(() => new Map(snapshot.tasks.map((t) => [t.id, t])), [snapshot.tasks]);
   if (pending.length === 0) return null;

@@ -1,7 +1,7 @@
 // The list of billing summaries, newest first: Copy, Export CSV and Void.
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { dayLabel, formatDuration } from '../../components/format';
 import { Badge, Button, Card, ConfirmDialog, ProjectChip } from '../../components/ui';
 import { api } from '../../lib/api';
@@ -20,7 +20,7 @@ export function newestFirst(list: readonly BillingSummary[]): BillingSummary[] {
 }
 
 export function SummariesCard() {
-  const { snapshot, zones, adopt } = useApp();
+  const { snapshot, zones, adopt } = useAppState();
   const hide = snapshot.prefs.hideEarnings;
   const list = useMemo(() => newestFirst(snapshot.billing.summaries), [snapshot.billing.summaries]);
   const projects = useMemo(() => new Map<string, Project>(snapshot.projects.map((p) => [p.id, p])), [snapshot.projects]);

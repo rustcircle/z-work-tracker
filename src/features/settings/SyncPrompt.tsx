@@ -1,11 +1,11 @@
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { useCommands } from '../../components/useCommands';
 import { SyncChooser } from './SyncChooser';
 
 /** First launch: choose sync folders, or skip. Nothing is enabled silently. */
 export function SyncPrompt() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const { act } = useCommands();
   return (
     <main className="firstrun" aria-labelledby="sync-title">

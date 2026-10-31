@@ -1,4 +1,4 @@
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { THEMES, THEME_LABELS } from '../../lib/themes';
 import type { Theme } from '../../lib/types';
@@ -7,7 +7,7 @@ import { useCommands } from '../../components/useCommands';
 const ORDER: Theme[] = ['light', 'solarizedLight', 'solarizedDark', 'dark'];
 
 export function ThemeSection() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const { act } = useCommands();
   return (
     <div>

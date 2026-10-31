@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { effectiveEnd } from '../../lib/split';
 import { parseIso } from '../../lib/tz';
 import type { Task } from '../../lib/types';
@@ -15,7 +15,7 @@ const NONE: readonly Task[] = [];
 
 /** Left rail: the new-task form and the task list, active tasks first. */
 export function TaskRail() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const nav = useNav();
   const launch = snapshot.launch;
   const [formOpen, setFormOpen] = useState(false);

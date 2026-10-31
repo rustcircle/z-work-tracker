@@ -2,7 +2,7 @@
 // template" is on a task.) A template's task-list items are saved unticked by the backend.
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { errorCode, errorMessage } from '../../lib/errorMessage';
 import type { RichDoc, Template } from '../../lib/types';
@@ -14,7 +14,7 @@ import { MAX_TEMPLATE_NAME, MAX_TEMPLATE_TAGS, liveTagIds, templatePreview, vali
 import './catalog.css';
 
 function TemplateEditor({ template, onDone }: { template: Template | null; onDone: () => void }) {
-  const { snapshot, adopt } = useApp();
+  const { snapshot, adopt } = useAppState();
   const [name, setName] = useState(template?.name ?? '');
   const [projectId, setProjectId] = useState<string | null>(template?.projectId ?? null);
   const [tags, setTags] = useState<string[]>(() => liveTagIds(template ?? { tags: [] }, new Set(snapshot.tags.map((t) => t.id))));
@@ -123,7 +123,7 @@ function TemplateEditor({ template, onDone }: { template: Template | null; onDon
 }
 
 export function TemplatesSection() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const { act } = useCommands();
   const [editing, setEditing] = useState<string | 'new' | null>(null);
   const [deleting, setDeleting] = useState<Template | null>(null);

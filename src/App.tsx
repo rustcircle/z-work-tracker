@@ -1,4 +1,4 @@
-import { AppProvider, useApp } from './app/store';
+import { AppProvider, useAppState } from './app/store';
 import { Banners } from './components/Banners';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { HideNoticeDialog } from './components/HideNoticeDialog';
@@ -14,7 +14,7 @@ import './styles/pages.css';
 import './styles/tiptap.css';
 
 function Root() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   return (
     <>
       {snapshot.sync.promptPending ? (

@@ -36,6 +36,30 @@ export interface TaskTime {
 
 const isOpenHere = (s: Segment): boolean => s.end === null && s.provisionalEnd === null;
 
+const byTask = new WeakMap<readonly Segment[], Map<string, Segment[]>>();
+const NO_PIECES: readonly Segment[] = [];
+
+/**
+ * One task's pieces, in snapshot order. Grouped once per snapshot: each card filtering every segment for
+ * itself costs cards times segments on every action.
+ */
+export function piecesOf(segments: readonly Segment[], taskId: string): readonly Segment[] {
+  let groups = byTask.get(segments);
+  if (!groups) {
+    groups = new Map();
+    for (const s of segments) {
+      const list = groups.get(s.taskId);
+      if (list) list.push(s);
+      else groups.set(s.taskId, [s]);
+    }
+    byTask.set(segments, groups);
+  }
+  return groups.get(taskId) ?? NO_PIECES;
+}
+
+/** True while a piece is growing here, so the task's time depends on the clock. */
+export const hasOpenPiece = (pieces: readonly Segment[]): boolean => pieces.some(isOpenHere);
+
 /**
  * `pieces` are the task's own pieces from the snapshot. The snapshot's totals are as of `snapshotSec`;
  * a piece that is open on this device has grown by `nowSec - snapshotSec` since, so that growth is added

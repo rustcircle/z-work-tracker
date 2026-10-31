@@ -1,7 +1,7 @@
 // The full history of changes, newest first: what changed, to what, when, and why.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { Button, Field } from '../../components/ui';
 import { IconRefresh } from '../../components/icons';
@@ -16,7 +16,7 @@ type Load = { status: 'loading' } | { status: 'error'; message: string } | { sta
 
 
 export function AuditSection() {
-  const { snapshot, zones } = useApp();
+  const { snapshot, zones } = useAppState();
   const [load, setLoad] = useState<Load>({ status: 'loading' });
   const [entity, setEntity] = useState('');
   const [count, setCount] = useState(PAGE);

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { TZDB_VERSION } from '../../lib/tz';
 import { version as APP_VERSION } from '../../../package.json';
@@ -17,7 +17,7 @@ function parseHours(text: string): { ok: true; value: number | null } | { ok: fa
 }
 
 export function TargetsSection() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const { act } = useCommands();
   const s = snapshot.settings;
   const [daily, setDaily] = useState(s.dailyTargetHours != null ? String(s.dailyTargetHours) : '');
@@ -53,7 +53,7 @@ export function TargetsSection() {
 }
 
 export function AutostartSection() {
-  const { showError } = useApp();
+  const { showError } = useAppState();
   const [on, setOn] = useState<boolean | null>(null);
   useEffect(() => {
     let alive = true;
@@ -83,7 +83,7 @@ export function AutostartSection() {
 }
 
 export function AboutSection() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   return (
     <div className="settings-stack">
       <dl className="kv-list">

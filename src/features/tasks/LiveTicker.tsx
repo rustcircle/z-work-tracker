@@ -5,6 +5,7 @@ import { MASK, RateBook, money } from '../../lib/billing';
 import type { Project, Task } from '../../lib/types';
 import { amountText, formatDuration, formatHMS } from '../../components/format';
 import { useNav } from '../../components/nav';
+import { piecesOf } from './taskFigures';
 import { liveFigures, liveSpans } from './taskLive';
 
 /** Running task: session clock, today's exact and billable time, and earnings that tick and step. */
@@ -14,7 +15,7 @@ export function LiveTicker({ task, project }: { task: Task; project: Project }) 
   const hide = snapshot.prefs.hideEarnings;
   const book = useMemo(() => new RateBook(snapshot.projects, snapshot.rates), [snapshot.projects, snapshot.rates]);
   // The task's own pieces. Work and thinking are worked time; a billable pause is billable only.
-  const pieces = useMemo(() => snapshot.segments.filter((s) => s.taskId === task.id), [snapshot.segments, task.id]);
+  const pieces = piecesOf(snapshot.segments, task.id);
   const spans = liveSpans(pieces, task.projectId, nowSec);
   const f = liveFigures(spans, nowSec, zones.active, book, snapshot.rounding);
   const fixedFee = project.billable && project.billingType === 'fixedFee';

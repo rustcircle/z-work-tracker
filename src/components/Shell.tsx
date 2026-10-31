@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 
-import { useApp } from '../app/store';
+import { useAppState } from '../app/store';
 import { api, events } from '../lib/api';
 import { AnalysisTab } from '../features/analysis/AnalysisTab';
 import { ExportDialog } from '../features/export/ExportDialog';
@@ -39,7 +39,7 @@ function Brand() {
 }
 
 export function Shell() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const { act } = useCommands();
   const [tab, setTab] = useState<TabId>('timeline');
   const [focusProject, setFocusProject] = useState<string | null>(null);

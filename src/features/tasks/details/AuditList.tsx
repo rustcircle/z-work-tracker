@@ -1,7 +1,7 @@
 // A readable audit list, and the hook that loads it from the backend.
 import { useEffect, useMemo, useState } from 'react';
 
-import { useApp } from '../../../app/store';
+import { useAppState } from '../../../app/store';
 import { api } from '../../../lib/api';
 import type { AuditEntry } from '../../../lib/types';
 import { toCommandError } from './attempt';
@@ -11,7 +11,7 @@ type Loaded = { for: string | null; entries: AuditEntry[] } | { for: string | nu
 
 /** Loads `get_audit` and reloads whenever a new snapshot arrives, since every change writes an entry. */
 export function useAudit(entityId: string | null): { entries: AuditEntry[] | null; error: string | null } {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const [result, setResult] = useState<Loaded | null>(null);
   useEffect(() => {
     let alive = true;
@@ -33,7 +33,7 @@ export function useAudit(entityId: string | null): { entries: AuditEntry[] | nul
 }
 
 export function useAuditLines(entries: readonly AuditEntry[]): AuditLine[] {
-  const { snapshot, zones } = useApp();
+  const { snapshot, zones } = useAppState();
   return useMemo(
     () => entries.map((e) => describeAudit(e, { zone: zones.active, deviceId: snapshot.deviceId, rawSegments: snapshot.rawSegments, gaps: snapshot.gaps })),
     [entries, zones.active, snapshot.deviceId, snapshot.rawSegments, snapshot.gaps],

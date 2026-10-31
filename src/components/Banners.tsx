@@ -1,4 +1,4 @@
-import { useApp } from '../app/store';
+import { useAppState } from '../app/store';
 import { api } from '../lib/api';
 import { AwayBanner, AwayDialog } from '../features/away/AwayDialog';
 import { ReminderBanner } from '../features/away/ReminderBanner';
@@ -7,7 +7,7 @@ import { useCommands } from './useCommands';
 
 /** Errors, always-visible warnings, and dismissible notices from the backend. */
 export function Banners() {
-  const { snapshot, error, clearError } = useApp();
+  const { snapshot, error, clearError } = useAppState();
   const { act } = useCommands();
   return (
     <div className="banners">

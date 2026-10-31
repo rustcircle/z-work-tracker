@@ -4,7 +4,7 @@ import { emit } from '@tauri-apps/api/event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { emptyState, installMock } from '../mocks/ipcMock';
-import { AppProvider, useApp } from './store';
+import { AppProvider, useApp, useAppState } from './store';
 
 let hidden = false;
 const original = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
@@ -120,5 +120,37 @@ describe('the clock', () => {
     renders.mockClear();
     for (let i = 0; i < 3; i += 1) await advance(1000);
     expect(renders.mock.calls.length).toBe(3);
+  });
+});
+
+describe('useAppState', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z'), shouldAdvanceTime: false });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it('does not re-render its reader on a tick, and does on a change of state', async () => {
+    const renders = vi.fn();
+    function Reader() {
+      const { error, showError } = useAppState();
+      renders();
+      return (
+        <button type="button" onClick={() => showError('boom')}>
+          {error ?? 'fine'}
+        </button>
+      );
+    }
+    installMock(emptyState());
+    render(<AppProvider fallback={() => null}><Reader /></AppProvider>);
+    await advance(10);
+    renders.mockClear();
+    await advance(10_000);
+    expect(renders).not.toHaveBeenCalled();
+    act(() => screen.getByRole('button').click());
+    expect(renders).toHaveBeenCalled();
+    expect(screen.getByText('boom')).toBeTruthy();
   });
 });

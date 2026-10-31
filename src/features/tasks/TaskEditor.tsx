@@ -8,7 +8,7 @@
 // description editor is built once.
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import type { RichDoc, Task, TaskPatch, TemplateInput } from '../../lib/types';
 import { TagPicker } from './TagPicker';
@@ -25,7 +25,7 @@ const MAX_RETRIES = 5;
 type Status = { kind: 'idle' } | { kind: 'saving' } | { kind: 'saved' } | { kind: 'rejected'; message: string } | { kind: 'failed'; willRetry: boolean };
 
 export function TaskEditor({ task }: { task: Task }) {
-  const { snapshot, adopt, showError } = useApp();
+  const { snapshot, adopt, showError } = useAppState();
   const { act } = useCommands();
   const store = useEditStore();
   const statusId = useId();

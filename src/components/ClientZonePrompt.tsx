@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { useApp } from '../app/store';
+import { useAppState } from '../app/store';
 import { api } from '../lib/api';
 import { ZonePickerDialog } from '../features/zones';
 import { Button, Modal } from './ui';
@@ -8,7 +8,7 @@ import { useCommands } from './useCommands';
 
 /** Asked once: there is no silent default client zone. */
 export function ClientZonePrompt() {
-  const { snapshot, zones } = useApp();
+  const { snapshot, zones } = useAppState();
   const { act } = useCommands();
   const [step, setStep] = useState<'ask' | 'pick'>('ask');
   const pending = !snapshot.prefs.clientZonePromptDone && !snapshot.settings.clientZone;

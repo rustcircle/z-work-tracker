@@ -2,7 +2,7 @@
 // actions that change it. The recorded (raw) time is always shown, and nothing here deletes it.
 import { useId, useState, type FormEvent } from 'react';
 
-import { useApp } from '../../../app/store';
+import { useAppState } from '../../../app/store';
 import { clock, dayLabel, formatDuration } from '../../../components/format';
 import { Badge, Button } from '../../../components/ui';
 import { api } from '../../../lib/api';
@@ -19,7 +19,7 @@ export const BILLED_REASON = 'This time is on a billing summary; void that summa
 type Mode = 'correct' | 'void' | 'restore' | 'history';
 
 export function CorrectionsList({ task }: { task: Task }) {
-  const { snapshot, zones } = useApp();
+  const { snapshot, zones } = useAppState();
   const zone = zones.active;
   const [open, setOpen] = useState<{ id: string; mode: Mode } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -142,7 +142,7 @@ function SegmentHistory({ id, name }: { id: string; name: string }) {
 }
 
 function CorrectForm({ seg, zone, name, onCancel, onDone }: { seg: RawSegment; zone: string; name: string; onCancel: () => void; onDone: (text: string) => void }) {
-  const { adopt } = useApp();
+  const { adopt } = useAppState();
   const [start, setStart] = useState(() => fieldFromInstant(parseIso(seg.start), zone));
   const [end, setEnd] = useState(() => fieldFromInstant(parseIso(seg.end ?? seg.start), zone));
   const [reason, setReason] = useState('');
@@ -235,7 +235,7 @@ function CorrectForm({ seg, zone, name, onCancel, onDone }: { seg: RawSegment; z
 }
 
 function ReasonOnlyForm({ seg, kind, name, onCancel, onDone }: { seg: RawSegment; kind: 'void' | 'restore'; name: string; onCancel: () => void; onDone: (text: string) => void }) {
-  const { adopt } = useApp();
+  const { adopt } = useAppState();
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);

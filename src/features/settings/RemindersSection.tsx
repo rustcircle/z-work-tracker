@@ -2,7 +2,7 @@
 // The backend sends the system notification; the window shows the same reminder as a banner.
 import { useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { Button, Field, Switch } from '../../components/ui';
 import { plural } from '../../components/format';
@@ -23,7 +23,7 @@ export function parseMinutes(text: string): { ok: true; minutes: number } | { ok
 const current = (m: number): string => (m === 0 ? 'Off' : plural(m, 'minute'));
 
 function MinutesField({ settingKey, label, hint, value }: { settingKey: 'idleMinutes' | 'longRunMinutes'; label: string; hint: string; value: number }) {
-  const { adopt } = useApp();
+  const { adopt } = useAppState();
   // What is typed, or null while the field just shows the saved value: a save keeps this form mounted,
   // so "Saved." and the focus stay.
   const [draft, setDraft] = useState<string | null>(null);
@@ -84,7 +84,7 @@ function MinutesField({ settingKey, label, hint, value }: { settingKey: 'idleMin
 }
 
 export function RemindersSection() {
-  const { snapshot, adopt } = useApp();
+  const { snapshot, adopt } = useAppState();
   const s = snapshot.reminderSettings;
   const [error, setError] = useState<string | null>(null);
 

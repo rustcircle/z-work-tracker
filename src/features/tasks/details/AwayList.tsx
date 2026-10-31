@@ -1,7 +1,7 @@
 // "Time away": time the app found you away while a segment ran, so a decision can be changed later.
 import { useId, useState } from 'react';
 
-import { useApp } from '../../../app/store';
+import { useAppState } from '../../../app/store';
 import { formatDuration } from '../../../components/format';
 import { Badge, Button } from '../../../components/ui';
 import { api } from '../../../lib/api';
@@ -26,7 +26,7 @@ const STATE: Record<GapDecision, { text: string; tone: 'warning' | 'success' | '
 };
 
 export function AwayList({ task }: { task: Task }) {
-  const { snapshot, zones } = useApp();
+  const { snapshot, zones } = useAppState();
   const zone = zones.active;
   const gaps = snapshot.gaps.filter((g) => g.taskId === task.id).sort((a, b) => (a.start < b.start ? 1 : a.start > b.start ? -1 : 0));
   const billedSegments = new Set(snapshot.rawSegments.filter((s) => s.billed).map((s) => s.id));
@@ -58,7 +58,7 @@ export function AwayList({ task }: { task: Task }) {
 }
 
 function AwayItem({ gap, zone, billed, onNotice }: { gap: IdleGap; zone: string; billed: boolean; onNotice: (t: string | null) => void }) {
-  const { adopt } = useApp();
+  const { adopt } = useAppState();
   const textId = useId();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);

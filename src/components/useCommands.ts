@@ -2,13 +2,13 @@
 // auto-pause toast when starting one task paused another.
 import { useCallback, useMemo } from 'react';
 
-import { useApp } from '../app/store';
+import { useAppState } from '../app/store';
 import type { TransitionResult } from '../lib/types';
 import { useToast } from './Toasts';
 import { errorMessage } from '../lib/errorMessage';
 
 export function useCommands() {
-  const { adopt, showError, act } = useApp();
+  const { adopt, showError, act } = useAppState();
   const toast = useToast();
 
   const transition = useCallback(

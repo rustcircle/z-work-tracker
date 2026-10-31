@@ -1,7 +1,7 @@
 // Manage tags: list, add, rename, recolour with the picker, delete.
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { normalizeHex, suggestColor } from '../../lib/color';
 import { errorCode, errorMessage } from '../../lib/errorMessage';
@@ -25,7 +25,7 @@ export function validateTagName(name: string, tags: readonly Tag[], exceptId: st
 }
 
 function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string | null) => void }) {
-  const { snapshot, adopt } = useApp();
+  const { snapshot, adopt } = useAppState();
   const [name, setName] = useState(tag?.name ?? '');
   const [color, setColor] = useState(tag?.color ?? suggestColor(snapshot.tags.map((t) => t.color)));
   const [touched, setTouched] = useState(false);
@@ -114,7 +114,7 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
 }
 
 export function TagsSection() {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const { act } = useCommands();
   const [editing, setEditing] = useState<string | 'new' | null>(null);
   const [deleting, setDeleting] = useState<Tag | null>(null);

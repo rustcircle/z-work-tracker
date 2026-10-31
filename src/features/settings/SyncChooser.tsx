@@ -2,7 +2,7 @@
 // until the user ticks a folder and presses the connect button.
 import { useId, useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import type { Detected, FolderPreview, SyncProvider } from '../../lib/types';
 import { Button } from '../../components/ui';
@@ -55,7 +55,7 @@ interface ChooserProps {
 
 export function SyncChooser({ detected, existing, onConnected, onSkip, skipLabel, onPick, pickLabel }: ChooserProps) {
   const pickMode = onPick !== undefined;
-  const { adopt, snapshot } = useApp();
+  const { adopt, snapshot } = useAppState();
   const { act } = useCommands();
   const base = useId();
   const [extra, setExtra] = useState<Detected[]>([]);

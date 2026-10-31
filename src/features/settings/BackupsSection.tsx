@@ -1,7 +1,7 @@
 // Dated copies of the data kept on this computer, how many to keep, and restoring one.
 import { useCallback, useEffect, useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { Badge, Button, ConfirmDialog, Field } from '../../components/ui';
 import type { BackupInfo } from '../../lib/types';
@@ -25,7 +25,7 @@ export function parseKeep(text: string): { ok: true; keep: number } | { ok: fals
 }
 
 function KeepField({ keep }: { keep: number }) {
-  const { adopt } = useApp();
+  const { adopt } = useAppState();
   // What is typed, or null while the field just shows the saved value: a save keeps this form mounted,
   // so "Saved." and the focus stay.
   const [draft, setDraft] = useState<string | null>(null);
@@ -77,7 +77,7 @@ function KeepField({ keep }: { keep: number }) {
 }
 
 export function BackupsSection() {
-  const { snapshot, adopt } = useApp();
+  const { snapshot, adopt } = useAppState();
   const [load, setLoad] = useState<Load>({ status: 'loading' });
   const [restoring, setRestoring] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

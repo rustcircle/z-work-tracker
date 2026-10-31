@@ -2,7 +2,7 @@
 // and change what time away means. One dialog with five tabs; the card only carries the button.
 import { useId, useRef, useState, type KeyboardEvent } from 'react';
 
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { formatDuration } from '../../components/format';
 import { Button, Modal } from '../../components/ui';
 import type { Task } from '../../lib/types';
@@ -37,7 +37,7 @@ export function TaskDetailsButton({ task }: { task: Task }) {
 
 export function TaskDetails({ task, open, onClose }: { task: Task; open: boolean; onClose: () => void }) {
   // Read the live task each render: the card's own copy is replaced with every snapshot.
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const live = snapshot.tasks.find((t) => t.id === task.id) ?? task;
   const [tab, setTab] = useState<TabKey>('add');
   const base = useId();

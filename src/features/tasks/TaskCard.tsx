@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { api } from '../../lib/api';
 import type { LaunchState, Project, Task } from '../../lib/types';
-import { useApp } from '../../app/store';
+import { useAppState } from '../../app/store';
 import { useNav } from '../../components/nav';
 import { RichView, hasDescription } from '../../components/RichText';
 import { Badge, Button, IconButton, Modal, ProjectChip } from '../../components/ui';
@@ -30,7 +30,7 @@ interface Props {
 const TONE = { draft: 'neutral', running: 'success', paused: 'warning', stopped: 'neutral' } as const;
 
 function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }: Props) {
-  const { snapshot } = useApp();
+  const { snapshot } = useAppState();
   const { act, transition } = useCommands();
   const nav = useNav();
   const store = useEditStore();

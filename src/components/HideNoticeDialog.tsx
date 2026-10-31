@@ -1,11 +1,11 @@
-import { useApp } from '../app/store';
+import { useAppState } from '../app/store';
 import { api } from '../lib/api';
 import { Button, Modal } from './ui';
 import { errorMessage } from '../lib/errorMessage';
 
 /** Shown the first time the window is hidden: the app keeps running in the system tray. */
 export function HideNoticeDialog() {
-  const { hideNotice, clearHideNotice, showError } = useApp();
+  const { hideNotice, clearHideNotice, showError } = useAppState();
   const done = (): void => {
     clearHideNotice();
     api.ackHideNotice().catch((e: unknown) => showError(errorMessage(e)));
