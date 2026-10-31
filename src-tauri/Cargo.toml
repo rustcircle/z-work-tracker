@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = [".", "crates/labor-core"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+
+[package]
+name = "labor-tracker"
+version = "0.1.0"
+description = "Local-first labor hours tracker"
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "labor_tracker_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+labor-core = { path = "crates/labor-core" }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono-tz = "0.10"
+hostname = "0.4"
+iana-time-zone = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
+
+[features]
+# Test-only hooks for scripts/native-smoke.mjs. Never enabled in shipped builds.
+smoke = []
+
+[lints]
+workspace = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
