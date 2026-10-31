@@ -125,6 +125,12 @@ fn check_node(node: &Value, depth: usize) -> Result<(), CoreError> {
             "description contains an unsupported node: {kind}"
         )));
     }
+    if let Some(id) = node.get("attrs").and_then(|a| a.get("subtaskId"))
+        && !id.is_null()
+        && !id.as_str().is_some_and(|i| i.len() <= 64)
+    {
+        return Err(bad("description contains an invalid subtask id"));
+    }
     if let Some(marks) = node.get("marks") {
         let marks = marks
             .as_array()
@@ -211,10 +217,10 @@ fn check_task(t: &Task) -> Result<(), CoreError> {
 }
 
 /// The oldest date a synced record may carry, and how far ahead of this clock it may be.
-const EARLIEST: Ts = Ts(946_684_800); // 2000-01-01
+const EARLIEST: Ts = Ts::EARLIEST;
 const MAX_SKEW_SECS: i64 = 2 * 86_400;
 const FAR_FUTURE: Ts = Ts(4_102_444_800); // 2100-01-01, for chosen effective dates
-const MAX_SEGMENT_SECS: i64 = 366 * 86_400;
+pub const MAX_SEGMENT_SECS: i64 = 366 * 86_400;
 const MAX_RECORDS: usize = 1_000_000;
 const MAX_ID_LEN: usize = 64;
 
@@ -270,7 +276,14 @@ pub fn check_shared(s: &Shared, now: Ts) -> Result<(), CoreError> {
         + s.settings.len()
         + s.shifts.len()
         + s.rates.len()
-        + s.rounding.len();
+        + s.rounding.len()
+        + s.gaps.len()
+        + s.pauses.len()
+        + s.tags.len()
+        + s.templates.len()
+        + s.summaries.len()
+        + s.prefixes.len()
+        + s.audit_log.len();
     if total > MAX_RECORDS {
         return Err(bad("too many records"));
     }
@@ -327,6 +340,8 @@ pub fn check_shared(s: &Shared, now: Ts) -> Result<(), CoreError> {
         check_stamp(&v.stamp, now)?;
     }
 
+    check_phase2(s, now)?;
+
     for (id, v) in &s.rates {
         if *id != v.id {
             return Err(bad("rate id mismatch"));
@@ -338,6 +353,71 @@ pub fn check_shared(s: &Shared, now: Ts) -> Result<(), CoreError> {
             return Err(bad("rounding id mismatch"));
         }
         check_rounding(v)?;
+    }
+    Ok(())
+}
+
+fn check_span(start: Ts, end: Ts, now: Ts, what: &str) -> Result<(), CoreError> {
+    check_time(start, now, what)?;
+    check_time(end, now, what)?;
+    if end < start || end.secs() - start.secs() > MAX_SEGMENT_SECS {
+        return Err(bad(format!("{what} has an impossible duration")));
+    }
+    Ok(())
+}
+
+fn check_phase2(s: &Shared, now: Ts) -> Result<(), CoreError> {
+    for seg in s.segments.values() {
+        check_stamp(&seg.edit_stamp, now)?;
+        if let Some(e) = &seg.edit {
+            check_span(e.start, e.end, now, "a correction")?;
+            check_plain(&e.reason, MAX_NAME * 8, "a reason")?;
+        }
+    }
+    for t in s.tasks.values() {
+        check_stamp(&t.tags_stamp, now)?;
+        check_stamp(&t.active_subtask_stamp, now)?;
+        if t.tags.len() > 64 {
+            return Err(bad("a task has too many tags"));
+        }
+    }
+    for g in s.gaps.values() {
+        check_id(&g.id)?;
+        check_span(g.start, g.end, now, "time away")?;
+        check_stamp(&g.decision_stamp, now)?;
+    }
+    for p in s.pauses.values() {
+        check_id(&p.id)?;
+        check_span(p.start, p.end, now, "a billable pause")?;
+        check_plain(&p.note, MAX_NAME * 8, "a note")?;
+        check_stamp(&p.stamp, now)?;
+    }
+    for t in s.tags.values() {
+        check_id(&t.id)?;
+        check_plain(&t.name, MAX_NAME, "a tag name")?;
+        clean_color(&t.color)?;
+        check_stamp(&t.stamp, now)?;
+    }
+    for t in s.templates.values() {
+        check_id(&t.id)?;
+        check_plain(&t.name, MAX_NAME * 4, "a template name")?;
+        check_description(&t.description)?;
+        check_stamp(&t.stamp, now)?;
+    }
+    for b in s.summaries.values() {
+        check_id(&b.id)?;
+        check_plain(&b.reference, MAX_NAME, "a reference")?;
+        check_time(b.created_at, now, "a summary date")?;
+        check_stamp(&b.stamp, now)?;
+    }
+    for p in s.prefixes.values() {
+        check_plain(&p.prefix, 16, "a reference prefix")?;
+        check_stamp(&p.stamp, now)?;
+    }
+    for a in s.audit_log.values() {
+        check_id(&a.id)?;
+        check_time(a.at, now, "an audit entry")?;
+        check_plain(&a.reason, MAX_NAME * 8, "an audit reason")?;
     }
     Ok(())
 }

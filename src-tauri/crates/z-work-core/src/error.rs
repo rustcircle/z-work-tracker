@@ -17,6 +17,8 @@ pub enum CoreError {
     RunningElsewhere(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("this overlaps time already logged on: {0}")]
+    Overlap(String),
     #[error(
         "this launch has not started a task yet, so continuing needs every field filled in again"
     )]
@@ -44,6 +46,7 @@ impl CoreError {
             Self::IllegalTransition { .. } => "illegal_transition",
             Self::RunningElsewhere(_) => "running_elsewhere",
             Self::Conflict(_) => "conflict",
+            Self::Overlap(_) => "overlap",
             Self::ColdStartRequired => "cold_start_required",
             Self::Io(_) | Self::Json(_) | Self::Xlsx(_) => "io",
             Self::FutureVersion { .. } => "future_version",

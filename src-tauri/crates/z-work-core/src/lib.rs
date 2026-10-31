@@ -9,17 +9,25 @@
     )
 )]
 
+pub mod adjust;
+pub mod backup;
 pub mod billing;
+pub mod catalog;
 pub mod csv;
 pub mod detect;
 pub mod error;
+pub mod idle;
 pub mod machine;
 pub mod merge;
 pub mod model;
+pub mod pdf;
 pub mod persist;
+pub mod pieces;
+pub mod reminder;
 pub mod report;
 pub mod service;
 pub mod subtasks;
+pub mod summary;
 pub mod sync;
 pub mod time;
 pub mod tray;

@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::machine::stamp_order;
 use crate::model::{RateVersion, RoundMethod, Segment, Shared};
+use crate::pieces::{PieceKind, pieces};
 use crate::time::Ts;
 use crate::validate::is_currency;
 
@@ -135,7 +136,11 @@ pub fn rounding_rule(shared: &Shared, project_id: &str, day: NaiveDate) -> Round
 }
 
 fn rates_for<'a>(shared: &'a Shared, project_id: &str) -> Vec<&'a RateVersion> {
-    let billable = shared.projects.get(project_id).is_some_and(|p| p.billable);
+    // A fixed-fee project earns its fee, not time at a rate.
+    let billable = shared
+        .projects
+        .get(project_id)
+        .is_some_and(|p| p.billable && p.billing_type == crate::model::BillingType::Hourly);
     if !billable {
         return Vec::new();
     }
@@ -200,6 +205,13 @@ pub struct Bucket {
     pub billable_secs: i64,
 }
 
+/// Which of a row's seconds are not plain tracked time.
+#[derive(Clone, Copy, Debug, Default)]
+struct Extra {
+    pause: i64,
+    thinking: i64,
+}
+
 /// One task on one day in the reporting zone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskDay {
@@ -208,6 +220,10 @@ pub struct TaskDay {
     pub day: NaiveDate,
     pub first_start: Ts,
     pub exact_secs: i64,
+    /// Pauses marked as still working. Part of billable, never of exact.
+    pub pause_secs: i64,
+    /// Away time marked as thinking. Part of exact and billable, reported separately.
+    pub thinking_secs: i64,
     pub billable_secs: i64,
     pub rule: RoundingRule,
     /// True when real time rounded down to nothing (Nearest or Down only). The row is kept.
@@ -250,22 +266,35 @@ pub fn task_days(shared: &Shared, tz: Tz, end_of: &dyn Fn(&Segment) -> Ts) -> Ve
     #[derive(Default)]
     struct Acc {
         first: Option<Ts>,
-        pieces: Vec<RatePiece>,
+        pieces: Vec<(RatePiece, bool)>,
+        extra: Extra,
     }
     let mut acc: BTreeMap<(String, NaiveDate), Acc> = BTreeMap::new();
     let mut project_of: BTreeMap<&str, &str> = BTreeMap::new();
     for t in shared.tasks.values().filter(|t| t.is_live()) {
         project_of.insert(t.id.as_str(), t.project_id.as_str());
     }
-    for seg in shared.segments.values() {
-        let Some(project_id) = project_of.get(seg.task_id.as_str()).copied() else {
+    for piece in pieces(shared, end_of) {
+        let Some(project_id) = project_of.get(piece.task_id.as_str()).copied() else {
             continue;
         };
-        let end = end_of(seg).max(seg.start);
-        for (day, s, e) in split_by_day(seg.start, end, tz) {
-            let row = acc.entry((seg.task_id.clone(), day)).or_default();
-            row.first = Some(row.first.map_or(s, |f| f.min(s)));
-            row.pieces.extend(split_by_rate(shared, project_id, s, e));
+        let is_pause = piece.kind == PieceKind::BillablePause;
+        for (day, s, e) in split_by_day(piece.start, piece.end, tz) {
+            let row = acc.entry((piece.task_id.clone(), day)).or_default();
+            if !is_pause {
+                row.first = Some(row.first.map_or(s, |f| f.min(s)));
+            }
+            let secs = e.secs() - s.secs();
+            match piece.kind {
+                PieceKind::BillablePause => row.extra.pause += secs,
+                PieceKind::Thinking => row.extra.thinking += secs,
+                PieceKind::Work => {}
+            }
+            row.pieces.extend(
+                split_by_rate(shared, project_id, s, e)
+                    .into_iter()
+                    .map(|p| (p, is_pause)),
+            );
         }
     }
     let mut rows = Vec::with_capacity(acc.len());
@@ -273,40 +302,44 @@ pub fn task_days(shared: &Shared, tz: Tz, end_of: &dyn Fn(&Segment) -> Ts) -> Ve
         let Some(project_id) = project_of.get(task_id.as_str()).copied() else {
             continue;
         };
-        row.pieces.sort_by_key(|p| p.start);
+        row.pieces.sort_by_key(|(p, _)| p.start);
         let mut buckets: Vec<Bucket> = Vec::new();
-        for p in &row.pieces {
+        for (p, is_pause) in &row.pieces {
             let secs = p.end.secs() - p.start.secs();
+            let exact = if *is_pause { 0 } else { secs };
             let same = buckets
                 .last()
                 .is_some_and(|b| b.rate_cents == p.rate_cents && b.currency == p.currency);
             match buckets.last_mut() {
                 Some(b) if same => {
-                    b.exact_secs += secs;
+                    b.exact_secs += exact;
                     b.billable_secs += secs;
                 }
                 _ => buckets.push(Bucket {
                     rate_cents: p.rate_cents,
                     currency: p.currency.clone(),
-                    exact_secs: secs,
+                    exact_secs: exact,
                     billable_secs: secs,
                 }),
             }
         }
         let exact_secs: i64 = buckets.iter().map(|b| b.exact_secs).sum();
         let rule = rounding_rule(shared, project_id, day);
-        let billable_secs = round_seconds(exact_secs, rule.increment_minutes, rule.method);
-        allocate_rounding(&mut buckets, billable_secs - exact_secs);
+        let counted = exact_secs + row.extra.pause;
+        let billable_secs = round_seconds(counted, rule.increment_minutes, rule.method);
+        allocate_rounding(&mut buckets, billable_secs - counted);
         rows.push(TaskDay {
             task_id,
             project_id: project_id.to_owned(),
             day,
             first_start: row.first.unwrap_or_default(),
             exact_secs,
+            pause_secs: row.extra.pause,
+            thinking_secs: row.extra.thinking,
             billable_secs,
             rule,
-            rounded_to_zero: exact_secs > 0 && billable_secs == 0,
-            zero_exact: exact_secs == 0,
+            rounded_to_zero: counted > 0 && billable_secs == 0,
+            zero_exact: counted == 0,
             buckets,
         });
     }

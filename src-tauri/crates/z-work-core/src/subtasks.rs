@@ -98,10 +98,156 @@ pub fn extract(doc: &Value) -> String {
     lines.join("\n")
 }
 
+/// A task-list item, the unit that can carry its own tracked time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Item {
+    pub id: String,
+    pub text: String,
+    pub checked: bool,
+}
+
+fn item_text(item: &Value) -> String {
+    let mut text = String::new();
+    for child in children(item) {
+        if !is_list(child.get("type").and_then(Value::as_str)) {
+            inline_text(child, &mut text);
+        }
+    }
+    text.trim().to_owned()
+}
+
+fn walk_items(node: &Value, out: &mut Vec<Item>) {
+    if node.get("type").and_then(Value::as_str) == Some("taskItem") {
+        let attrs = node.get("attrs");
+        out.push(Item {
+            id: attrs
+                .and_then(|a| a.get("subtaskId"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            text: item_text(node),
+            checked: attrs
+                .and_then(|a| a.get("checked"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+    for child in children(node) {
+        walk_items(child, out);
+    }
+}
+
+/// Every task-list item, in document order.
+#[must_use]
+pub fn items(doc: &Value) -> Vec<Item> {
+    let mut out = Vec::new();
+    walk_items(doc, &mut out);
+    out
+}
+
+fn map_items(node: &mut Value, f: &mut dyn FnMut(&mut serde_json::Map<String, Value>, &str)) {
+    if node.get("type").and_then(Value::as_str) == Some("taskItem") {
+        let text = item_text(node);
+        if let Some(obj) = node.as_object_mut() {
+            let attrs = obj
+                .entry("attrs")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(a) = attrs.as_object_mut() {
+                f(a, &text);
+            }
+        }
+    }
+    if let Some(content) = node.get_mut("content").and_then(Value::as_array_mut) {
+        for child in content {
+            map_items(child, f);
+        }
+    }
+}
+
+/// For a copy: keeps the text, unticks everything and forgets ids, so no time carries over.
+#[must_use]
+pub fn reset(doc: &Value) -> Value {
+    let mut out = doc.clone();
+    map_items(&mut out, &mut |attrs, _| {
+        attrs.insert("checked".to_owned(), Value::Bool(false));
+        attrs.remove("subtaskId");
+    });
+    out
+}
+
+/// Gives each task-list item a stable id. An editor may send items back without one, so a missing id
+/// is recovered from the previous version by text, then by position, and only then generated.
+#[must_use]
+pub fn assign_ids(doc: &Value, previous: Option<&Value>) -> Value {
+    let old = previous.map(items).unwrap_or_default();
+    let mut used: Vec<String> = items(doc)
+        .into_iter()
+        .map(|i| i.id)
+        .filter(|i| !i.is_empty())
+        .collect();
+    let mut out = doc.clone();
+    let mut position = 0usize;
+    map_items(&mut out, &mut |attrs, text| {
+        let here = position;
+        position += 1;
+        let current = attrs.get("subtaskId").and_then(Value::as_str);
+        if current.is_some_and(|c| !c.is_empty()) {
+            return;
+        }
+        let by_text = old
+            .iter()
+            .find(|o| o.text == text && !o.id.is_empty() && !used.contains(&o.id));
+        let by_place = old
+            .get(here)
+            .filter(|o| !o.id.is_empty() && !used.contains(&o.id));
+        let id = by_text
+            .or(by_place)
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), |o| o.id.clone());
+        used.push(id.clone());
+        attrs.insert("subtaskId".to_owned(), Value::String(id));
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn tasks_doc(items: &[(&str, bool, Option<&str>)]) -> Value {
+        let list: Vec<Value> = items
+            .iter()
+            .map(|(t, c, id)| {
+                let mut attrs = json!({"checked": c});
+                if let Some(id) = id {
+                    attrs["subtaskId"] = json!(id);
+                }
+                json!({"type":"taskItem","attrs":attrs,"content":[{"type":"paragraph","content":[{"type":"text","text":t}]}]})
+            })
+            .collect();
+        json!({"type":"doc","content":[{"type":"taskList","content":list}]})
+    }
+
+    #[test]
+    fn ids_are_given_once_and_kept_when_the_editor_drops_them() {
+        let first = assign_ids(&tasks_doc(&[("One", false, None), ("Two", true, None)]), None);
+        let ids = items(&first);
+        assert!(!ids[0].id.is_empty());
+        assert_ne!(ids[0].id, ids[1].id);
+        let same_text = assign_ids(&tasks_doc(&[("Two", true, None), ("One", false, None)]), Some(&first));
+        assert_eq!(items(&same_text)[0].id, ids[1].id, "by text");
+        let renamed = assign_ids(&tasks_doc(&[("One!", false, None), ("Two", true, None)]), Some(&first));
+        assert_eq!(items(&renamed)[0].id, ids[0].id, "by position");
+        let kept = assign_ids(&first, Some(&first));
+        assert_eq!(kept, first);
+    }
+
+    #[test]
+    fn a_reset_copy_keeps_text_and_drops_ticks_and_ids() {
+        let doc = tasks_doc(&[("One", true, Some("x"))]);
+        let copy = items(&reset(&doc));
+        assert_eq!((copy[0].text.as_str(), copy[0].checked, copy[0].id.as_str()), ("One", false, ""));
+    }
 
     fn para(t: &str) -> Value {
         json!({"type":"paragraph","content":[{"type":"text","text":t}]})

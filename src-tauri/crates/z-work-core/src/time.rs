@@ -13,6 +13,8 @@ pub struct Ts(pub i64);
 
 impl Ts {
     /// 0000-01-01T00:00:00Z and 9999-12-31T23:59:59Z: the range `iso` can print and `parse` can read.
+    /// 2000-01-01, the earliest moment any record can plausibly hold.
+    pub const EARLIEST: Self = Self(946_684_800);
     pub const MIN: Self = Self(-62_167_219_200);
     pub const MAX: Self = Self(253_402_300_799);
 

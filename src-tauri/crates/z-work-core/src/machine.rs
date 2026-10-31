@@ -52,6 +52,12 @@ pub struct ProjectInput {
     pub budget_hours: Option<f64>,
     #[serde(default)]
     pub client_zone: Option<String>,
+    #[serde(default)]
+    pub billing_type: BillingType,
+    #[serde(default)]
+    pub fixed_fee_cents: Option<i64>,
+    #[serde(default)]
+    pub fee_currency: Option<String>,
 }
 
 fn yes() -> bool {
@@ -95,6 +101,8 @@ pub struct TaskInput {
     /// Only read when creating a task: the task this one continues.
     #[serde(default)]
     pub continued_from: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// An edit to some fields of a task. A field left out keeps whatever the store holds now, so an
@@ -109,6 +117,8 @@ pub struct TaskPatch {
     /// `null` from the page clears the description; leaving the key out keeps it.
     #[serde(default, deserialize_with = "present_value")]
     pub description: Option<Value>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 fn present_value<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
@@ -122,6 +132,7 @@ pub enum RequiredField {
     Name,
     Project,
     Description,
+    Tags,
 }
 
 pub const COLD_REQUIRED: &[RequiredField] = &[
@@ -192,7 +203,7 @@ impl Shared {
             .ok_or(CoreError::NotFound("project"))
     }
 
-    fn live_task(&self, id: &str) -> Result<&Task, CoreError> {
+    pub(crate) fn live_task(&self, id: &str) -> Result<&Task, CoreError> {
         self.tasks
             .get(id)
             .filter(|t| t.is_live())
@@ -232,7 +243,30 @@ impl Shared {
                 .map(|b| clean_non_negative(b, "Budget"))
                 .transpose()?,
             client_zone: client_zone.map(str::to_owned),
+            billing_type: input.billing_type,
+            fixed_fee_cents: self.clean_fee(input)?,
+            fee_currency: input.fee_currency.clone().filter(|_| {
+                input.billing_type == BillingType::FixedFee
+            }),
         })
+    }
+
+    fn clean_fee(&self, input: &ProjectInput) -> Result<Option<i64>, CoreError> {
+        if input.billing_type != BillingType::FixedFee {
+            return Ok(None);
+        }
+        let Some(fee) = input.fixed_fee_cents else {
+            return Err(CoreError::Validation("enter the fixed fee".into()));
+        };
+        if !(0..=1_000_000_000_000).contains(&fee) {
+            return Err(CoreError::Validation("that fee is out of range".into()));
+        }
+        if !input.fee_currency.as_deref().is_some_and(is_currency) {
+            return Err(CoreError::Validation(
+                "the fee's currency must be EUR or USD".into(),
+            ));
+        }
+        Ok(Some(fee))
     }
 
     pub fn create_project(
@@ -253,6 +287,9 @@ impl Shared {
                 billable: clean.billable,
                 budget_hours: clean.budget_hours,
                 client_zone: clean.client_zone,
+                billing_type: clean.billing_type,
+                fixed_fee_cents: clean.fixed_fee_cents,
+                fee_currency: clean.fee_currency,
                 created_at: ctx.now,
                 stamp: ctx.stamp(),
             },
@@ -277,6 +314,9 @@ impl Shared {
         p.billable = clean.billable;
         p.budget_hours = clean.budget_hours;
         p.client_zone = clean.client_zone;
+        p.billing_type = clean.billing_type;
+        p.fixed_fee_cents = clean.fixed_fee_cents;
+        p.fee_currency = clean.fee_currency;
         p.stamp = ctx.next(&p.stamp);
         Ok(())
     }
@@ -353,6 +393,7 @@ impl Shared {
 
     pub fn create_task(&mut self, ctx: &Ctx<'_>, input: &TaskInput) -> Result<String, CoreError> {
         let (name, project_id) = self.clean_task(input, None)?;
+        self.check_tag_ids(&input.tags)?;
         if let Some(source) = &input.continued_from {
             self.live_task(source)?;
         }
@@ -365,7 +406,7 @@ impl Shared {
                 name_stamp: ctx.stamp(),
                 project_id,
                 project_stamp: ctx.stamp(),
-                description: input.description.clone(),
+                description: subtasks::assign_ids(&input.description, None),
                 description_stamp: ctx.stamp(),
                 deleted: false,
                 deleted_stamp: ctx.stamp(),
@@ -375,6 +416,10 @@ impl Shared {
                 pause_reason: None,
                 state_stamp: ctx.stamp(),
                 stopped_at: None,
+                tags: input.tags.clone(),
+                tags_stamp: ctx.stamp(),
+                active_subtask: None,
+                active_subtask_stamp: ctx.stamp(),
             },
         );
         Ok(id)
@@ -389,6 +434,7 @@ impl Shared {
     ) -> Result<(), CoreError> {
         let previous = self.live_task(id)?.project_id.clone();
         let (name, project_id) = self.clean_task(input, Some(&previous))?;
+        self.check_tag_ids(&input.tags)?;
         let t = self.tasks.get_mut(id).ok_or(CoreError::NotFound("task"))?;
         // Each field has its own clock, so edits to different fields on two devices both survive.
         if t.name != name {
@@ -399,9 +445,14 @@ impl Shared {
             t.project_id = project_id;
             t.project_stamp = ctx.next(&t.project_stamp);
         }
-        if t.description != input.description {
-            t.description = input.description.clone();
+        let description = subtasks::assign_ids(&input.description, Some(&t.description));
+        if t.description != description {
+            t.description = description;
             t.description_stamp = ctx.next(&t.description_stamp);
+        }
+        if !input.tags.is_empty() && t.tags != input.tags {
+            t.tags = input.tags.clone();
+            t.tags_stamp = ctx.next(&t.tags_stamp);
         }
         Ok(())
     }
@@ -434,6 +485,9 @@ impl Shared {
         if let Some(d) = &patch.description {
             check_description(d)?;
         }
+        if let Some(tags) = &patch.tags {
+            self.check_tag_ids(tags)?;
+        }
         let t = self.tasks.get_mut(id).ok_or(CoreError::NotFound("task"))?;
         if let Some(name) = name
             && t.name != name
@@ -445,11 +499,18 @@ impl Shared {
             t.project_id = project_id;
             t.project_stamp = ctx.next(&t.project_stamp);
         }
-        if let Some(d) = &patch.description
-            && t.description != *d
+        if let Some(d) = &patch.description {
+            let d = subtasks::assign_ids(d, Some(&t.description));
+            if t.description != d {
+                t.description = d;
+                t.description_stamp = ctx.next(&t.description_stamp);
+            }
+        }
+        if let Some(tags) = &patch.tags
+            && t.tags != *tags
         {
-            t.description = d.clone();
-            t.description_stamp = ctx.next(&t.description_stamp);
+            t.tags.clone_from(tags);
+            t.tags_stamp = ctx.next(&t.tags_stamp);
         }
         Ok(())
     }
@@ -458,6 +519,11 @@ impl Shared {
         let t = self.live_task(id)?;
         if t.state != TaskState::Draft {
             return Err(CoreError::Conflict("only a draft can be deleted".into()));
+        }
+        if self.segments.values().any(|s| s.task_id == id) {
+            return Err(CoreError::Conflict(
+                "this draft has time entered by hand; void that time first".into(),
+            ));
         }
         let t = self.tasks.get_mut(id).ok_or(CoreError::NotFound("task"))?;
         t.deleted = true;
@@ -475,7 +541,7 @@ impl Shared {
             .collect()
     }
 
-    fn close_segment(&mut self, id: &str, at: Ts) {
+    pub(crate) fn close_segment(&mut self, id: &str, at: Ts) {
         if let Some(seg) = self.segments.get_mut(id) {
             // A clock that went backwards yields a zero-length segment, never a negative one.
             seg.end = Some(at.max(seg.start));
@@ -519,7 +585,7 @@ impl Shared {
         outcome
     }
 
-    fn open_segment(&mut self, ctx: &Ctx<'_>, task_id: &str) {
+    pub(crate) fn open_segment(&mut self, ctx: &Ctx<'_>, task_id: &str) {
         let last_end = self
             .segments
             .values()
@@ -527,6 +593,7 @@ impl Shared {
             .filter_map(|s| s.end)
             .max(); // own device only: another's clock may run ahead
         let start = last_end.map_or(ctx.now, |e| e.max(ctx.now));
+        let subtask_id = self.tasks.get(task_id).and_then(|t| t.active_subtask.clone());
         let id = new_id();
         self.segments.insert(
             id.clone(),
@@ -536,6 +603,9 @@ impl Shared {
                 device_id: ctx.device.to_owned(),
                 start,
                 end: None,
+                subtask_id,
+                edit_stamp: ctx.stamp(),
+                ..Segment::default()
             },
         );
     }
@@ -879,6 +949,16 @@ impl Shared {
     }
 }
 
+/// What a cold start needs. Tags join the list as soon as any exist.
+#[must_use]
+pub fn cold_required(shared: &Shared) -> Vec<RequiredField> {
+    let mut out = COLD_REQUIRED.to_vec();
+    if shared.tags.values().any(|t| !t.deleted) {
+        out.push(RequiredField::Tags);
+    }
+    out
+}
+
 /// Allow-list of replicated settings. `null` clears a value.
 pub fn check_setting(key: &str, value: &Value) -> Result<(), CoreError> {
     let invalid = || CoreError::Validation(format!("invalid value for {key}"));
@@ -896,6 +976,17 @@ pub fn check_setting(key: &str, value: &Value) -> Result<(), CoreError> {
         "clientWorkStart" | "clientWorkEnd" => {
             if !value.is_null() {
                 check_hhmm(value.as_str().ok_or_else(invalid)?, key)?;
+            }
+        }
+        "remindPastShift" => {
+            if !value.is_boolean() {
+                return Err(invalid());
+            }
+        }
+        // Whole minutes. `null` or 0 turns the feature off.
+        "idleMinutes" | "longRunMinutes" => {
+            if !value.is_null() && !value.as_i64().is_some_and(|m| (0..=10_080).contains(&m)) {
+                return Err(invalid());
             }
         }
         "dailyTargetHours" | "weeklyTargetHours" => {
@@ -938,6 +1029,7 @@ pub(crate) mod tests {
             project_id: project.into(),
             description: Value::Null,
             continued_from: None,
+            tags: Vec::new(),
         }
     }
 

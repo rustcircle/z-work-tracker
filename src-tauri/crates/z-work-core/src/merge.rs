@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::model::{
-    Project, RateVersion, RoundingVersion, Segment, SettingEntry, Shared, ShiftVersion, Stamp, Task,
+    AuditEntry, BillablePause, BillingSummary, DevicePrefix, IdleGap, Project, RateVersion,
+    RoundingVersion, Segment, SettingEntry, Shared, ShiftVersion, Stamp, Tag, Task, Template,
 };
 
 fn canonical<T: Serialize>(v: &T) -> String {
@@ -89,6 +90,13 @@ fn merge_task(a: &Task, b: &Task) -> Task {
     );
     let (deleted, deleted_stamp) =
         field(&a.deleted, &a.deleted_stamp, &b.deleted, &b.deleted_stamp);
+    let (tags, tags_stamp) = field(&a.tags, &a.tags_stamp, &b.tags, &b.tags_stamp);
+    let (active_subtask, active_subtask_stamp) = field(
+        &a.active_subtask,
+        &a.active_subtask_stamp,
+        &b.active_subtask,
+        &b.active_subtask_stamp,
+    );
     // Stopped is final: it outranks any other state whatever the clocks say.
     let state_key = |t: &'_ Task| canonical(&StateKey(&t.state, &t.pause_reason));
     let state_from_a = a
@@ -115,6 +123,10 @@ fn merge_task(a: &Task, b: &Task) -> Task {
         pause_reason: state.pause_reason.clone(),
         state_stamp: state.state_stamp.clone(),
         stopped_at: a.stopped_at.max(b.stopped_at),
+        tags,
+        tags_stamp,
+        active_subtask,
+        active_subtask_stamp,
     }
 }
 
@@ -127,15 +139,73 @@ fn field<T: Serialize + Clone>(a: &T, sa: &Stamp, b: &T, sb: &Stamp) -> (T, Stam
     }
 }
 
-/// A closed copy beats an open copy. Between closed copies the later end wins.
+/// The recorded times: a closed copy beats an open copy, and between closed copies the later end
+/// wins. A correction merges separately, so it survives whichever copy closed the segment.
 fn merge_segment(a: &Segment, b: &Segment) -> Segment {
     let rank = |s: &Segment| (s.end.is_some(), s.end);
-    match rank(a)
-        .cmp(&rank(b))
-        .then_with(|| canonical(a).cmp(&canonical(b)))
-    {
-        Ordering::Less => b.clone(),
-        _ => a.clone(),
+    let raw = |s: &Segment| {
+        let mut r = s.clone();
+        r.edit = None;
+        r.edit_stamp = Stamp::default();
+        canonical(&r)
+    };
+    let base = match rank(a).cmp(&rank(b)).then_with(|| raw(a).cmp(&raw(b))) {
+        Ordering::Less => b,
+        _ => a,
+    };
+    let (edit, edit_stamp) = field(&a.edit, &a.edit_stamp, &b.edit, &b.edit_stamp);
+    Segment {
+        edit,
+        edit_stamp,
+        ..base.clone()
+    }
+}
+
+/// Only the decision changes after a gap is recorded.
+fn merge_gap(a: &IdleGap, b: &IdleGap) -> IdleGap {
+    let (decision, decision_stamp) =
+        field(&a.decision, &a.decision_stamp, &b.decision, &b.decision_stamp);
+    let fixed = |g: &IdleGap| {
+        let mut f = g.clone();
+        f.decision = crate::model::GapDecision::Pending;
+        f.decision_stamp = Stamp::default();
+        canonical(&f)
+    };
+    let base = if fixed(a) >= fixed(b) { a } else { b };
+    IdleGap {
+        decision,
+        decision_stamp,
+        ..base.clone()
+    }
+}
+
+fn merge_pause(a: &BillablePause, b: &BillablePause) -> BillablePause {
+    lww_tombstone(a, a.deleted, &a.stamp, b, b.deleted, &b.stamp).clone()
+}
+
+fn merge_tag(a: &Tag, b: &Tag) -> Tag {
+    lww_tombstone(a, a.deleted, &a.stamp, b, b.deleted, &b.stamp).clone()
+}
+
+fn merge_template(a: &Template, b: &Template) -> Template {
+    lww_tombstone(a, a.deleted, &a.stamp, b, b.deleted, &b.stamp).clone()
+}
+
+/// A voided summary stays voided, so its time can't silently return to billed.
+fn merge_summary(a: &BillingSummary, b: &BillingSummary) -> BillingSummary {
+    lww_tombstone(a, a.voided, &a.stamp, b, b.voided, &b.stamp).clone()
+}
+
+fn merge_prefix(a: &DevicePrefix, b: &DevicePrefix) -> DevicePrefix {
+    lww(a, &a.stamp, b, &b.stamp).clone()
+}
+
+/// The audit trail only grows. The same id always holds the same entry, barring a damaged file.
+fn merge_audit(a: &AuditEntry, b: &AuditEntry) -> AuditEntry {
+    if canonical(a) >= canonical(b) {
+        a.clone()
+    } else {
+        b.clone()
     }
 }
 
@@ -166,6 +236,13 @@ pub fn merge(a: &Shared, b: &Shared) -> Shared {
         shifts: merge_map(&a.shifts, &b.shifts, merge_shift),
         rates: merge_map(&a.rates, &b.rates, merge_rate),
         rounding: merge_map(&a.rounding, &b.rounding, merge_rounding),
+        gaps: merge_map(&a.gaps, &b.gaps, merge_gap),
+        pauses: merge_map(&a.pauses, &b.pauses, merge_pause),
+        tags: merge_map(&a.tags, &b.tags, merge_tag),
+        templates: merge_map(&a.templates, &b.templates, merge_template),
+        summaries: merge_map(&a.summaries, &b.summaries, merge_summary),
+        prefixes: merge_map(&a.prefixes, &b.prefixes, merge_prefix),
+        audit_log: merge_map(&a.audit_log, &b.audit_log, merge_audit),
     }
 }
 
@@ -195,6 +272,9 @@ mod tests {
                 billable: n == 1,
                 budget_hours: None,
                 client_zone: None,
+                billing_type: crate::model::BillingType::Hourly,
+                fixed_fee_cents: None,
+                fee_currency: None,
                 created_at: Ts(0),
                 stamp,
             },
@@ -235,18 +315,164 @@ mod tests {
                     pause_reason: (st == 2).then_some(PauseReason::User),
                     state_stamp,
                     stopped_at: stopped.map(Ts),
+                    tags: if m == 0 { vec!["g0".into()] } else { Vec::new() },
+                    tags_stamp: name_stamp2(id),
+                    active_subtask: (n == 1).then(|| "a".into()),
+                    active_subtask_stamp: name_stamp2(n),
                 },
             )
     }
 
+    fn name_stamp2(n: u8) -> Stamp {
+        Stamp {
+            at: Ts(i64::from(n)),
+            by: "a".into(),
+        }
+    }
+
     fn segment() -> impl Strategy<Value = Segment> {
-        (0u8..4, prop::option::of(1i64..5)).prop_map(|(id, end)| Segment {
-            id: format!("s{id}"),
+        (0u8..4, prop::option::of(1i64..5), prop::option::of(1i64..5), stamp()).prop_map(
+            |(id, end, edit, edit_stamp)| Segment {
+                id: format!("s{id}"),
+                task_id: "t0".into(),
+                device_id: "a".into(),
+                start: Ts(0),
+                end: end.map(Ts),
+                edit: edit.map(|e| crate::model::SegmentEdit {
+                    start: Ts(0),
+                    end: Ts(e),
+                    voided: e == 2,
+                    reason: String::new(),
+                }),
+                edit_stamp,
+                ..Segment::default()
+            },
+        )
+    }
+
+    fn gap() -> impl Strategy<Value = IdleGap> {
+        (0u8..3, 0u8..4, stamp()).prop_map(|(id, d, decision_stamp)| IdleGap {
+            id: format!("g{id}"),
+            segment_id: "s0".into(),
             task_id: "t0".into(),
             device_id: "a".into(),
             start: Ts(0),
-            end: end.map(Ts),
+            end: Ts(1),
+            kind: crate::model::GapKind::Sleep,
+            decision: [
+                crate::model::GapDecision::Pending,
+                crate::model::GapDecision::Keep,
+                crate::model::GapDecision::Drop,
+                crate::model::GapDecision::Thinking,
+            ][d as usize],
+            decision_stamp,
         })
+    }
+
+    fn pause() -> impl Strategy<Value = BillablePause> {
+        (0u8..3, any::<bool>(), 0u8..3, stamp()).prop_map(|(id, deleted, n, stamp)| BillablePause {
+            id: format!("b{id}"),
+            task_id: "t0".into(),
+            start: Ts(0),
+            end: Ts(i64::from(n) + 1),
+            note: format!("{n}"),
+            deleted,
+            stamp,
+        })
+    }
+
+    fn tag() -> impl Strategy<Value = Tag> {
+        (0u8..3, any::<bool>(), 0u8..3, stamp()).prop_map(|(id, deleted, n, stamp)| Tag {
+            id: format!("g{id}"),
+            name: format!("n{n}"),
+            color: "#000000".into(),
+            deleted,
+            stamp,
+        })
+    }
+
+    fn template() -> impl Strategy<Value = Template> {
+        (0u8..3, any::<bool>(), 0u8..3, stamp()).prop_map(|(id, deleted, n, stamp)| Template {
+            id: format!("m{id}"),
+            name: format!("n{n}"),
+            project_id: None,
+            description: Value::Null,
+            tags: Vec::new(),
+            deleted,
+            stamp,
+        })
+    }
+
+    fn summary() -> impl Strategy<Value = BillingSummary> {
+        (0u8..3, any::<bool>(), 0u32..3, stamp()).prop_map(|(id, voided, number, stamp)| {
+            BillingSummary {
+                id: format!("y{id}"),
+                reference: format!("A-{number}"),
+                prefix: "A".into(),
+                number,
+                device_id: "a".into(),
+                project_id: "p0".into(),
+                from: "2026-01-01".into(),
+                to: "2026-01-02".into(),
+                zone: "UTC".into(),
+                created_at: Ts(0),
+                segment_ids: vec![format!("s{number}")],
+                pause_ids: Vec::new(),
+                rows: Vec::new(),
+                totals: BTreeMap::new(),
+                voided,
+                stamp,
+            }
+        })
+    }
+
+    fn audit() -> impl Strategy<Value = AuditEntry> {
+        (0u8..3, 0u8..2).prop_map(|(id, n)| AuditEntry {
+            id: format!("z{id}"),
+            at: Ts(0),
+            by: "a".into(),
+            entity: "segment".into(),
+            entity_id: "s0".into(),
+            action: format!("a{n}"),
+            reason: String::new(),
+            before: Value::Null,
+            after: Value::Null,
+        })
+    }
+
+    fn prefix() -> impl Strategy<Value = (String, DevicePrefix)> {
+        (0u8..2, 0u8..3, stamp()).prop_map(|(d, n, stamp)| {
+            (
+                format!("d{d}"),
+                DevicePrefix {
+                    prefix: format!("P{n}"),
+                    stamp,
+                },
+            )
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn phase2() -> impl Strategy<
+        Value = (
+            Vec<IdleGap>,
+            Vec<BillablePause>,
+            Vec<Tag>,
+            Vec<Template>,
+            Vec<BillingSummary>,
+            Vec<AuditEntry>,
+            Vec<(String, DevicePrefix)>,
+        ),
+    > {
+        (
+            prop::collection::vec(gap(), 0..3),
+            prop::collection::vec(pause(), 0..3),
+            prop::collection::vec(tag(), 0..3),
+            prop::collection::vec(template(), 0..3),
+            prop::collection::vec(summary(), 0..3),
+            prop::collection::vec(audit(), 0..3),
+            prop::collection::vec(prefix(), 0..2),
+        )
     }
 
     fn setting() -> impl Strategy<Value = (String, SettingEntry)> {
@@ -320,8 +546,9 @@ mod tests {
             prop::collection::vec(shift(), 0..3),
             prop::collection::vec(rate(), 0..3),
             prop::collection::vec(rounding(), 0..3),
+            phase2(),
         )
-            .prop_map(|(ps, ts, ss, st, sh, ra, ro)| Shared {
+            .prop_map(|(ps, ts, ss, st, sh, ra, ro, (gs, bs, ta, te, su, au, pr))| Shared {
                 projects: ps.into_iter().map(|p| (p.id.clone(), p)).collect(),
                 tasks: ts.into_iter().map(|t| (t.id.clone(), t)).collect(),
                 segments: ss.into_iter().map(|s| (s.id.clone(), s)).collect(),
@@ -329,6 +556,13 @@ mod tests {
                 shifts: sh.into_iter().map(|s| (s.id.clone(), s)).collect(),
                 rates: ra.into_iter().map(|r| (r.id.clone(), r)).collect(),
                 rounding: ro.into_iter().map(|r| (r.id.clone(), r)).collect(),
+                gaps: gs.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                pauses: bs.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                tags: ta.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                templates: te.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                summaries: su.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                audit_log: au.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                prefixes: pr.into_iter().collect(),
             })
     }
 

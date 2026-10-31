@@ -6,7 +6,8 @@ use chrono_tz::Tz;
 use serde::Deserialize;
 
 use crate::billing::{TaskDay, task_days};
-use crate::model::{RemoteDevice, Segment, Shared};
+use crate::model::{GapDecision, RemoteDevice, Segment, Shared};
+use crate::pieces::{PieceKind, pieces};
 use crate::subtasks;
 use crate::time::Ts;
 
@@ -66,25 +67,28 @@ impl ExportSource {
         rows
     }
 
-    /// Segments in start order, with names resolved.
+    /// What counts as time, in start order, with names resolved. Raw times are alongside.
     #[must_use]
     pub fn segments(&self) -> Vec<SegmentRow> {
-        let mut rows: Vec<SegmentRow> = self
-            .data
-            .segments
-            .values()
-            .filter_map(|s| {
-                let task = self.data.tasks.get(&s.task_id).filter(|t| t.is_live())?;
+        let end = |s: &Segment| self.end_of(s);
+        let mut rows: Vec<SegmentRow> = pieces(&self.data, &end)
+            .into_iter()
+            .filter_map(|p| {
+                let task = self.data.tasks.get(&p.task_id).filter(|t| t.is_live())?;
                 let project = self.data.projects.get(&task.project_id);
+                let raw = self.data.segments.get(&p.source_id);
                 Some(SegmentRow {
-                    segment_id: s.id.clone(),
+                    segment_id: p.id.clone(),
                     task_name: task.name.clone(),
                     project_id: task.project_id.clone(),
                     project_name: project
-                        .map_or_else(|| "(unknown project)".to_owned(), |p| p.name.clone()),
-                    start: s.start,
-                    end: s.end,
-                    effective_end: self.end_of(s),
+                        .map_or_else(|| "(unknown project)".to_owned(), |x| x.name.clone()),
+                    start: p.start,
+                    end: (!p.open).then_some(p.end),
+                    effective_end: p.end,
+                    kind: p.kind,
+                    raw_start: raw.map(|r| r.start),
+                    raw_end: raw.and_then(|r| r.end),
                 })
             })
             .collect();
@@ -95,6 +99,86 @@ impl ExportSource {
         });
         rows
     }
+
+    /// Everything laid over the raw record, for the exports' Adjustments sheet.
+    #[must_use]
+    pub fn adjustments(&self) -> Vec<AdjustmentRow> {
+        let task_of = |id: &str| {
+            self.data
+                .tasks
+                .get(id)
+                .filter(|t| t.is_live())
+                .map(|t| t.name.clone())
+        };
+        let mut rows = Vec::new();
+        for g in self.data.gaps.values() {
+            let Some(task_name) = task_of(&g.task_id) else {
+                continue;
+            };
+            let kind = match g.decision {
+                GapDecision::Pending => "Away, not confirmed (not counted)",
+                GapDecision::Keep => "Away, kept",
+                GapDecision::Drop => "Away, dropped (not counted)",
+                GapDecision::Thinking => "Away, thinking",
+            };
+            rows.push(AdjustmentRow {
+                kind,
+                task_name,
+                start: g.start,
+                end: g.end,
+                note: String::new(),
+            });
+        }
+        for p in self.data.pauses.values().filter(|p| !p.deleted) {
+            let Some(task_name) = task_of(&p.task_id) else {
+                continue;
+            };
+            rows.push(AdjustmentRow {
+                kind: "Billable pause",
+                task_name,
+                start: p.start,
+                end: p.end,
+                note: p.note.clone(),
+            });
+        }
+        for s in self.data.segments.values() {
+            let Some(task_name) = task_of(&s.task_id) else {
+                continue;
+            };
+            let end = s.end.unwrap_or(s.start);
+            if let Some(e) = &s.edit {
+                rows.push(AdjustmentRow {
+                    kind: if e.voided { "Voided" } else { "Corrected" },
+                    task_name: task_name.clone(),
+                    start: e.start,
+                    end: e.end,
+                    note: format!("{} Recorded {} to {}.", e.reason, s.start.iso(), end.iso())
+                        .trim()
+                        .to_owned(),
+                });
+            }
+            if s.manual {
+                rows.push(AdjustmentRow {
+                    kind: "Entered by hand",
+                    task_name,
+                    start: s.start,
+                    end,
+                    note: String::new(),
+                });
+            }
+        }
+        rows.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.kind.cmp(b.kind)));
+        rows
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AdjustmentRow {
+    pub kind: &'static str,
+    pub task_name: String,
+    pub start: Ts,
+    pub end: Ts,
+    pub note: String,
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +200,9 @@ pub struct SegmentRow {
     /// `None` while the segment is still open.
     pub end: Option<Ts>,
     pub effective_end: Ts,
+    pub kind: PieceKind,
+    pub raw_start: Option<Ts>,
+    pub raw_end: Option<Ts>,
 }
 
 /// Chosen in the export dialog. Zones are validated before use.
