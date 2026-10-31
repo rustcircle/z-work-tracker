@@ -25,7 +25,9 @@
     ],
     "security": {
       "freezePrototype": true,
-      "capabilities": ["default"],
+      "capabilities": [
+        "default"
+      ],
       "csp": {
         "default-src": "'self'",
         "script-src": "'self'",
@@ -50,21 +52,35 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "app"],
+    "targets": [
+      "nsis",
+      "app"
+    ],
     "publisher": "REPLACE-WITH-PUBLISHER-NAME-ON-THE-CERTIFICATE",
     "copyright": "Copyright (c) REPLACE-WITH-PUBLISHER-NAME-ON-THE-CERTIFICATE",
     "category": "Productivity",
     "shortDescription": "Labor hours tracker",
     "longDescription": "Local-first tracker of labor hours by project and task, with timeline, analysis and spreadsheet exports.",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "windows": {
-      "webviewInstallMode": { "type": "skip" },
+      "webviewInstallMode": {
+        "type": "skip"
+      },
       "signCommand": "node ../scripts/windows-sign.mjs %1",
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "windows/hooks.nsh",
         "installerIcon": "icons/icon.ico",
-        "displayLanguageSelector": false
+        "displayLanguageSelector": false,
+        "customLanguageFiles": {
+          "English": "windows/English.nsh"
+        }
       }
     }
   }

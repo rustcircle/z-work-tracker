@@ -2,9 +2,21 @@
 ; exit path first, so an open segment is closed cleanly before the generic process check runs.
 
 !macro LT_QUIT_RUNNING_APP
-  IfFileExists "$INSTDIR\${MAINBINARYNAME}.exe" 0 +3
-    ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --quit'
-    Sleep 1500
+  IfFileExists "$INSTDIR\${MAINBINARYNAME}.exe" 0 lt_quit_done
+  nsis_tauri_utils::FindProcessCurrentUser "${MAINBINARYNAME}.exe"
+  Pop $R0
+  IntCmp $R0 0 0 lt_quit_done lt_quit_done
+  ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --quit'
+  ; Waits for the running copy to finish its exit path, up to about 6 seconds.
+  StrCpy $R1 0
+  lt_quit_wait:
+    Sleep 300
+    nsis_tauri_utils::FindProcessCurrentUser "${MAINBINARYNAME}.exe"
+    Pop $R0
+    IntCmp $R0 0 0 lt_quit_done lt_quit_done
+    IntOp $R1 $R1 + 1
+    IntCmp $R1 20 lt_quit_done lt_quit_wait lt_quit_done
+  lt_quit_done:
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
@@ -26,4 +38,5 @@
 !macro NSIS_HOOK_POSTUNINSTALL
   ; Removes the "Start with Windows" entry, if the user turned it on.
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${PRODUCTNAME}"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${MAINBINARYNAME}"
 !macroend

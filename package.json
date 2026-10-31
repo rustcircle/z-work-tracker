@@ -15,7 +15,7 @@
     "e2e": "playwright test",
     "tauri": "tauri",
     "smoke:native": "node scripts/native-smoke.mjs",
-    "gen:tz": "cargo run --manifest-path src-tauri/Cargo.toml -p labor-core --example gen_tzdata -- ../../src/generated/tzdata.json",
+    "gen:tz": "cargo run --manifest-path src-tauri/Cargo.toml -p labor-core --example gen_tzdata -- src/generated/tzdata.json",
     "package:windows": "node scripts/package-windows.mjs"
   },
   "pnpm": {

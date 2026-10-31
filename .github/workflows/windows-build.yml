@@ -14,27 +14,20 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 45
-    env:
-      AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
-      AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
-      AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
-      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-      WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+    # Add protection rules to this environment in the repository settings; secrets live there.
+    environment: windows-signing
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
       - name: Install the Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -48,19 +41,36 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml -p labor-core
       - name: Prepare signing
         shell: pwsh
+        env:
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
         run: |
           if ($env:WINDOWS_CERT_PFX_BASE64) {
             $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
             [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
             "WINDOWS_CERT_PFX_PATH=$pfx" >> $env:GITHUB_ENV
           }
-          if ($env:AZURE_SIGNING_ACCOUNT) { cargo install trusted-signing-cli --locked }
+          if ($env:AZURE_SIGNING_ACCOUNT) { cargo install trusted-signing-cli --version 0.11.0 --locked }
           $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
           "SIGNTOOL_PATH=$($signtool.FullName)" >> $env:GITHUB_ENV
       - name: Build the installer
+        env:
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
         run: pnpm tauri build --bundles nsis
       - name: Verify the signature, or report unsigned
         shell: pwsh
+        env:
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
         run: |
           $files = @('src-tauri\target\release\labor-tracker.exe') + (Get-ChildItem 'src-tauri\target\release\bundle\nsis\*-setup.exe').FullName
           $wanted = $env:AZURE_SIGNING_ACCOUNT -or $env:WINDOWS_CERT_THUMBPRINT -or $env:WINDOWS_CERT_PFX_BASE64
@@ -76,7 +86,7 @@ jobs:
         if: always()
         shell: pwsh
         run: if ($env:WINDOWS_CERT_PFX_PATH) { Remove-Item $env:WINDOWS_CERT_PFX_PATH -Force -ErrorAction SilentlyContinue }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: labor-tracker-windows
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
