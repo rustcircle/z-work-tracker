@@ -6,7 +6,7 @@ rust-version.workspace = true
 description = "Tauri-independent core: state machine, persistence, sync merge, reports"
 license = "MIT"
 authors = ["zWorkTracker project <p@rustcircle.com>"]
-repository = "https://github.com/pmrjgg/z-work-tracker"
+repository = "https://github.com/rustcircle/z-work-tracker"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
