@@ -17,6 +17,7 @@ Status: phase 2 build. It has been run and tested on macOS, and the Windows inst
 - [Metrics reference](#metrics-reference)
 - [Data and privacy](#data-and-privacy)
 - [Developer guide](#developer-guide)
+- [Performance](#performance)
 - [Packaging and signing](#packaging-and-signing)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
@@ -424,6 +425,43 @@ The synced state is a set of records with stable ids, merged by taking the maxim
 
 Work happens on feature branches in small commits that end with the co-author line, and `main` is the published branch on GitHub. Merging and pushing are the owner's call. Lockfiles are tracked.
 
+## Performance
+
+Measured on an Apple M3 Ultra on AC power, with a synthetic store of 12 projects, 400 tasks and three years. 50,000 segments is about 13 years at 10 segments a day, so it's a stress size; 5,000 is the more likely one. **All numbers are macOS.** A typical Windows laptop will be several times slower. WebView2, NTFS and antivirus are the most likely to change the picture, above all cold start, the cost of a disk flush, and what a hidden webview does. Nothing here was measured on Windows.
+
+| | 5,000 segments, before → after | 50,000 segments, before → after |
+|---|---|---|
+| Cold start to first render, real app | 574 → 486 ms | 1,373 → 839 ms |
+| Save after one action | 61 → 30 ms | 249 → 89 ms |
+| Heartbeat, every 30 s with a task running | 60 → 14 ms | 252 → 15 ms |
+| Disk written per heartbeat | 4 MB → 79 bytes | 32 MB → 79 bytes |
+| Opening the store | 81 → 9 ms | 383 → 62 ms |
+| Building and encoding a snapshot | 18 → 10 ms | 169 → 83 ms |
+| Sync cycle with three other devices, nothing new | 150 → 77 ms | 916 → 319 ms |
+
+With a task running and the window hidden, the real app at 50,000 segments used 8.4% of one core before and about 1% after, across all its processes, in the first minutes. WebKit suspends a hidden page after about five minutes, and from then on the main process goes from 2.5% to 0.4% and from 17 to 0.3 idle wakeups a second.
+
+In headless Chromium against the IPC mock, at 50,000 segments, script time a second with a task running goes from 15 to 6 ms on Timeline and from 31 to 6 ms on Analysis with a year selected, and is 0 while hidden. Chromium isn't the app's webview, so these show how the page behaves, not what a user's machine will do. Showing every chart for three years takes about 100 ms the first time and 40 ms after. 200 rounds of tab and range switches grow the JS heap by 2 MB in total, with DOM nodes and listeners flat.
+
+Left alone because measuring showed no case for a change:
+
+- **Lazy-loading TipTap.** Removing it altogether, a 405 KB saving, takes 14 ms off a 569 ms cold start, and the chunk would still ship. Charts would gain no more. The map is already lazy, and its first open takes 415 ms.
+- **Exports.** At 50,000 segments Excel takes 0.95 s and PDF 0.15 s, on a request and off the UI thread.
+- **`opt-level = 3`.** About 10% faster for most of the backend, for a 23% bigger binary.
+- **`panic = "abort"`.** 23% smaller, but a panic in a helper thread would take the app down, where today it survives.
+- **The whole store as JSON.** A save still serialises everything, 16 MB at 50,000 segments, and every action still sends the page a 30 MB snapshot. The cost is linear and acceptable at any likely size. Memory follows the same line, with the webview near 800 MB at 50,000 segments and near 180 MB at 5,000. Changing this means a different storage format and IPC shape.
+
+To repeat the measurements:
+
+```sh
+cd src-tauri && cargo run --release -p z-work-core --example perf_bench -- 50000 out.json   # also prints digests of every output
+pnpm build:e2e && node scripts/perf-frontend.mjs --out out.json                             # headless Chromium against the mock
+CARGO_TARGET_DIR=<dir> pnpm tauri build --no-bundle --features smoke
+node scripts/perf-native.mjs --exe <dir>/release/zWorkTracker --store <store> --out out.json # real app; needs the display on and the window not covered
+```
+
+`perf_bench write-store <dir> <segments> paused` makes such a store. A native run is only valid with the display on, because macOS stops drawing a covered window or one on a sleeping display.
+
 ## Packaging and signing
 
 ### Windows installer from macOS
@@ -543,7 +581,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 
 ## Roadmap
 
-The approved phase 2 list is built, and is described in the [User guide](#user-guide). Next is a performance pass with measurements, on its own branch.
+The approved phase 2 list is built, and is described in the [User guide](#user-guide). The performance pass is done; see [Performance](#performance).
 
 ## Third-party data licences
 
