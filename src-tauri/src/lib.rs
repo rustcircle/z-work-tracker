@@ -1046,8 +1046,12 @@ mod smoke {
 
     /// Feeds the activity watcher a chosen idle time, so the real path can be driven.
     #[tauri::command(async)]
-    pub fn smoke_observe(app: AppHandle, idle: u64, locked: Option<bool>) {
+    pub fn smoke_observe(app: AppHandle, idle: u64, locked: Option<bool>, locked_ago: Option<i64>) {
         if let Some(core) = app.try_state::<std::sync::Arc<super::Core>>() {
+            // Backdated, because a page left waiting for a real long lock can stop running.
+            if let (Some(ago), Ok(svc)) = (locked_ago, core.service.as_ref()) {
+                let _ = super::guard(svc).observe_lock_at(ago, locked);
+            }
             super::observe_activity(&app, &core, Some(idle), locked);
         }
     }

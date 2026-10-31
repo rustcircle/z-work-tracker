@@ -49,7 +49,7 @@ function launch(exe, script, out, env = {}) {
   return { child, exited };
 }
 
-async function waitFile(path, ms = 90000) {
+async function waitFile(path, ms = 40000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     if (existsSync(path)) {
@@ -128,15 +128,14 @@ run(async () => {
   await wait(1100);
   await inv('smoke_observe', { idle: 0 });
   // A lock is noticed whatever the idle count says.
-  await inv('smoke_observe', { idle: 0, locked: true });
-  await wait(11000);
+  await inv('smoke_observe', { idle: 0, locked: true, lockedAgo: 60 });
   await inv('smoke_observe', { idle: 0, locked: false });
   s = await inv('get_snapshot');
   r.lockGap = s.gaps.filter((g) => g.kind === 'lock' && g.decision === 'pending').length;
   for (const g of s.gaps.filter((x) => x.kind === 'lock')) s = await inv('decide_gap', { id: g.id, decision: 'drop' });
   s = await inv('get_snapshot');
   r.gapsFound = s.gaps.filter((g) => g.decision === 'pending').length;
-  s = await inv('decide_gap', { id: s.gaps[0]?.id ?? 'none', decision: 'keep' });
+  s = await inv('decide_gap', { id: s.gaps.find((g) => g.decision === 'pending')?.id ?? 'none', decision: 'keep' });
   r.gapsAfterKeep = s.gaps.filter((g) => g.decision === 'pending').length;
   r.copyTags = s.launch.copySource?.tags;
   const day = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
@@ -187,7 +186,11 @@ run(async () => {
 `, out);
   const r1 = await waitFile(out);
   check('first launch ran the scripted session', r1 && !r1.error, r1?.error ?? '');
-  if (!r1 || r1.error) return false;
+  if (!r1 || r1.error) {
+    // A running copy would make the next launch exit at once, as a second instance.
+    app.child.kill();
+    return false;
+  }
   const exit1 = await withTimeout(app.exited, 15000);
   check('tray-style quit really exits', exit1 !== 'timeout' && exit1.code === 0, JSON.stringify(exit1));
   check('nothing syncs silently on first launch', r1.firstRunSyncPending === true && r1.firstRunTargets === 0);

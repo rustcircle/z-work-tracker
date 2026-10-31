@@ -459,11 +459,17 @@ impl Service {
     /// The OS says whether the session is locked. `None` when it can't say, which ends a lock if it
     /// goes on too long.
     pub fn observe_lock(&mut self, locked: Option<bool>) -> Result<bool, CoreError> {
+        self.observe_lock_at(0, locked)
+    }
+
+    /// As `observe_lock`, as if it had been reported this many seconds ago.
+    pub fn observe_lock_at(&mut self, ago: i64, locked: Option<bool>) -> Result<bool, CoreError> {
+        let at = Ts(self.now().secs() - ago);
         let device = self.file.device_id.clone();
         let running = self.file.data.own_open_segments(&device).into_iter().next();
         let gaps = match locked {
-            Some(locked) => self.idle.set_locked(self.now(), locked),
-            None => self.idle.lock_unknown(self.now()),
+            Some(locked) => self.idle.set_locked(at, locked),
+            None => self.idle.lock_unknown(at),
         };
         if let Some(segment) = running {
             self.unsaved_gaps
