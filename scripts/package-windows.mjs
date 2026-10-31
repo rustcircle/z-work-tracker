@@ -17,7 +17,9 @@ for (const tool of ['makensis', 'x86_64-w64-mingw32-gcc', OBJDUMP]) {
   }
 }
 
-const build = spawnSync('pnpm', ['tauri', 'build', '--target', TARGET, '--bundles', 'nsis'], { stdio: 'inherit' });
+// makensis from Homebrew aborts with std::bad_alloc when no UTF-8 locale is set.
+const env = { ...process.env, LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' };
+const build = spawnSync('pnpm', ['tauri', 'build', '--target', TARGET, '--bundles', 'nsis'], { stdio: 'inherit', env });
 if (build.status !== 0) process.exit(build.status ?? 1);
 
 const release = join('src-tauri', 'target', TARGET, 'release');

@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@photostructure/tz-lookup": "^11.7.0",
-    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/api": "~2.11.1",
     "@tiptap/extension-task-item": "^3.32.1",
     "@tiptap/extension-task-list": "^3.32.1",
     "@tiptap/pm": "^3.32.1",
@@ -38,7 +38,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
-    "@tauri-apps/cli": "^2.12.4",
+    "@tauri-apps/cli": "~2.11.5",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.8",
