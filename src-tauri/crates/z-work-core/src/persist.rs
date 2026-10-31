@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -19,6 +20,8 @@ use crate::time::Ts;
 use crate::validate::check_core;
 
 pub const MAIN_FILE: &str = "z-work-data.json";
+/// The latest heartbeat, when it is newer than the one in the main file. See `save_heartbeat`.
+pub const HEARTBEAT_FILE: &str = "z-work-heartbeat.json";
 
 #[derive(Clone, Debug)]
 pub struct Paths {
@@ -49,6 +52,12 @@ impl Paths {
     }
     fn bak_tmp(&self) -> PathBuf {
         self.dir.join(format!("{MAIN_FILE}.bak.tmp"))
+    }
+    fn heartbeat(&self) -> PathBuf {
+        self.dir.join(HEARTBEAT_FILE)
+    }
+    fn heartbeat_tmp(&self) -> PathBuf {
+        self.dir.join(format!("{HEARTBEAT_FILE}.tmp"))
     }
     fn remember_checked(&self, bytes: &[u8]) {
         self.checked.store(content_hash(bytes), Ordering::Relaxed);
@@ -223,6 +232,40 @@ pub fn new_local_file(device_name: &str) -> LocalFile {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeartbeatFile {
+    device_id: String,
+    at: Ts,
+}
+
+/// Records that the app is alive, in a small file of its own. A heartbeat every 30 seconds used to
+/// rewrite the whole store and its backup, which at 50k segments is 32 MB each time, for one number.
+/// It is durable like any save. The next real save folds it into the main file and removes this.
+pub fn save_heartbeat(paths: &Paths, device_id: &str, at: Ts) -> Result<(), CoreError> {
+    let bytes = serde_json::to_vec(&HeartbeatFile {
+        device_id: device_id.to_owned(),
+        at,
+    })?;
+    with_local_retry(|| write_atomic(&paths.heartbeat(), &paths.heartbeat_tmp(), &bytes))?;
+    Ok(())
+}
+
+/// The heartbeat on record for this device. An unreadable file says nothing, so the main file's stands.
+fn read_heartbeat(paths: &Paths, device_id: &str) -> Option<Ts> {
+    let bytes = fs::read(paths.heartbeat()).ok()?;
+    let beat: HeartbeatFile = serde_json::from_slice(&bytes).ok()?;
+    (beat.device_id == device_id).then_some(beat.at)
+}
+
+/// Brings a store just read up to date with the heartbeat recorded after it was last saved.
+fn apply_heartbeat(paths: &Paths, mut file: LocalFile) -> LocalFile {
+    if let Some(at) = read_heartbeat(paths, &file.device_id) {
+        file.last_heartbeat = file.last_heartbeat.max(Some(at));
+    }
+    file
+}
+
 /// Keeps the original bytes of an older-format store the first time it is upgraded.
 fn keep_before_migration(paths: &Paths, bytes: &[u8], version: u64) -> io::Result<()> {
     if version >= SCHEMA_VERSION {
@@ -253,7 +296,7 @@ pub fn load(
             Parsed::Good(file, version) => {
                 keep_before_migration(paths, bytes, version)?;
                 paths.remember_checked(bytes);
-                return Ok((*file, outcome));
+                return Ok((apply_heartbeat(paths, *file), outcome));
             }
             Parsed::Newer(found) => {
                 return Err(CoreError::FutureVersion {
@@ -279,7 +322,7 @@ pub fn load(
                 } else {
                     "The data file was missing, so your data was restored from the automatic backup.".to_owned()
                 });
-                return Ok((*file, outcome));
+                return Ok((apply_heartbeat(paths, *file), outcome));
             }
             Parsed::Newer(found) => {
                 return Err(CoreError::FutureVersion {
@@ -354,6 +397,12 @@ pub fn save(paths: &Paths, file: &LocalFile, now: Ts) -> Result<(), CoreError> {
     }
     with_local_retry(|| fs::rename(&tmp, paths.main()))?;
     paths.remember_checked(&bytes);
+    // The main file now holds the latest heartbeat. Left behind, an old one could outlive a restore.
+    if let Err(e) = fs::remove_file(paths.heartbeat())
+        && e.kind() != io::ErrorKind::NotFound
+    {
+        eprintln!("could not remove the old heartbeat: {e}");
+    }
     Ok(())
 }
 
@@ -527,6 +576,69 @@ mod tests {
             Err(CoreError::FutureVersion { found: 99, .. })
         ));
         assert_eq!(fs::read(p.main()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_heartbeat_touches_only_its_own_file_and_is_read_back_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let mut one = with_project("One");
+        one.last_heartbeat = Some(Ts(NOW.0 - 60));
+        save(&p, &one, NOW).unwrap();
+        let before = fs::read(p.main()).unwrap();
+        save_heartbeat(&p, &one.device_id, NOW).unwrap();
+        assert_eq!(fs::read(p.main()).unwrap(), before);
+        assert!(!p.bak().exists());
+        assert_eq!(load(&p, "pc", NOW).unwrap().0.last_heartbeat, Some(NOW));
+    }
+
+    #[test]
+    fn a_heartbeat_never_moves_the_store_backwards_or_crosses_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let mut one = with_project("One");
+        one.last_heartbeat = Some(NOW);
+        save(&p, &one, NOW).unwrap();
+        save_heartbeat(&p, &one.device_id, Ts(NOW.0 - 600)).unwrap();
+        assert_eq!(load(&p, "pc", NOW).unwrap().0.last_heartbeat, Some(NOW));
+        save_heartbeat(&p, "another-device", Ts(NOW.0 + 600)).unwrap();
+        assert_eq!(load(&p, "pc", NOW).unwrap().0.last_heartbeat, Some(NOW));
+        for junk in [&b""[..], b"{", b"{\"deviceId\":1}"] {
+            fs::write(p.heartbeat(), junk).unwrap();
+            assert_eq!(load(&p, "pc", NOW).unwrap().0.last_heartbeat, Some(NOW));
+        }
+    }
+
+    #[test]
+    fn a_real_save_folds_the_heartbeat_in_and_removes_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let mut one = with_project("One");
+        save(&p, &one, NOW).unwrap();
+        save_heartbeat(&p, &one.device_id, NOW).unwrap();
+        one.last_heartbeat = Some(NOW);
+        save(&p, &one, NOW).unwrap();
+        assert!(!p.heartbeat().exists());
+        assert!(!p.heartbeat_tmp().exists());
+        // A store rolled back to an older heartbeat keeps it: nothing newer lingers to overrule it.
+        one.last_heartbeat = Some(Ts(NOW.0 - 3600));
+        save(&p, &one, NOW).unwrap();
+        assert_eq!(load(&p, "pc", NOW).unwrap().0.last_heartbeat, Some(Ts(NOW.0 - 3600)));
+    }
+
+    #[test]
+    fn a_store_recovered_from_the_backup_still_knows_the_latest_heartbeat() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let one = with_project("One");
+        save(&p, &one, NOW).unwrap();
+        save(&p, &with_project("Two"), NOW).unwrap();
+        let bak: LocalFile = serde_json::from_slice(&fs::read(p.bak()).unwrap()).unwrap();
+        save_heartbeat(&p, &bak.device_id, NOW).unwrap();
+        fs::write(p.main(), b"junk").unwrap();
+        let (loaded, _) = load(&p, "pc", NOW).unwrap();
+        assert_eq!(loaded.device_id, one.device_id);
+        assert_eq!(loaded.last_heartbeat, Some(NOW));
     }
 
     #[test]

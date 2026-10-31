@@ -786,10 +786,8 @@ impl Service {
             return Ok(());
         }
         let now = self.now();
-        let mut next = self.file.clone();
-        next.last_heartbeat = Some(now);
-        persist::save(&self.paths, &next, now)?;
-        self.file = next;
+        persist::save_heartbeat(&self.paths, &self.file.device_id, now)?;
+        self.file.last_heartbeat = Some(now);
         Ok(())
     }
 
@@ -1520,6 +1518,40 @@ mod tests {
         // Recovery was saved, so a second launch has nothing to do.
         let again = open(dir.path(), &clock);
         assert!(again.snapshot().notices.is_empty());
+    }
+
+    #[test]
+    fn a_heartbeat_leaves_the_store_file_alone_and_a_crash_still_stops_at_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        let main = dir.path().join(persist::MAIN_FILE);
+        let before = std::fs::read(&main).unwrap();
+        clock.advance(30);
+        s.heartbeat().unwrap();
+        assert_eq!(std::fs::read(&main).unwrap(), before);
+        // In memory it counts at once, for what other devices are told.
+        assert_eq!(s.device_file().last_heartbeat.unwrap().iso(), "2026-03-01T09:00:30Z");
+        clock.advance(3600);
+        drop(s);
+        let again = open(dir.path(), &clock);
+        let seg = again.file().data.segments.values().next().unwrap();
+        assert_eq!(seg.end.unwrap().iso(), "2026-03-01T09:00:30Z");
+        assert!(!dir.path().join(persist::HEARTBEAT_FILE).exists());
+    }
+
+    #[test]
+    fn restoring_a_backup_is_not_overruled_by_a_heartbeat_from_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.run_daily_backup().unwrap();
+        let name = s.list_backups().unwrap().remove(0).name;
+        clock.advance(86_400);
+        s.heartbeat().unwrap();
+        s.restore_backup(&name).unwrap();
+        assert!(!dir.path().join(persist::HEARTBEAT_FILE).exists());
+        assert_eq!(s.file().last_heartbeat.unwrap().iso(), T0);
     }
 
     #[test]

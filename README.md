@@ -321,6 +321,7 @@ Definitions worth knowing:
 | **macOS** | `~/Library/Application Support/com.rustcircle.zworktracker/` |
 | **Main file** | `z-work-data.json`: versioned JSON with timestamps in UTC (`2026-03-08T07:00:00Z`) |
 | **Backup** | `z-work-data.json.bak`: the previous good version |
+| **Heartbeat** | `z-work-heartbeat.json`: while a task runs, the last moment the app was alive. It holds one time and is folded into the main file by the next save |
 | **Dated backups** | `backups/`: one copy a day, plus safety copies made before a restore |
 | **Before a migration** | `z-work-data.v1.json`: the store as it was before an upgrade |
 | **Damaged files** | Kept as `z-work-data.corrupt-<time>.json` |

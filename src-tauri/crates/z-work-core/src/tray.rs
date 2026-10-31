@@ -161,6 +161,15 @@ pub fn tray_state(file: &LocalFile, now: Ts, zone: Tz) -> TrayState {
             task_id: Some(seg.task_id.clone()),
         };
     }
+    // One pass over the segments, not one per paused task: this runs every 5 s for as long as the app
+    // is open, and a store can hold years of segments.
+    let mut last_end: BTreeMap<&str, Ts> = BTreeMap::new();
+    for s in file.data.segments.values() {
+        if let Some(end) = s.end {
+            let last = last_end.entry(s.task_id.as_str()).or_insert(end);
+            *last = (*last).max(end);
+        }
+    }
     let latest_paused = file
         .data
         .tasks
@@ -172,14 +181,7 @@ pub fn tray_state(file: &LocalFile, now: Ts, zone: Tz) -> TrayState {
                 .get(&t.project_id)
                 .is_some_and(|p| !p.deleted && !p.archived)
         })
-        .max_by_key(|t| {
-            file.data
-                .segments
-                .values()
-                .filter(|s| s.task_id == t.id)
-                .filter_map(|s| s.end)
-                .max()
-        });
+        .max_by_key(|t| last_end.get(t.id.as_str()).copied());
     match latest_paused {
         Some(t) => TrayState {
             running: false,
