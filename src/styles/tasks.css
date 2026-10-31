@@ -1,0 +1,27 @@
+.task { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--border-strong); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; box-shadow: var(--shadow); }
+.task-running { border-left-color: var(--success); }
+.task-paused { border-left-color: var(--warning); }
+.task-stopped { opacity: 0.92; }
+.task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.task-name { font-size: 15px; line-height: 1.3; word-break: break-word; }
+.task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.task-note { margin: 0; font-size: 13px; color: var(--text-muted); }
+.task-note-pause { color: var(--text); background: color-mix(in srgb, var(--warning) 12%, var(--surface)); padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid color-mix(in srgb, var(--warning) 50%, var(--border)); }
+.task-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.task-actions .btn { padding: 3px 4px; gap: 5px; }
+.task-tools { display: flex; align-items: center; gap: 4px; }
+.task-details { margin-left: auto; font-size: 13px; }
+.task-desc { border-top: 1px solid var(--border); padding-top: 8px; }
+.task-form, .project-form, .shift-form { display: flex; flex-direction: column; gap: 12px; }
+.task-form { padding-top: 6px; border-top: 1px solid var(--border); }
+.rail-form .task-form { border-top: 0; padding-top: 0; }
+
+.ticker { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: var(--radius); background: color-mix(in srgb, var(--success) 9%, var(--surface)); border: 1px solid color-mix(in srgb, var(--success) 40%, var(--border)); }
+.ticker-main { display: flex; align-items: baseline; gap: 8px; }
+.ticker-clock { font-size: 26px; font-weight: 650; letter-spacing: 0.01em; font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif; }
+.ticker-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--success); align-self: center; box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 25%, transparent); }
+.ticker-grid { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+.ticker-grid div { min-width: 0; }
+.ticker-grid dt { font-size: 11.5px; color: var(--text-muted); }
+.ticker-grid dd { margin: 0; font-weight: 600; font-size: 14px; }
+.ticker-note { margin: 0; font-size: 13px; }

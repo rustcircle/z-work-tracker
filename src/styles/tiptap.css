@@ -1,0 +1,31 @@
+/* TipTap is configured with injectCSS: false, so everything the editor needs ships here. */
+.rt { display: flex; flex-direction: column; gap: 4px; }
+.rt-frame { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); overflow: hidden; }
+.rt-frame:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+.rt-toolbar { display: flex; flex-wrap: wrap; gap: 2px; padding: 4px; border-bottom: 1px solid var(--border); background: var(--surface-alt); }
+.rt-btn { min-width: 30px; height: 28px; padding: 0 6px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.rt-btn:hover { background: var(--hover); }
+.rt-btn.on { background: var(--accent); color: var(--on-accent); }
+.rt-b { font-weight: 800; }
+.rt-i { font-style: italic; font-weight: 600; }
+
+.ProseMirror { position: relative; white-space: pre-wrap; word-wrap: break-word; font-variant-ligatures: none; outline: none; }
+.rt-content { padding: 8px 10px; min-height: 84px; max-height: 240px; overflow-y: auto; }
+.rt-readonly { min-height: 0; max-height: 300px; padding: 4px 2px; }
+.ProseMirror p { margin: 0 0 0.5em; }
+.ProseMirror > :last-child { margin-bottom: 0; }
+.ProseMirror h1 { font-size: 1.3em; margin: 0.4em 0 0.3em; }
+.ProseMirror h2 { font-size: 1.15em; margin: 0.4em 0 0.3em; }
+.ProseMirror h3 { font-size: 1.02em; margin: 0.4em 0 0.3em; }
+.ProseMirror ul, .ProseMirror ol { margin: 0 0 0.5em; padding-left: 1.4em; }
+.ProseMirror li > p { margin: 0; }
+.ProseMirror ul[data-type='taskList'] { list-style: none; padding-left: 0.2em; }
+.ProseMirror li[data-type='taskItem'] { display: flex; gap: 8px; align-items: flex-start; }
+.ProseMirror li[data-type='taskItem'] > label { flex: none; margin-top: 0.18em; user-select: none; }
+.ProseMirror li[data-type='taskItem'] > label input { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.ProseMirror li[data-type='taskItem'] > div { flex: 1; min-width: 0; }
+.ProseMirror li[data-type='taskItem'][data-checked='true'] > div { color: var(--text-muted); text-decoration: line-through; }
+.ProseMirror-selectednode { outline: 2px solid var(--focus); }
+.ProseMirror-gapcursor { display: none; pointer-events: none; position: absolute; }
+.ProseMirror-gapcursor::after { content: ''; display: block; position: absolute; top: -2px; width: 20px; border-top: 1px solid var(--text); }
+.ProseMirror-focused .ProseMirror-gapcursor { display: block; }

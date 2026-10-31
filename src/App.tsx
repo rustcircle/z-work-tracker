@@ -1,13 +1,46 @@
-import { AppProvider } from './app/store';
-import { AnalysisTab } from './features/analysis/AnalysisTab';
-import { ActiveZoneBar } from './features/zones';
+import { AppProvider, useApp } from './app/store';
+import { Banners } from './components/Banners';
+import { HideNoticeDialog } from './components/HideNoticeDialog';
+import { Shell } from './components/Shell';
+import { ToastProvider } from './components/Toasts';
+import { SyncPrompt } from './features/settings/SyncPrompt';
 
-// Placeholder shell, replaced by the shell feature.
+import './styles/ui.css';
+import './styles/shell.css';
+import './styles/tasks.css';
+import './styles/timeline.css';
+import './styles/pages.css';
+import './styles/tiptap.css';
+
+function Root() {
+  const { snapshot } = useApp();
+  return (
+    <>
+      {snapshot.sync.promptPending ? (
+        <>
+          <Banners />
+          <SyncPrompt />
+        </>
+      ) : (
+        <Shell />
+      )}
+      <HideNoticeDialog />
+    </>
+  );
+}
+
 export default function App() {
   return (
-    <AppProvider fallback={(e) => <p>{e ?? 'Loading'}</p>}>
-      <ActiveZoneBar />
-      <AnalysisTab />
+    <AppProvider
+      fallback={(error) => (
+        <div className="loading" role={error ? 'alert' : 'status'}>
+          {error ? `Could not load your data: ${error}` : 'Loading…'}
+        </div>
+      )}
+    >
+      <ToastProvider>
+        <Root />
+      </ToastProvider>
     </AppProvider>
   );
 }
