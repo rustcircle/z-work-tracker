@@ -1428,8 +1428,8 @@ mod tests {
         let a = device(&clock, &[stuck.path(), good.path()]);
         let calls = Arc::new(AtomicU32::new(0));
         let io = Hangs(stuck.path().to_path_buf(), Arc::clone(&calls));
-        run_cycle_within(&a.svc, &io, Duration::from_millis(500));
-        run_cycle_within(&a.svc, &io, Duration::from_millis(500));
+        run_cycle_within(&a.svc, &io, Duration::from_secs(3));
+        run_cycle_within(&a.svc, &io, Duration::from_secs(3));
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,

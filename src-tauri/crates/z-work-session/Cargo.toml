@@ -1,0 +1,25 @@
+[package]
+name = "z-work-session"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Whether the Windows session is locked. The workspace's only unsafe code, one audited FFI call"
+license = "MIT"
+authors = ["Pedro Jorge <p@rustcircle.com>"]
+repository = "https://github.com/rustcircle/z-work-tracker"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_RemoteDesktop"] }
+
+# Not the workspace's lints: its `forbid` could not be relaxed for the one module that needs it.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"

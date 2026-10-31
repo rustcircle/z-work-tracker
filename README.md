@@ -96,7 +96,7 @@ Only the tray's **Quit** really exits. On a real exit a running segment closes a
 
 If the app crashes, a heartbeat saved about every 30 seconds marks the last moment it was alive. At the next launch the open segment closes at that moment, the task is paused and a notice tells you, including that the next start asks for every field.
 
-**Time away.** While a task runs, the app watches for gaps: the machine slept, the wall clock jumped by more than two minutes between checks, or nobody touched the keyboard or mouse for the idle limit (10 minutes by default; 0 turns idle detection off, but a sleep or clock jump is always noticed). A locked screen is noticed through idle time, so a lock shorter than the limit, or any lock with the limit at 0, isn't seen. When you return, the app asks what to do with the time:
+**Time away.** While a task runs, the app watches for gaps: the machine slept, the wall clock jumped by more than two minutes between checks, the session was locked, or nobody touched the keyboard or mouse for the idle limit (10 minutes by default; 0 turns idle detection off, but a sleep, clock jump or lock is always noticed). The app checks for a lock every few seconds on Windows, so the gap's ends can be a few seconds off. When you return, the app asks what to do with the time:
 
 | Answer | Exact | Billable and earnings |
 |---|---|---|
@@ -206,7 +206,7 @@ A project bills **hourly** or at a **fixed fee** in EUR or USD. A fixed-fee proj
 
 **This is for your own guidance. It is not an invoice and not a tax document, and says so on the page and in its exports.**
 
-Pick a project and period to see unbilled closed time per task and day. **Create summary** freezes it into a summary with a reference such as `A-001` and marks that time billed. Tasks then show billed and unbilled time. Copy it or export it as CSV. Voiding a summary puts the time back to unbilled; its number isn't reused.
+Pick a project and period to see unbilled closed time per task and day. **Create summary** freezes it into a summary with a reference such as `A-001` and marks that time billed. Tasks then show billed and unbilled time. Copy it or export it as CSV; with Hide earnings on, neither holds an amount. Voiding a summary puts the time back to unbilled; its number isn't reused.
 
 ![The Billing tab](docs/images/billing-light.png)
 
@@ -224,7 +224,7 @@ Enter a job's name and tags to get an estimate from comparable past stopped task
 
 ### Backups
 
-The app writes a dated copy of its data once a day into a `backups` folder beside it, keeping the newest 30 by default; choose 1 to 365. These stay on this computer and are separate from sync. **Restore** in Settings first saves the current data as a safety copy, which retention never deletes, then replaces the data. A running task pauses first, and the next start counts as cold. Restoring the safety copy undoes a restore. This device's settings, such as sync folders, stay as they are. With sync on, newer records in your sync folders merge back in at the next sync, so to go back in time for good, turn sync off first.
+The app writes a dated copy of its data once a day into a `backups` folder beside it, keeping the newest 30 by default; choose 1 to 365. These stay on this computer and are separate from sync. **Restore** in Settings first saves the current data as a safety copy, then rolls back your data and shared settings to the backup. The newest 5 safety copies are kept, apart from the daily ones. A running task pauses first, and the next start counts as cold. A task the backup held running is paused at the last moment that backup knows about. Restoring the safety copy undoes a restore. What belongs to this device stays: its preferences and sync folders, its reference prefix, the reference numbers already used, so none is ever reused, and the audit trail, which records the restore. With sync on, newer records in your sync folders merge back in at the next sync, so to go back in time for good, turn sync off first.
 
 ### Earnings and Hide earnings
 
@@ -421,7 +421,7 @@ The synced state is a set of records with stable ids, merged by taking the maxim
 
 ### Git workflow
 
-`main` holds the first commit; work happens on `phase-1-build` in small commits that end with the co-author line. No remote is configured. Merging and pushing are the owner's call. Lockfiles are tracked.
+Work happens on feature branches in small commits that end with the co-author line, and `main` is the published branch on GitHub. Merging and pushing are the owner's call. Lockfiles are tracked.
 
 ## Packaging and signing
 
@@ -511,7 +511,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 
 ## Known limitations
 
-**Not verified on real Windows.** Nothing has run on Windows. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, signing, Segoe UI rendering and shutdown handling. See the [checklist](#manual-windows-test-checklist).
+**Not verified on real Windows.** The only thing to run on Windows so far is a CI run of phase 1's test gates. The app itself has never run there. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, signing, Segoe UI rendering and shutdown handling. See the [checklist](#manual-windows-test-checklist).
 
 **Verified only on macOS or against a mock.**
 
@@ -526,7 +526,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 - OS shutdown relies on the app's exit event, which is unverified on Windows; if it doesn't fire, heartbeat recovery closes the segment within about 30 seconds of the real time.
 - Mica isn't used, so it can't wash out the themes.
 - Google Drive detection scans drive letters and common folder names and doesn't read the DriveFS registry. Use the picker otherwise.
-- A locked screen is noticed only through idle time; there's no separate lock signal. A lock shorter than the idle limit counts as work.
+- The lock signal (`WTSQuerySessionInformationW`) has not been seen answering on a real locked Windows session; its logic is tested with injected events. On macOS there is no lock signal, so locks are noticed only through idle time.
 - Idle reading (`user-idle`) has not run on Windows. After a wake it could report idle time spanning the sleep; the code clamps that, tested with injected values only.
 - The reminder and budget notifications come from the system's notification service, not run on Windows.
 - A restore with sync on merges newer records back, and the app warns about that.

@@ -201,6 +201,14 @@ impl Shared {
             .collect()
     }
 
+    /// Raises each prefix's mark to the highest number on any summary here, voided ones included.
+    pub fn raise_reference_marks(&self, marks: &mut BTreeMap<String, u32>) {
+        for b in self.summaries.values() {
+            let mark = marks.entry(b.prefix.clone()).or_insert(0);
+            *mark = (*mark).max(b.number);
+        }
+    }
+
     /// References on more than one live summary, which offline devices can produce.
     #[must_use]
     pub fn reference_clashes(&self) -> Vec<String> {
@@ -238,6 +246,16 @@ impl Shared {
         ctx: &Ctx<'_>,
         req: &SummaryRequest,
     ) -> Result<String, CoreError> {
+        self.create_summary_above(ctx, req, &BTreeMap::new())
+    }
+
+    /// As `create_summary`, with a number above `marks` too: numbers issued before a restore.
+    pub fn create_summary_above(
+        &mut self,
+        ctx: &Ctx<'_>,
+        req: &SummaryRequest,
+        marks: &BTreeMap<String, u32>,
+    ) -> Result<String, CoreError> {
         let preview = self.summary_preview(req)?;
         if preview.rows.is_empty() {
             return Err(CoreError::Validation(
@@ -256,6 +274,7 @@ impl Shared {
             .map(|b| b.number)
             .max()
             .unwrap_or(0)
+            .max(marks.get(&prefix).copied().unwrap_or(0))
             .checked_add(1)
             .ok_or_else(|| CoreError::Validation("this prefix has run out of numbers".into()))?;
         let id = Uuid::new_v4().to_string();
@@ -299,6 +318,9 @@ impl Shared {
             .summaries
             .get_mut(id)
             .ok_or(CoreError::NotFound("billing summary"))?;
+        if b.voided {
+            return Ok(());
+        }
         b.voided = true;
         b.stamp = ctx.next(&b.stamp);
         let reference = b.reference.clone();
@@ -488,7 +510,7 @@ pub fn task_totals(shared: &Shared, all: &[Piece]) -> BTreeMap<String, TaskTotal
 
 /// The summary as CSV. User text is neutralised against spreadsheet formula injection.
 #[must_use]
-pub fn summary_csv(b: &BillingSummary, project_name: &str) -> String {
+pub fn summary_csv(b: &BillingSummary, project_name: &str, hide_earnings: bool) -> String {
     let mut out = String::new();
     let mut line = |cells: &[String]| {
         out.push_str(
@@ -500,14 +522,25 @@ pub fn summary_csv(b: &BillingSummary, project_name: &str) -> String {
         );
         out.push_str("\r\n");
     };
-    line(&["Not a tax document. For your own guidance only.".to_owned()]);
+    line(&["For your own guidance. Not an invoice, not a tax document.".to_owned()]);
+    if hide_earnings {
+        line(&["Amounts are left out because Hide earnings is on.".to_owned()]);
+    }
+    if b.voided {
+        line(&["Status".to_owned(), "Voided".to_owned()]);
+    }
     line(&["Reference".to_owned(), crate::csv::neutralize(&b.reference)]);
     line(&["Project".to_owned(), crate::csv::neutralize(project_name)]);
     line(&[
         "Period".to_owned(),
         crate::csv::neutralize(&format!("{} to {} ({})", b.from, b.to, b.zone)),
     ]);
-    let currencies: Vec<&String> = b.totals.keys().collect();
+    // With amounts hidden there are simply no currency columns, and so nothing to read back.
+    let currencies: Vec<&String> = if hide_earnings {
+        Vec::new()
+    } else {
+        b.totals.keys().collect()
+    };
     let mut head: Vec<String> = [
         "Day",
         "Task",
@@ -824,8 +857,8 @@ mod tests {
         s.tasks.get_mut(&t).unwrap().name = "=HYPERLINK(1)".into();
         entry(&mut s, &t, "2026-03-02T09:00:00Z", "2026-03-02T10:00:00Z");
         let id = s.create_summary(&ctx(NOW), &req(&p)).unwrap();
-        let text = summary_csv(&s.summaries[&id], "A");
-        assert!(text.starts_with("Not a tax document"));
+        let text = summary_csv(&s.summaries[&id], "A", false);
+        assert!(text.starts_with("\"For your own guidance. Not an invoice, not a tax document.\""));
         assert!(text.contains("'=HYPERLINK"));
         assert!(text.contains("60.00"));
     }
@@ -1000,9 +1033,57 @@ mod tests {
             "2026-03-01T10:00:00Z",
         );
         let id = s.create_summary(&at("pc-a"), &req(&p)).unwrap();
-        let csv = summary_csv(&s.summaries[&id], "=evil()");
+        let csv = summary_csv(&s.summaries[&id], "=evil()", false);
         assert!(csv.contains(",\"Logo, phase 2\","), "{csv}");
         assert!(!csv.contains("\"\"\""), "{csv}");
         assert!(csv.contains("'=evil()"), "{csv}");
+    }
+
+    #[test]
+    fn a_hidden_csv_has_no_amount_and_a_voided_one_says_so() {
+        let (mut s, p, t) = crate::billing::tests::fixture(None);
+        rate_for(&mut s, &p);
+        crate::billing::tests::seg(
+            &mut s,
+            &t,
+            "s1",
+            "2026-03-01T09:00:00Z",
+            "2026-03-01T10:00:00Z",
+        );
+        let id = s.create_summary(&at("pc-a"), &req(&p)).unwrap();
+        let shown = summary_csv(&s.summaries[&id], "P", false);
+        assert!(shown.contains("EUR") && shown.contains("60.00"), "{shown}");
+        assert!(
+            shown.starts_with("\"For your own guidance. Not an invoice, not a tax document.\"")
+        );
+        let hidden = summary_csv(&s.summaries[&id], "P", true);
+        assert!(
+            !hidden.contains("EUR") && !hidden.contains("60.00"),
+            "{hidden}"
+        );
+        assert!(hidden.contains("left out because Hide earnings"));
+        assert!(!shown.contains("Voided"));
+        s.void_summary(&at("pc-a"), &id).unwrap();
+        assert!(summary_csv(&s.summaries[&id], "P", false).contains("Status,Voided"));
+    }
+
+    #[test]
+    fn voiding_twice_writes_one_audit_entry() {
+        let (mut s, p, t) = crate::billing::tests::fixture(None);
+        rate_for(&mut s, &p);
+        crate::billing::tests::seg(
+            &mut s,
+            &t,
+            "s1",
+            "2026-03-01T09:00:00Z",
+            "2026-03-01T10:00:00Z",
+        );
+        let id = s.create_summary(&at("pc-a"), &req(&p)).unwrap();
+        s.void_summary(&at("pc-a"), &id).unwrap();
+        let stamp = s.summaries[&id].stamp.clone();
+        let audits = s.audit_log.len();
+        s.void_summary(&at("pc-a"), &id).unwrap();
+        assert_eq!(s.audit_log.len(), audits);
+        assert_eq!(s.summaries[&id].stamp, stamp);
     }
 }

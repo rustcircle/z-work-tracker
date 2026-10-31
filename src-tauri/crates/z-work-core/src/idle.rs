@@ -13,6 +13,8 @@ pub struct IdleTracker {
     away_since: Option<Ts>,
     /// Time up to here is already on a gap. The OS's idle count can span a sleep, so it is clamped.
     settled_until: Option<Ts>,
+    /// When the session locked, while it stays locked.
+    locked_since: Option<Ts>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +36,16 @@ impl IdleTracker {
     ) -> Vec<NewGap> {
         let mut out = Vec::new();
         let last = self.last_tick.replace(now);
+        if let Some(since) = self.locked_since {
+            // The unlock closes this absence. A sleep during it is part of it, even when the lock
+            // was only seen after the wake.
+            if let Some(last) = last
+                && now.secs() - last.secs() > JUMP_SECS
+            {
+                self.locked_since = Some(since.min(last));
+            }
+            return out;
+        }
         if !running {
             self.away_since = None;
             return out;
@@ -62,7 +74,9 @@ impl IdleTracker {
             self.away_since = Some(self.away_since.map_or(since, |a| a.min(since)));
         } else if let Some(since) = self.away_since.take() {
             let end = Ts(now.secs().saturating_sub(idle));
-            if end > since {
+            // Shorter than the limit: only the part of a longer idle count that a sleep or lock
+            // already covered, which isn't an absence of its own.
+            if end > since && (threshold == 0 || end.secs() - since.secs() >= threshold) {
                 out.push(NewGap {
                     start: since,
                     end,
@@ -73,18 +87,54 @@ impl IdleTracker {
         out
     }
 
+    /// The session locked or unlocked. A lock is an absence whatever the idle count or limit says,
+    /// so unlocking closes a gap running from the lock, or from earlier idle time.
+    pub fn set_locked(&mut self, now: Ts, locked: bool) -> Vec<NewGap> {
+        match (locked, self.locked_since) {
+            (true, None) => {
+                self.locked_since = Some(now);
+                Vec::new()
+            }
+            (false, Some(since)) => {
+                self.locked_since = None;
+                let start = self.away_since.take().map_or(since, |a| a.min(since));
+                self.settled_until = Some(now);
+                vec![NewGap {
+                    start,
+                    end: now,
+                    kind: GapKind::Lock,
+                }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// When the current absence began, for a crash to recover from.
     #[must_use]
     pub fn away_since(&self) -> Option<Ts> {
-        self.away_since
+        match (self.away_since, self.locked_since) {
+            (Some(a), Some(l)) => Some(a.min(l)),
+            (a, l) => a.or(l),
+        }
     }
 
     /// The running segment is about to close, so an absence in progress has to be recorded now. The
     /// user is back or the app is going away; the last tick is the last moment known to be away.
     pub fn settle(&mut self, now: Ts) -> Vec<NewGap> {
-        let last = self.last_tick;
+        let last = self.last_tick.replace(now);
         let away = self.away_since.take();
         let mut out = Vec::new();
+        if let Some(since) = self.locked_since {
+            // Still locked as far as is known, so what follows belongs to the same absence.
+            self.locked_since = Some(now);
+            out.push(NewGap {
+                start: away.map_or(since, |a| a.min(since)),
+                end: now,
+                kind: GapKind::Lock,
+            });
+            self.settled_until = Some(now);
+            return out;
+        }
         if let Some(l) = last
             && now.secs() - l.secs() > JUMP_SECS
         {
@@ -218,6 +268,109 @@ mod tests {
                 kind: GapKind::Sleep
             }]
         );
+    }
+
+    #[test]
+    fn a_lock_shorter_than_the_limit_is_one_gap() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 600);
+        assert!(t.set_locked(Ts(T + 1), true).is_empty());
+        for i in 1..=108 {
+            assert!(t.tick(Ts(T + 1 + i * 5), true, Some(0), 600).is_empty());
+        }
+        let g = t.set_locked(Ts(T + 541), false);
+        assert_eq!(
+            g,
+            vec![NewGap {
+                start: Ts(T + 1),
+                end: Ts(T + 541),
+                kind: GapKind::Lock
+            }]
+        );
+        assert!(t.tick(Ts(T + 546), true, Some(0), 600).is_empty());
+    }
+
+    #[test]
+    fn a_long_lock_with_idle_detection_off_is_one_gap() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 0);
+        t.set_locked(Ts(T + 5), true);
+        t.tick(Ts(T + 10), true, Some(5), 0);
+        let g = t.set_locked(Ts(T + 3 * 3600), false);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].start, Ts(T + 5));
+    }
+
+    #[test]
+    fn repeated_lock_reports_change_nothing_and_an_unlock_alone_is_no_gap() {
+        let mut t = IdleTracker::default();
+        assert!(t.set_locked(Ts(T), false).is_empty());
+        t.set_locked(Ts(T + 5), true);
+        assert!(t.set_locked(Ts(T + 10), true).is_empty());
+        assert_eq!(t.set_locked(Ts(T + 15), false)[0].start, Ts(T + 5));
+        assert!(t.set_locked(Ts(T + 20), false).is_empty());
+    }
+
+    #[test]
+    fn idle_before_a_lock_and_a_sleep_during_it_are_one_gap() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(900), 600);
+        t.set_locked(Ts(T + 1), true);
+        assert!(t.tick(Ts(T + 8 * 3600), true, Some(0), 600).is_empty());
+        let g = t.set_locked(Ts(T + 8 * 3600 + 30), false);
+        assert_eq!(
+            g,
+            vec![NewGap {
+                start: Ts(T - 900),
+                end: Ts(T + 8 * 3600 + 30),
+                kind: GapKind::Lock
+            }]
+        );
+    }
+
+    #[test]
+    fn a_lock_only_seen_after_a_wake_still_covers_the_sleep() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 600);
+        t.set_locked(Ts(T + 3600), true);
+        assert!(t.tick(Ts(T + 3600), true, Some(0), 600).is_empty());
+        assert_eq!(t.set_locked(Ts(T + 3700), false)[0].start, Ts(T));
+    }
+
+    #[test]
+    fn settling_while_locked_records_it_and_the_rest_stays_one_absence() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 600);
+        t.set_locked(Ts(T + 5), true);
+        assert_eq!(t.away_since(), Some(Ts(T + 5)));
+        let g = t.settle(Ts(T + 60));
+        assert_eq!(
+            g,
+            vec![NewGap {
+                start: Ts(T + 5),
+                end: Ts(T + 60),
+                kind: GapKind::Lock
+            }]
+        );
+        assert_eq!(t.set_locked(Ts(T + 90), false)[0].start, Ts(T + 60));
+    }
+
+    #[test]
+    fn a_sleep_settled_once_is_not_found_again_by_the_next_tick() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 600);
+        assert_eq!(t.settle(Ts(T + 3600)).len(), 1);
+        assert!(t.tick(Ts(T + 3605), true, Some(0), 600).is_empty());
+    }
+
+    #[test]
+    fn the_few_seconds_after_a_wake_are_not_an_absence_of_their_own() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 600);
+        let wake = T + 8 * 3600;
+        assert_eq!(t.tick(Ts(wake), true, Some(8 * 3600), 600).len(), 1);
+        t.tick(Ts(wake + 5), true, Some(8 * 3600 + 5), 600);
+        assert!(t.tick(Ts(wake + 10), true, Some(0), 600).is_empty());
     }
 
     #[test]

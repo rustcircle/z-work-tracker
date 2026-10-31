@@ -69,7 +69,15 @@ pub fn list(paths: &Paths) -> io::Result<Vec<BackupInfo>> {
             name,
         })
         .collect();
-    out.reverse();
+    // Newest first by the date in the name, whichever kind of backup it is.
+    let dated = |b: &BackupInfo| {
+        b.name
+            .strip_prefix(DAILY_PREFIX)
+            .or_else(|| b.name.strip_prefix(SAFETY_PREFIX))
+            .unwrap_or(&b.name)
+            .to_owned()
+    };
+    out.sort_by_key(|b| std::cmp::Reverse(dated(b)));
     Ok(out)
 }
 

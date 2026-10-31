@@ -808,7 +808,7 @@ fn export_summary_csv(
             .get(&b.project_id)
             .map_or("", |p| p.name.as_str());
         (
-            summary::summary_csv(b, project),
+            summary::summary_csv(b, project, s.file().prefs.hide_earnings),
             format!("{}.csv", b.reference),
         )
     };
@@ -1046,9 +1046,9 @@ mod smoke {
 
     /// Feeds the activity watcher a chosen idle time, so the real path can be driven.
     #[tauri::command(async)]
-    pub fn smoke_observe(app: AppHandle, idle: u64) {
+    pub fn smoke_observe(app: AppHandle, idle: u64, locked: Option<bool>) {
         if let Some(core) = app.try_state::<std::sync::Arc<super::Core>>() {
-            super::observe_activity(&app, &core, Some(idle));
+            super::observe_activity(&app, &core, Some(idle), locked);
         }
     }
 
@@ -1145,11 +1145,20 @@ fn os_idle_secs() -> Option<u64> {
 }
 
 /// Notices sleep, clock jumps and time away, and asks about them when the user is back.
-fn observe_activity(app: &AppHandle, core: &Core, idle: Option<u64>) {
+fn observe_activity(app: &AppHandle, core: &Core, idle: Option<u64>, locked: Option<bool>) {
     let Ok(svc) = core.service.as_ref() else {
         return;
     };
-    let found = guard(svc).observe_activity(idle);
+    let found = {
+        let mut s = guard(svc);
+        // The lock first: a tick made while locked belongs to the lock.
+        let lock = s.observe_lock(locked);
+        let activity = s.observe_activity(idle);
+        match (lock, activity) {
+            (Ok(a), Ok(b)) => Ok(a || b),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        }
+    };
     match found {
         Ok(true) => {
             notify(
@@ -1215,7 +1224,12 @@ fn spawn_ticker(app: AppHandle, core: Arc<Core>) {
     std::thread::spawn(move || {
         while !watcher.exit_done.load(Ordering::SeqCst) {
             std::thread::sleep(ACTIVITY_TICK);
-            observe_activity(&watcher_app, &watcher, os_idle_secs());
+            observe_activity(
+                &watcher_app,
+                &watcher,
+                os_idle_secs(),
+                z_work_session::is_locked(),
+            );
         }
     });
     let chores = Arc::clone(&core);

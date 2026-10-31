@@ -69,7 +69,7 @@ jobs:
       - name: Add the MinGW target
         run: rustup target add x86_64-pc-windows-gnu
       - name: Rust test code compiles for the MinGW target
-        run: cargo check --manifest-path src-tauri/Cargo.toml -p z-work-core --tests --locked --target x86_64-pc-windows-gnu
+        run: cargo check --manifest-path src-tauri/Cargo.toml -p z-work-core -p z-work-session --tests --locked --target x86_64-pc-windows-gnu
 
   # The core only: it has Unix-only file handling that the Windows job never compiles.
   macos-core:

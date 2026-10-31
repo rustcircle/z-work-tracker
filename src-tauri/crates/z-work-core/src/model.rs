@@ -104,6 +104,8 @@ pub enum PauseReason {
     AppQuit,
     CrashRecovery,
     SyncReconciled,
+    /// A restored backup held this task running.
+    BackupRestored,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -201,8 +203,10 @@ pub struct SegmentEdit {
 pub enum GapKind {
     /// The machine slept, or the clock jumped between heartbeats.
     Sleep,
-    /// No keyboard or mouse input, including while the screen was locked.
+    /// No keyboard or mouse input.
     Idle,
+    /// The session was locked, whatever the idle count said.
+    Lock,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -498,6 +502,10 @@ pub struct LocalPrefs {
     /// When the current absence began, so a crash during it still records it as time away.
     #[serde(default)]
     pub away_since: Option<Ts>,
+    /// The highest reference number ever seen per prefix. Kept across a restore, so a number that
+    /// has been handed out is never handed out again.
+    #[serde(default)]
+    pub reference_marks: BTreeMap<String, u32>,
     /// A sync folder move whose previous folder couldn't be read, to retry later.
     #[serde(default)]
     pub pending_copy: Option<PendingCopy>,

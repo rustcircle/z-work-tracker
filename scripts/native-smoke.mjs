@@ -127,6 +127,13 @@ run(async () => {
   await inv('smoke_observe', { idle: 3600 });
   await wait(1100);
   await inv('smoke_observe', { idle: 0 });
+  // A lock is noticed whatever the idle count says.
+  await inv('smoke_observe', { idle: 0, locked: true });
+  await wait(1100);
+  await inv('smoke_observe', { idle: 0, locked: false });
+  s = await inv('get_snapshot');
+  r.lockGap = s.gaps.filter((g) => g.kind === 'lock' && g.decision === 'pending').length;
+  for (const g of s.gaps.filter((x) => x.kind === 'lock')) s = await inv('decide_gap', { id: g.id, decision: 'drop' });
   s = await inv('get_snapshot');
   r.gapsFound = s.gaps.filter((g) => g.decision === 'pending').length;
   s = await inv('decide_gap', { id: s.gaps[0]?.id ?? 'none', decision: 'keep' });
@@ -206,11 +213,12 @@ run(async () => {
   const py = spawnSync('unzip', ['-t', r1.xlsx], { encoding: 'utf8' });
   check('Excel file is a valid archive', py.status === 0);
   check('idle time on the real path becomes an unconfirmed gap, and keep clears it', r1.gapsFound >= 1 && r1.gapsAfterKeep === 0, JSON.stringify([r1.gapsFound, r1.gapsAfterKeep]));
+  check('a lock on the real path opens an unconfirmed gap with the idle count at zero', r1.lockGap === 1, String(r1.lockGap));
   check('a warm copy carries the tags', r1.copyTags?.includes('tag-concept'), JSON.stringify(r1.copyTags));
   check('manual entry and correction keep an audit trail', r1.manualRaw === 1 && r1.auditActions?.length === 2, JSON.stringify(r1.auditActions));
   check('the billing summary preview separates exact and pause, and issues A-001', r1.previewExact === 1800 && r1.previewPause === 1800 && r1.reference === 'A-001', JSON.stringify([r1.previewExact, r1.previewPause, r1.reference]));
   const billCsv = existsSync(r1.summaryCsv ?? '') ? readFileSync(r1.summaryCsv, 'utf8') : '';
-  check('the summary CSV says it is not a tax document', /Not a tax document/.test(billCsv));
+  check('the summary CSV says it is not a tax document', /not a tax document/i.test(billCsv));
   const pdf = existsSync(r1.pdf ?? '') ? readFileSync(r1.pdf) : Buffer.alloc(0);
   check('a PDF timesheet is written locally', pdf.subarray(0, 5).toString() === '%PDF-' && pdf.includes('Smoke'));
   check('tag colours are stored canonical and others refused', r1.tagColor === '#abcdef' && r1.badTag === 'validation', JSON.stringify([r1.tagColor, r1.badTag]));

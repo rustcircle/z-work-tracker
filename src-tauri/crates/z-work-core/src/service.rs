@@ -101,6 +101,9 @@ impl Service {
         };
         svc.file.data.seed_tags();
         svc.file.data.normalize();
+        svc.file
+            .data
+            .raise_reference_marks(&mut svc.file.prefs.reference_marks);
         for n in outcome.notices {
             svc.notify("warning", n);
         }
@@ -404,7 +407,13 @@ impl Service {
         self.file.data.summary_preview(req)
     }
     pub fn create_summary(&mut self, req: &SummaryRequest) -> Result<String, CoreError> {
-        self.mutate(|f, c| f.data.create_summary(c, req))
+        self.mutate(|f, c| {
+            let id = f
+                .data
+                .create_summary_above(c, req, &f.prefs.reference_marks)?;
+            f.data.raise_reference_marks(&mut f.prefs.reference_marks);
+            Ok(id)
+        })
     }
     pub fn void_summary(&mut self, id: &str) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.void_summary(c, id))
@@ -439,6 +448,21 @@ impl Service {
             idle_secs,
             u64::try_from(threshold).unwrap_or(0) * 60,
         );
+        if let Some(segment) = running {
+            self.unsaved_gaps
+                .extend(gaps.into_iter().map(|g| (segment.clone(), g)));
+        }
+        self.save_away()
+    }
+
+    /// The OS says whether the session is locked. `None` when it can't say.
+    pub fn observe_lock(&mut self, locked: Option<bool>) -> Result<bool, CoreError> {
+        let Some(locked) = locked else {
+            return Ok(false);
+        };
+        let device = self.file.device_id.clone();
+        let running = self.file.data.own_open_segments(&device).into_iter().next();
+        let gaps = self.idle.set_locked(self.now(), locked);
         if let Some(segment) = running {
             self.unsaved_gaps
                 .extend(gaps.into_iter().map(|g| (segment.clone(), g)));
@@ -587,22 +611,54 @@ impl Service {
         Ok(backup::list(&self.paths)?)
     }
 
-    /// Replaces the store with a backup, keeping a safety copy of the current one first. Settings of
-    /// this device, such as sync folders, stay as they are. The launch counts as cold afterwards.
+    /// Rolls replicated data and settings back to a backup, keeping a safety copy of the current
+    /// store first. What belongs to this device stays: its preferences and sync folders, the reference
+    /// prefixes and marks, so no number is reused, and the audit trail, which only grows.
     pub fn restore_backup(&mut self, name: &str) -> Result<String, CoreError> {
         let mut restored = backup::read(&self.paths, name)?;
         self.on_exit()?;
         let safety = backup::safety_copy(&self.paths, &self.file, self.now())?;
-        restored.prefs = self.file.prefs.clone();
+        let mut prefs = self.file.prefs.clone();
+        self.file
+            .data
+            .raise_reference_marks(&mut prefs.reference_marks);
+        restored
+            .data
+            .raise_reference_marks(&mut prefs.reference_marks);
+        prefs.away_since = None;
+        restored.prefs = prefs;
         restored.device_id = self.file.device_id.clone();
         restored.device_name = self.file.device_name.clone();
         restored.remote_devices = self.file.remote_devices.clone();
-        persist::save(&self.paths, &restored, self.now())?;
+        restored.data.prefixes = self.file.data.prefixes.clone();
+        restored
+            .data
+            .audit_log
+            .extend(self.file.data.audit_log.clone());
+        restored.data.seed_tags();
+        restored.data.normalize();
+        // A task the backup held running stopped being timed when the backup was taken.
+        let now = self.now();
+        let device = restored.device_id.clone();
+        let ctx = Ctx {
+            now,
+            device: &device,
+        };
+        let at = restored.last_heartbeat.unwrap_or(Ts(i64::MIN / 2));
+        let names = restored
+            .data
+            .close_own_open(&ctx, at, &PauseReason::BackupRestored);
+        restored.data.audit(
+            &ctx,
+            "backup",
+            name,
+            "restore",
+            "",
+            Value::Null,
+            serde_json::json!({"safetyCopy": safety}),
+        );
+        persist::save(&self.paths, &restored, now)?;
         self.file = restored;
-        self.file.data.seed_tags();
-        self.file.data.normalize();
-        self.recover_crash()?;
-        persist::save(&self.paths, &self.file, self.now())?;
         self.revision += 1;
         self.warm = false;
         self.last_worked = None;
@@ -610,6 +666,16 @@ impl Service {
             "info",
             format!("Restored {name}. The data just before it is kept as {safety}."),
         );
+        if !names.is_empty() {
+            self.notify(
+                "info",
+                format!(
+                    "{} was running when this backup was taken. It is paused at the last moment the backup knows about ({}).",
+                    names.join(", "),
+                    self.file.last_heartbeat.map_or_else(|| "its start".to_owned(), |h| h.iso()),
+                ),
+            );
+        }
         if !self.file.prefs.sync_targets.is_empty() {
             self.notify(
                 "warning",
@@ -782,6 +848,7 @@ impl Service {
             f.data = merged;
             f.remote_devices = known;
             f.data.reconcile(c);
+            f.data.raise_reference_marks(&mut f.prefs.reference_marks);
             Ok(())
         });
         match outcome {
@@ -1865,5 +1932,198 @@ mod tests {
                 .values()
                 .all(|x| x.subtask_id.is_none())
         );
+    }
+
+    #[test]
+    fn a_lock_opens_one_unconfirmed_gap_whatever_the_idle_limit_says() {
+        for (limit, lock_secs) in [(10i64, 9 * 60i64), (0, 3 * 3600)] {
+            let dir = tempfile::tempdir().unwrap();
+            let clock = ManualClock::at(T0);
+            let (mut s, _) = running(dir.path(), &clock);
+            s.set_setting("idleMinutes", serde_json::json!(limit))
+                .unwrap();
+            s.observe_lock(Some(false)).unwrap();
+            s.observe_activity(Some(0)).unwrap();
+            clock.advance(5);
+            assert!(!s.observe_lock(Some(true)).unwrap());
+            assert_eq!(s.file().prefs.away_since, Some(clock.now()));
+            let mut left = lock_secs;
+            while left > 0 {
+                clock.advance(5);
+                left -= 5;
+                assert!(!s.observe_lock(Some(true)).unwrap());
+                assert!(
+                    !s.observe_activity(Some(0)).unwrap(),
+                    "no idle count at all"
+                );
+            }
+            assert!(s.observe_lock(Some(false)).unwrap());
+            let gaps = pending_gaps(&s);
+            assert_eq!(gaps.len(), 1, "limit {limit}");
+            assert_eq!(gaps[0].kind, GapKind::Lock);
+            assert_eq!(gaps[0].end.secs() - gaps[0].start.secs(), lock_secs);
+            assert_eq!(s.file().prefs.away_since, None);
+            s.decide_gap(&gaps[0].id, GapDecision::Thinking).unwrap();
+        }
+    }
+
+    #[test]
+    fn no_lock_signal_changes_nothing_and_a_lock_with_no_task_running_records_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        assert!(!s.observe_lock(None).unwrap());
+        s.observe_lock(Some(true)).unwrap();
+        clock.advance(3600);
+        assert!(!s.observe_lock(Some(false)).unwrap());
+        assert!(s.file().data.gaps.is_empty());
+    }
+
+    #[test]
+    fn quitting_while_locked_records_the_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        s.observe_lock(Some(true)).unwrap();
+        clock.advance(100);
+        s.on_exit().unwrap();
+        assert_eq!(pending_gaps(&s).len(), 1);
+    }
+
+    /// One summary, then a backup, then more summaries: the store a restore goes back from.
+    fn billed_world(dir: &Path, clock: &ManualClock) -> (Service, String, String) {
+        let mut s = open(dir, clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        s.start_task(&t).unwrap();
+        clock.advance(3600);
+        s.stop_task(&t).unwrap();
+        (s, p, t)
+    }
+    fn this_month(p: &str) -> crate::summary::SummaryRequest {
+        crate::summary::SummaryRequest {
+            project_id: p.to_owned(),
+            from: "2026-03-01".into(),
+            to: "2026-03-31".into(),
+            zone: "UTC".into(),
+        }
+    }
+
+    #[test]
+    fn restoring_an_older_backup_never_reuses_a_reference_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, p, _) = billed_world(dir.path(), &clock);
+        s.run_daily_backup().unwrap();
+        let name = s.list_backups().unwrap()[0].name.clone();
+        let first = s.create_summary(&this_month(&p)).unwrap();
+        assert_eq!(s.file().data.summaries[&first].reference, "A-001");
+        s.restore_backup(&name).unwrap();
+        assert!(
+            s.file().data.summaries.is_empty(),
+            "the summary was rolled back"
+        );
+        let again = s.create_summary(&this_month(&p)).unwrap();
+        assert_eq!(s.file().data.summaries[&again].reference, "A-002");
+        // The mark survives a relaunch too.
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert_eq!(s.file().prefs.reference_marks["A"], 2);
+    }
+
+    #[test]
+    fn a_restore_rolls_back_data_and_settings_and_keeps_what_belongs_to_the_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, p, _) = billed_world(dir.path(), &clock);
+        s.set_setting("idleMinutes", serde_json::json!(25)).unwrap();
+        s.run_daily_backup().unwrap();
+        let name = s.list_backups().unwrap()[0].name.clone();
+        let audits_at_backup = s.file().data.audit_log.len();
+        clock.advance(60);
+        s.set_setting("idleMinutes", serde_json::json!(5)).unwrap();
+        s.set_device_prefix("Q").unwrap();
+        s.set_backup_keep(7).unwrap();
+        s.set_theme(Theme::SolarizedDark).unwrap();
+        let later = s.create_project(&pinput("Later")).unwrap();
+        s.create_summary(&this_month(&p)).unwrap();
+        let audits_before = s.file().data.audit_log.len();
+        assert!(audits_before > audits_at_backup);
+        s.restore_backup(&name).unwrap();
+        let f = s.file();
+        assert!(!f.data.projects.contains_key(&later), "data rolls back");
+        assert_eq!(
+            f.data.settings["idleMinutes"].value,
+            serde_json::json!(25),
+            "settings roll back"
+        );
+        assert_eq!(f.data.prefix_of(&f.device_id), "Q", "the prefix stays");
+        assert_eq!(
+            f.prefs.backup_keep,
+            Some(7),
+            "this device's preferences stay"
+        );
+        assert_eq!(f.prefs.theme, Theme::SolarizedDark);
+        assert_eq!(f.prefs.reference_marks["Q"], 1, "the mark stays");
+        assert_eq!(
+            f.data.audit_log.len(),
+            audits_before + 1,
+            "nothing leaves the audit trail"
+        );
+        let entry = f
+            .data
+            .audit_log
+            .values()
+            .find(|a| a.action == "restore")
+            .unwrap();
+        assert_eq!(entry.entity_id, name);
+    }
+
+    #[test]
+    fn a_task_running_in_a_backup_closes_at_its_heartbeat_with_no_crash_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        clock.advance(600);
+        s.heartbeat().unwrap();
+        let beat = clock.now();
+        s.run_daily_backup().unwrap();
+        let name = s.list_backups().unwrap()[0].name.clone();
+        clock.advance(3600);
+        s.restore_backup(&name).unwrap();
+        let f = s.file();
+        assert_eq!(f.data.tasks[&t].state, TaskState::Paused);
+        assert_eq!(
+            f.data.tasks[&t].pause_reason,
+            Some(PauseReason::BackupRestored)
+        );
+        assert!(f.data.segments.values().all(|x| x.end == Some(beat)));
+        let notices = s.snapshot().notices;
+        assert!(
+            notices
+                .iter()
+                .all(|n| !n.message.contains("did not shut down cleanly")),
+            "{notices:?}"
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|n| n.message.contains("running when this backup was taken"))
+        );
+    }
+
+    #[test]
+    fn the_list_of_backups_is_newest_first_across_both_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.run_daily_backup().unwrap();
+        let name = s.list_backups().unwrap()[0].name.clone();
+        clock.advance(86_400 * 2);
+        s.run_daily_backup().unwrap();
+        clock.advance(60);
+        let safety = s.restore_backup(&name).unwrap();
+        assert_eq!(s.list_backups().unwrap()[0].name, safety);
     }
 }
