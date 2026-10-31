@@ -39,6 +39,19 @@ pub use error::CoreError;
 pub use time::{Clock, ManualClock, SystemClock, Ts};
 
 #[cfg(test)]
+mod licence {
+    /// The repository is public and every manifest says MIT, so an empty file here must fail the gates.
+    #[test]
+    fn the_licence_file_holds_the_mit_text_and_names_the_holder() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../LICENSE");
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.starts_with("MIT License"));
+        assert!(text.contains("Copyright (c) 2026 Pedro Jorge"));
+        assert!(text.contains("THE SOFTWARE IS PROVIDED \"AS IS\""));
+    }
+}
+
+#[cfg(test)]
 mod no_network {
     /// The app makes no network calls. This fails if an HTTP or TLS stack enters the compiled graph
     /// of either desktop target. The lockfile itself may list crates only mobile targets would use.
