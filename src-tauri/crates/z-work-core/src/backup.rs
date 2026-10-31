@@ -38,9 +38,7 @@ fn is_backup_name(name: &str) -> bool {
     let tail = stem
         .strip_prefix(DAILY_PREFIX)
         .or_else(|| stem.strip_prefix(SAFETY_PREFIX));
-    tail.is_some_and(|t| {
-        !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    })
+    tail.is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
 
 fn names(paths: &Paths) -> io::Result<Vec<String>> {
@@ -138,7 +136,6 @@ pub fn folder(paths: &Paths) -> PathBuf {
     dir(paths)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,15 +156,31 @@ mod tests {
             daily(&paths, &f, at(day), 3).unwrap();
         }
         let got: Vec<String> = list(&paths).unwrap().into_iter().map(|b| b.name).collect();
-        assert_eq!(got, ["z-work-data-2026-03-05.json", "z-work-data-2026-03-04.json", "z-work-data-2026-03-03.json"]);
+        assert_eq!(
+            got,
+            [
+                "z-work-data-2026-03-05.json",
+                "z-work-data-2026-03-04.json",
+                "z-work-data-2026-03-03.json"
+            ]
+        );
     }
 
     #[test]
     fn only_this_folders_own_names_can_be_read() {
         let d = tempfile::tempdir().unwrap();
         let paths = Paths::new(d.path());
-        for bad in ["../z-work-data.json", "z-work-data-../../x.json", "other.json", "z-work-data-.json", ""] {
-            assert!(matches!(read(&paths, bad), Err(CoreError::NotFound(_))), "{bad}");
+        for bad in [
+            "../z-work-data.json",
+            "z-work-data-../../x.json",
+            "other.json",
+            "z-work-data-.json",
+            "",
+        ] {
+            assert!(
+                matches!(read(&paths, bad), Err(CoreError::NotFound(_))),
+                "{bad}"
+            );
         }
     }
 

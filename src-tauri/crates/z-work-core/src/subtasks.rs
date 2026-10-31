@@ -230,13 +230,22 @@ mod tests {
 
     #[test]
     fn ids_are_given_once_and_kept_when_the_editor_drops_them() {
-        let first = assign_ids(&tasks_doc(&[("One", false, None), ("Two", true, None)]), None);
+        let first = assign_ids(
+            &tasks_doc(&[("One", false, None), ("Two", true, None)]),
+            None,
+        );
         let ids = items(&first);
         assert!(!ids[0].id.is_empty());
         assert_ne!(ids[0].id, ids[1].id);
-        let same_text = assign_ids(&tasks_doc(&[("Two", true, None), ("One", false, None)]), Some(&first));
+        let same_text = assign_ids(
+            &tasks_doc(&[("Two", true, None), ("One", false, None)]),
+            Some(&first),
+        );
         assert_eq!(items(&same_text)[0].id, ids[1].id, "by text");
-        let renamed = assign_ids(&tasks_doc(&[("One!", false, None), ("Two", true, None)]), Some(&first));
+        let renamed = assign_ids(
+            &tasks_doc(&[("One!", false, None), ("Two", true, None)]),
+            Some(&first),
+        );
         assert_eq!(items(&renamed)[0].id, ids[0].id, "by position");
         let kept = assign_ids(&first, Some(&first));
         assert_eq!(kept, first);
@@ -246,7 +255,10 @@ mod tests {
     fn a_reset_copy_keeps_text_and_drops_ticks_and_ids() {
         let doc = tasks_doc(&[("One", true, Some("x"))]);
         let copy = items(&reset(&doc));
-        assert_eq!((copy[0].text.as_str(), copy[0].checked, copy[0].id.as_str()), ("One", false, ""));
+        assert_eq!(
+            (copy[0].text.as_str(), copy[0].checked, copy[0].id.as_str()),
+            ("One", false, "")
+        );
     }
 
     fn para(t: &str) -> Value {

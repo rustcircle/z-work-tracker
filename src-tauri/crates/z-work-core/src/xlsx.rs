@@ -592,6 +592,58 @@ fn write_analytics_sheet(
     Ok(())
 }
 
+/// Corrections, hand entries, billable pauses and time away. Raw times stay in the note.
+fn write_adjustments_sheet(
+    sheet: &mut Worksheet,
+    rows: &[crate::report::AdjustmentRow],
+    zone_name: &str,
+    tz: Tz,
+    st: &Styles,
+) -> Result<(), CoreError> {
+    sheet.set_name("Adjustments").map_err(err)?;
+    sheet
+        .write_string(
+            0,
+            0,
+            format!("Changes laid over the recorded time. Times in {zone_name}."),
+        )
+        .map_err(err)?;
+    for (col, (head, width)) in [
+        ("Type", 30.0),
+        ("Task name", 32.0),
+        ("Start", 22.0),
+        ("End", 22.0),
+        ("Time", 12.0),
+        ("Note", 60.0),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let col = u16::try_from(col).unwrap_or(0);
+        sheet
+            .write_string_with_format(1, col, *head, &st.header)
+            .map_err(err)?;
+        sheet.set_column_width(col, *width).map_err(err)?;
+    }
+    sheet.set_freeze_panes(2, 0).map_err(err)?;
+    for (i, r) in rows.iter().enumerate() {
+        let row = u32::try_from(i).unwrap_or(u32::MAX - 2) + 2;
+        sheet.write_string(row, 0, r.kind).map_err(err)?;
+        sheet
+            .write_string(row, 1, clip(&r.task_name))
+            .map_err(err)?;
+        sheet
+            .write_string(row, 2, zoned(r.start, tz))
+            .map_err(err)?;
+        sheet.write_string(row, 3, zoned(r.end, tz)).map_err(err)?;
+        sheet
+            .write_number_with_format(row, 4, duration(r.end.secs() - r.start.secs()), &st.time)
+            .map_err(err)?;
+        sheet.write_string(row, 5, clip(&r.note)).map_err(err)?;
+    }
+    Ok(())
+}
+
 /// Builds the workbook bytes.
 pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<Vec<u8>, CoreError> {
     let tz: Tz = parse_zone(&request.day_zone)?;
@@ -600,6 +652,11 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<Vec<u8>, 
     write_labor_sheet(wb.add_worksheet(), source, &request.day_zone, tz, &st)?;
     write_details_sheet(wb.add_worksheet(), source, request, &st)?;
     let mut used = vec!["Labor by project".to_owned(), "Segment details".to_owned()];
+    let adjustments = source.adjustments();
+    if !adjustments.is_empty() {
+        used.push("Adjustments".to_owned());
+        write_adjustments_sheet(wb.add_worksheet(), &adjustments, &request.day_zone, tz, &st)?;
+    }
     if request.include_earnings {
         used.push("Earnings".to_owned());
         write_earnings_sheet(wb.add_worksheet(), source, &request.day_zone, tz, &st)?;
@@ -644,6 +701,7 @@ pub(crate) mod tests {
                 project_id: p.clone(),
                 description: list,
                 continued_from: None,
+                tags: Vec::new(),
             },
         )
         .unwrap();

@@ -87,7 +87,14 @@ mod tests {
         assert!(t.tick(Ts(T), true, None, 600).is_empty());
         assert!(t.tick(Ts(T + 5), true, None, 600).is_empty());
         let g = t.tick(Ts(T + 8 * 3600), true, None, 600);
-        assert_eq!(g, vec![NewGap { start: Ts(T + 5), end: Ts(T + 8 * 3600), kind: GapKind::Sleep }]);
+        assert_eq!(
+            g,
+            vec![NewGap {
+                start: Ts(T + 5),
+                end: Ts(T + 8 * 3600),
+                kind: GapKind::Sleep
+            }]
+        );
         assert!(t.tick(Ts(T + 100), true, None, 600).is_empty(), "backwards");
     }
 
@@ -99,7 +106,14 @@ mod tests {
         assert!(t.tick(Ts(T + 10), true, Some(700), 600).is_empty());
         assert!(t.tick(Ts(T + 15), true, Some(705), 600).is_empty());
         let g = t.tick(Ts(T + 20), true, Some(2), 600);
-        assert_eq!(g, vec![NewGap { start: Ts(T + 10 - 700), end: Ts(T + 18), kind: GapKind::Idle }]);
+        assert_eq!(
+            g,
+            vec![NewGap {
+                start: Ts(T + 10 - 700),
+                end: Ts(T + 18),
+                kind: GapKind::Idle
+            }]
+        );
         assert!(t.tick(Ts(T + 25), true, Some(1), 600).is_empty());
     }
 

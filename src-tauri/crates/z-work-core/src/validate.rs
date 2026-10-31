@@ -55,7 +55,7 @@ pub fn clean_color(raw: &str) -> Result<String, CoreError> {
     if ok {
         Ok(raw.to_ascii_lowercase())
     } else {
-        Err(bad("project color must look like #1a2b3c"))
+        Err(bad("a color must look like #1a2b3c"))
     }
 }
 

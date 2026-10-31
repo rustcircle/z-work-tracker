@@ -79,7 +79,10 @@ pub fn pieces(shared: &Shared, end_of: &dyn Fn(&Segment) -> Ts) -> Vec<Piece> {
         };
         let open = end.is_none();
         let end = end.unwrap_or_else(|| end_of(seg)).max(start);
-        spans.entry(seg.task_id.as_str()).or_default().push((start, end));
+        spans
+            .entry(seg.task_id.as_str())
+            .or_default()
+            .push((start, end));
         let push = |out: &mut Vec<Piece>, n: usize, s: Ts, e: Ts, kind: PieceKind, last: bool| {
             out.push(Piece {
                 id: if n == 0 {

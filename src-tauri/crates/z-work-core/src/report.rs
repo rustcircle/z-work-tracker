@@ -394,6 +394,7 @@ pub(crate) mod tests {
                 device_id: DEV.into(),
                 start: Ts::parse("2026-02-02T09:00:00Z").unwrap(),
                 end: None,
+                ..Segment::default()
             },
         );
         s.segments.insert(
@@ -404,6 +405,7 @@ pub(crate) mod tests {
                 device_id: "other".into(),
                 start: Ts::parse("2026-02-02T09:00:00Z").unwrap(),
                 end: None,
+                ..Segment::default()
             },
         );
         let mut src = source(s, "2026-02-02T09:10:00Z");

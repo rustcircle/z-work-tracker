@@ -163,8 +163,12 @@ fn merge_segment(a: &Segment, b: &Segment) -> Segment {
 
 /// Only the decision changes after a gap is recorded.
 fn merge_gap(a: &IdleGap, b: &IdleGap) -> IdleGap {
-    let (decision, decision_stamp) =
-        field(&a.decision, &a.decision_stamp, &b.decision, &b.decision_stamp);
+    let (decision, decision_stamp) = field(
+        &a.decision,
+        &a.decision_stamp,
+        &b.decision,
+        &b.decision_stamp,
+    );
     let fixed = |g: &IdleGap| {
         let mut f = g.clone();
         f.decision = crate::model::GapDecision::Pending;
@@ -315,7 +319,11 @@ mod tests {
                     pause_reason: (st == 2).then_some(PauseReason::User),
                     state_stamp,
                     stopped_at: stopped.map(Ts),
-                    tags: if m == 0 { vec!["g0".into()] } else { Vec::new() },
+                    tags: if m == 0 {
+                        vec!["g0".into()]
+                    } else {
+                        Vec::new()
+                    },
                     tags_stamp: name_stamp2(id),
                     active_subtask: (n == 1).then(|| "a".into()),
                     active_subtask_stamp: name_stamp2(n),
@@ -331,8 +339,13 @@ mod tests {
     }
 
     fn segment() -> impl Strategy<Value = Segment> {
-        (0u8..4, prop::option::of(1i64..5), prop::option::of(1i64..5), stamp()).prop_map(
-            |(id, end, edit, edit_stamp)| Segment {
+        (
+            0u8..4,
+            prop::option::of(1i64..5),
+            prop::option::of(1i64..5),
+            stamp(),
+        )
+            .prop_map(|(id, end, edit, edit_stamp)| Segment {
                 id: format!("s{id}"),
                 task_id: "t0".into(),
                 device_id: "a".into(),
@@ -346,8 +359,7 @@ mod tests {
                 }),
                 edit_stamp,
                 ..Segment::default()
-            },
-        )
+            })
     }
 
     fn gap() -> impl Strategy<Value = IdleGap> {
@@ -548,22 +560,24 @@ mod tests {
             prop::collection::vec(rounding(), 0..3),
             phase2(),
         )
-            .prop_map(|(ps, ts, ss, st, sh, ra, ro, (gs, bs, ta, te, su, au, pr))| Shared {
-                projects: ps.into_iter().map(|p| (p.id.clone(), p)).collect(),
-                tasks: ts.into_iter().map(|t| (t.id.clone(), t)).collect(),
-                segments: ss.into_iter().map(|s| (s.id.clone(), s)).collect(),
-                settings: st.into_iter().collect(),
-                shifts: sh.into_iter().map(|s| (s.id.clone(), s)).collect(),
-                rates: ra.into_iter().map(|r| (r.id.clone(), r)).collect(),
-                rounding: ro.into_iter().map(|r| (r.id.clone(), r)).collect(),
-                gaps: gs.into_iter().map(|x| (x.id.clone(), x)).collect(),
-                pauses: bs.into_iter().map(|x| (x.id.clone(), x)).collect(),
-                tags: ta.into_iter().map(|x| (x.id.clone(), x)).collect(),
-                templates: te.into_iter().map(|x| (x.id.clone(), x)).collect(),
-                summaries: su.into_iter().map(|x| (x.id.clone(), x)).collect(),
-                audit_log: au.into_iter().map(|x| (x.id.clone(), x)).collect(),
-                prefixes: pr.into_iter().collect(),
-            })
+            .prop_map(
+                |(ps, ts, ss, st, sh, ra, ro, (gs, bs, ta, te, su, au, pr))| Shared {
+                    projects: ps.into_iter().map(|p| (p.id.clone(), p)).collect(),
+                    tasks: ts.into_iter().map(|t| (t.id.clone(), t)).collect(),
+                    segments: ss.into_iter().map(|s| (s.id.clone(), s)).collect(),
+                    settings: st.into_iter().collect(),
+                    shifts: sh.into_iter().map(|s| (s.id.clone(), s)).collect(),
+                    rates: ra.into_iter().map(|r| (r.id.clone(), r)).collect(),
+                    rounding: ro.into_iter().map(|r| (r.id.clone(), r)).collect(),
+                    gaps: gs.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                    pauses: bs.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                    tags: ta.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                    templates: te.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                    summaries: su.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                    audit_log: au.into_iter().map(|x| (x.id.clone(), x)).collect(),
+                    prefixes: pr.into_iter().collect(),
+                },
+            )
     }
 
     proptest! {
@@ -600,6 +614,7 @@ mod tests {
             device_id: "a".into(),
             start: Ts(5),
             end: None,
+            ..Segment::default()
         };
         let closed = Segment {
             end: Some(Ts(9)),
@@ -642,6 +657,10 @@ mod tests {
                 by: "a".into(),
             },
             stopped_at: Some(Ts(1)),
+            tags: Vec::new(),
+            tags_stamp: Default::default(),
+            active_subtask: None,
+            active_subtask_stamp: Default::default(),
         };
         let later = Task {
             name: "new".into(),
@@ -685,6 +704,10 @@ mod tests {
             pause_reason: None,
             state_stamp: stamp(1, "a"),
             stopped_at: None,
+            tags: Vec::new(),
+            tags_stamp: Default::default(),
+            active_subtask: None,
+            active_subtask_stamp: Default::default(),
         };
         let mut on_a = base.clone();
         on_a.name = "renamed on A".into();
@@ -714,6 +737,9 @@ mod tests {
                 at: Ts(1),
                 by: "a".into(),
             },
+            billing_type: Default::default(),
+            fixed_fee_cents: None,
+            fee_currency: None,
         };
         let renamed = Project {
             deleted: false,
@@ -744,6 +770,9 @@ mod tests {
                 at: Ts(1),
                 by: "a".into(),
             },
+            billing_type: Default::default(),
+            fixed_fee_cents: None,
+            fee_currency: None,
         };
         let gone = Project {
             deleted: true,

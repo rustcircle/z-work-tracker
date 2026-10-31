@@ -14,13 +14,19 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_notification::NotificationExt;
+use z_work_core::adjust::{CorrectionInput, ManualEntryInput, PauseInput};
+use z_work_core::backup::BackupInfo;
+use z_work_core::catalog::{TagInput, TemplateInput};
 use z_work_core::detect::{RealEnv, detect, host_os};
 use z_work_core::machine::{
     ProjectInput, RateInput, RoundingInput, ShiftInput, TaskInput, TaskPatch,
 };
-use z_work_core::model::{SyncProvider, SyncTarget, Theme};
+use z_work_core::model::{AuditEntry, GapDecision, SyncProvider, SyncTarget, Theme};
+use z_work_core::pdf::{self, PdfRequest};
 use z_work_core::report::ExportRequest;
-use z_work_core::service::Service;
+use z_work_core::service::{PDF_LOGO_FILE, Service};
+use z_work_core::summary::{self, SummaryPreview, SummaryRequest};
 use z_work_core::sync::{
     FolderPreview, MovePreview, MoveResult, RealIo, SyncSchedule, TARGET_TIMEOUT, bounded,
     move_target, preview_folder, preview_move, run_cycle,
@@ -35,6 +41,8 @@ use z_work_core::{CoreError, SystemClock, csv, xlsx};
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const TRAY_TICK: Duration = Duration::from_secs(5);
 const EXIT_SYNC_LIMIT: Duration = Duration::from_secs(5);
+const ACTIVITY_TICK: Duration = Duration::from_secs(5);
+const CHORES_TICK: Duration = Duration::from_secs(60);
 const QUIT_ARG: &str = "--quit";
 /// Lets the page save an edit in progress before the process ends.
 const EDIT_FLUSH_WAIT: Duration = Duration::from_millis(300);
@@ -646,6 +654,263 @@ fn move_sync_target(
 }
 
 #[tauri::command(async)]
+fn add_manual_entry(
+    app: AppHandle,
+    core: CoreState<'_>,
+    input: ManualEntryInput,
+) -> CmdResult<WithId> {
+    let (id, snapshot) = core.change(&app, |s| s.add_manual_entry(&input))?;
+    Ok(WithId { id, snapshot })
+}
+
+#[tauri::command(async)]
+fn correct_segment(
+    app: AppHandle,
+    core: CoreState<'_>,
+    input: CorrectionInput,
+) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.correct_segment(&input))?.1)
+}
+
+#[tauri::command(async)]
+fn void_segment(
+    app: AppHandle,
+    core: CoreState<'_>,
+    id: String,
+    reason: String,
+) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.void_segment(&id, &reason))?.1)
+}
+
+#[tauri::command(async)]
+fn restore_segment(
+    app: AppHandle,
+    core: CoreState<'_>,
+    id: String,
+    reason: String,
+) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.restore_segment(&id, &reason))?.1)
+}
+
+#[tauri::command(async)]
+fn decide_gap(
+    app: AppHandle,
+    core: CoreState<'_>,
+    id: String,
+    decision: GapDecision,
+) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.decide_gap(&id, decision))?.1)
+}
+
+#[tauri::command(async)]
+fn mark_billable_pause(
+    app: AppHandle,
+    core: CoreState<'_>,
+    input: PauseInput,
+) -> CmdResult<WithId> {
+    let (id, snapshot) = core.change(&app, |s| s.mark_billable_pause(&input))?;
+    Ok(WithId { id, snapshot })
+}
+
+#[tauri::command(async)]
+fn unmark_billable_pause(app: AppHandle, core: CoreState<'_>, id: String) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.unmark_billable_pause(&id))?.1)
+}
+
+#[tauri::command(async)]
+fn set_active_subtask(
+    app: AppHandle,
+    core: CoreState<'_>,
+    task_id: String,
+    subtask_id: Option<String>,
+) -> CmdResult<Snapshot> {
+    Ok(core
+        .change(&app, |s| {
+            s.set_active_subtask(&task_id, subtask_id.as_deref())
+        })?
+        .1)
+}
+
+#[tauri::command(async)]
+fn save_tag(app: AppHandle, core: CoreState<'_>, input: TagInput) -> CmdResult<WithId> {
+    let (id, snapshot) = core.change(&app, |s| s.save_tag(&input))?;
+    Ok(WithId { id, snapshot })
+}
+
+#[tauri::command(async)]
+fn delete_tag(app: AppHandle, core: CoreState<'_>, id: String) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.delete_tag(&id))?.1)
+}
+
+#[tauri::command(async)]
+fn save_template(app: AppHandle, core: CoreState<'_>, input: TemplateInput) -> CmdResult<WithId> {
+    let (id, snapshot) = core.change(&app, |s| s.save_template(&input))?;
+    Ok(WithId { id, snapshot })
+}
+
+#[tauri::command(async)]
+fn delete_template(app: AppHandle, core: CoreState<'_>, id: String) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.delete_template(&id))?.1)
+}
+
+#[tauri::command(async)]
+fn task_from_template(
+    app: AppHandle,
+    core: CoreState<'_>,
+    id: String,
+    project_id: Option<String>,
+) -> CmdResult<WithId> {
+    let (id, snapshot) = core.change(&app, |s| s.task_from_template(&id, project_id.as_deref()))?;
+    Ok(WithId { id, snapshot })
+}
+
+#[tauri::command(async)]
+fn summary_preview(core: CoreState<'_>, request: SummaryRequest) -> CmdResult<SummaryPreview> {
+    Ok(guard(&*core.svc()?).summary_preview(&request)?)
+}
+
+#[tauri::command(async)]
+fn create_summary(
+    app: AppHandle,
+    core: CoreState<'_>,
+    request: SummaryRequest,
+) -> CmdResult<WithId> {
+    let (id, snapshot) = core.change(&app, |s| s.create_summary(&request))?;
+    Ok(WithId { id, snapshot })
+}
+
+#[tauri::command(async)]
+fn void_summary(app: AppHandle, core: CoreState<'_>, id: String) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.void_summary(&id))?.1)
+}
+
+#[tauri::command(async)]
+fn set_device_prefix(app: AppHandle, core: CoreState<'_>, prefix: String) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.set_device_prefix(&prefix))?.1)
+}
+
+#[tauri::command(async)]
+fn export_summary_csv(
+    app: AppHandle,
+    core: CoreState<'_>,
+    id: String,
+) -> CmdResult<Option<String>> {
+    let (text, name) = {
+        let svc = core.svc()?;
+        let s = guard(&svc);
+        let data = &s.file().data;
+        let b = data
+            .summaries
+            .get(&id)
+            .ok_or(CoreError::NotFound("billing summary"))?;
+        let project = data
+            .projects
+            .get(&b.project_id)
+            .map_or("", |p| p.name.as_str());
+        (
+            summary::summary_csv(b, project),
+            format!("{}.csv", b.reference),
+        )
+    };
+    save_via_dialog(&app, &name, "CSV file", "csv", text.as_bytes())
+}
+
+#[tauri::command(async)]
+fn export_pdf(
+    app: AppHandle,
+    core: CoreState<'_>,
+    request: PdfRequest,
+) -> CmdResult<Option<String>> {
+    let svc = core.svc()?;
+    let (source, dir) = {
+        let s = guard(&svc);
+        (s.export_source(), s.data_dir().to_path_buf())
+    };
+    let logo = if request.use_logo {
+        match std::fs::read(dir.join(PDF_LOGO_FILE)) {
+            Ok(bytes) => Some(pdf::decode_logo(&bytes)?),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let bytes = pdf::build(&source, &request, logo.as_ref())?;
+    let name = format!("timesheet-{}-to-{}.pdf", request.from, request.to);
+    save_via_dialog(&app, &name, "PDF document", "pdf", &bytes)
+}
+
+/// Keeps a checked copy of the logo in the data folder. It stays on this computer.
+#[tauri::command(async)]
+fn pick_pdf_logo(app: AppHandle, core: CoreState<'_>) -> CmdResult<Snapshot> {
+    let svc = core.svc()?;
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("PNG image", &["png"])
+        .blocking_pick_file()
+        .and_then(|p| p.into_path().ok());
+    if let Some(path) = picked {
+        let size = std::fs::metadata(&path).map_err(CoreError::from)?.len();
+        if size > pdf::MAX_LOGO_BYTES {
+            return Err(CmdError::from(CoreError::Validation(
+                "the logo must be 5 MB or smaller".into(),
+            )));
+        }
+        let bytes = std::fs::read(&path).map_err(CoreError::from)?;
+        pdf::decode_logo(&bytes)?;
+        let dir = guard(&svc).data_dir().to_path_buf();
+        let tmp = dir.join(format!("{PDF_LOGO_FILE}.tmp"));
+        z_work_core::persist::write_atomic(&dir.join(PDF_LOGO_FILE), &tmp, &bytes)
+            .map_err(CoreError::from)?;
+    }
+    let snapshot = guard(&svc).snapshot();
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn clear_pdf_logo(core: CoreState<'_>) -> CmdResult<Snapshot> {
+    let svc = core.svc()?;
+    let dir = guard(&svc).data_dir().to_path_buf();
+    if let Err(e) = std::fs::remove_file(dir.join(PDF_LOGO_FILE))
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(CmdError::from(CoreError::from(e)));
+    }
+    let snapshot = guard(&svc).snapshot();
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn list_backups(core: CoreState<'_>) -> CmdResult<Vec<BackupInfo>> {
+    Ok(guard(&*core.svc()?).list_backups()?)
+}
+
+#[tauri::command(async)]
+fn restore_backup(app: AppHandle, core: CoreState<'_>, name: String) -> CmdResult<Snapshot> {
+    let (_, snapshot) = core.change(&app, |s| s.restore_backup(&name))?;
+    core.tell_sync(SyncMsg::Now);
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn set_backup_keep(app: AppHandle, core: CoreState<'_>, keep: u32) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.set_backup_keep(keep))?.1)
+}
+
+#[tauri::command(async)]
+fn snooze_reminder(core: CoreState<'_>, minutes: i64) -> CmdResult<Snapshot> {
+    let svc = core.svc()?;
+    let mut s = guard(&svc);
+    s.snooze_reminder(minutes);
+    Ok(s.snapshot())
+}
+
+#[tauri::command(async)]
+fn get_audit(core: CoreState<'_>, entity_id: Option<String>) -> CmdResult<Vec<AuditEntry>> {
+    Ok(guard(&*core.svc()?).audit_entries(entity_id.as_deref()))
+}
+
+#[tauri::command(async)]
 fn sync_now(core: CoreState<'_>) -> CmdResult<Snapshot> {
     let svc = core.svc()?;
     {
@@ -779,6 +1044,14 @@ mod smoke {
         super::tray_toggle(&app);
     }
 
+    /// Feeds the activity watcher a chosen idle time, so the real path can be driven.
+    #[tauri::command(async)]
+    pub fn smoke_observe(app: AppHandle, idle: u64) {
+        if let Some(core) = app.try_state::<std::sync::Arc<super::Core>>() {
+            super::observe_activity(&app, &core, Some(idle));
+        }
+    }
+
     #[tauri::command(async)]
     pub fn smoke_emit_changed(app: AppHandle) -> Result<(), String> {
         use tauri::Emitter;
@@ -867,6 +1140,62 @@ fn build_tray(app: &AppHandle, core: &Core) -> tauri::Result<()> {
     Ok(())
 }
 
+fn os_idle_secs() -> Option<u64> {
+    user_idle::UserIdle::get_time().ok().map(|t| t.as_seconds())
+}
+
+/// Notices sleep, clock jumps and time away, and asks about them when the user is back.
+fn observe_activity(app: &AppHandle, core: &Core, idle: Option<u64>) {
+    let Ok(svc) = core.service.as_ref() else {
+        return;
+    };
+    let found = guard(svc).observe_activity(idle);
+    match found {
+        Ok(true) => {
+            notify(
+                app,
+                "Were you working while away? That time won't count until you confirm it.",
+            );
+            let _ = app.emit("state-changed", ());
+            core.tell_sync(SyncMsg::Changed);
+        }
+        Ok(false) => {}
+        Err(e) => eprintln!("time away could not be saved: {e}"),
+    }
+}
+
+/// Budget alerts, the forgotten-timer reminder and today's backup.
+fn run_chores(app: &AppHandle, core: &Core) {
+    let Ok(svc) = core.service.as_ref() else {
+        return;
+    };
+    let alerts = {
+        let mut s = guard(svc);
+        if let Err(e) = s.run_daily_backup() {
+            eprintln!("daily backup failed: {e}");
+        }
+        s.take_alerts()
+    };
+    if !alerts.is_empty() {
+        let _ = app.emit("state-changed", ());
+    }
+    for text in alerts {
+        notify(app, &text);
+    }
+}
+
+fn notify(app: &AppHandle, text: &str) {
+    if let Err(e) = app
+        .notification()
+        .builder()
+        .title("zWorkTracker")
+        .body(text)
+        .show()
+    {
+        eprintln!("notification failed: {e}");
+    }
+}
+
 /// Heartbeat and tray refresh, independent of the webview so they run while it is hidden. Separate
 /// threads, because a tray call stuck on the UI thread must never delay the heartbeat.
 fn spawn_ticker(app: AppHandle, core: Arc<Core>) {
@@ -879,6 +1208,22 @@ fn spawn_ticker(app: AppHandle, core: Arc<Core>) {
             {
                 eprintln!("heartbeat could not be saved: {e}");
             }
+        }
+    });
+    let watcher = Arc::clone(&core);
+    let watcher_app = app.clone();
+    std::thread::spawn(move || {
+        while !watcher.exit_done.load(Ordering::SeqCst) {
+            std::thread::sleep(ACTIVITY_TICK);
+            observe_activity(&watcher_app, &watcher, os_idle_secs());
+        }
+    });
+    let chores = Arc::clone(&core);
+    let chores_app = app.clone();
+    std::thread::spawn(move || {
+        while !chores.exit_done.load(Ordering::SeqCst) {
+            run_chores(&chores_app, &chores);
+            std::thread::sleep(CHORES_TICK);
         }
     });
     std::thread::spawn(move || {
@@ -978,6 +1323,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
@@ -1079,6 +1425,32 @@ pub fn run() {
         preview_sync_folder,
         preview_sync_move,
         move_sync_target,
+        add_manual_entry,
+        correct_segment,
+        void_segment,
+        restore_segment,
+        decide_gap,
+        mark_billable_pause,
+        unmark_billable_pause,
+        set_active_subtask,
+        save_tag,
+        delete_tag,
+        save_template,
+        delete_template,
+        task_from_template,
+        summary_preview,
+        create_summary,
+        void_summary,
+        set_device_prefix,
+        export_summary_csv,
+        export_pdf,
+        pick_pdf_logo,
+        clear_pdf_logo,
+        list_backups,
+        restore_backup,
+        set_backup_keep,
+        snooze_reminder,
+        get_audit,
         sync_now,
         export_xlsx,
         export_csv,
@@ -1119,6 +1491,32 @@ pub fn run() {
         preview_sync_folder,
         preview_sync_move,
         move_sync_target,
+        add_manual_entry,
+        correct_segment,
+        void_segment,
+        restore_segment,
+        decide_gap,
+        mark_billable_pause,
+        unmark_billable_pause,
+        set_active_subtask,
+        save_tag,
+        delete_tag,
+        save_template,
+        delete_template,
+        task_from_template,
+        summary_preview,
+        create_summary,
+        void_summary,
+        set_device_prefix,
+        export_summary_csv,
+        export_pdf,
+        pick_pdf_logo,
+        clear_pdf_logo,
+        list_backups,
+        restore_backup,
+        set_backup_keep,
+        snooze_reminder,
+        get_audit,
         sync_now,
         export_xlsx,
         export_csv,
@@ -1130,6 +1528,7 @@ pub fn run() {
         smoke::smoke_close_window,
         smoke::smoke_window_visible,
         smoke::smoke_tray_toggle,
+        smoke::smoke_observe,
         smoke::smoke_emit_changed
     ]);
 

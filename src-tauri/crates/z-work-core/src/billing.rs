@@ -406,6 +406,7 @@ pub(crate) mod tests {
                 device_id: DEV.into(),
                 start: Ts::parse(a).unwrap(),
                 end: Ts::parse(b),
+                ..Segment::default()
             },
         );
     }

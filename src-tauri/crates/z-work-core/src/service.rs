@@ -6,24 +6,34 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::adjust::{CorrectionInput, ManualEntryInput, PauseInput};
+use crate::backup::{self, BackupInfo};
+use crate::catalog::{TagInput, TemplateInput};
 use crate::detect::Detected;
 use crate::error::CoreError;
+use crate::idle::IdleTracker;
 use crate::machine::{
-    COLD_REQUIRED, Ctx, ProjectInput, RateInput, RequiredField, RoundingInput, ShiftInput,
-    TaskInput, TaskPatch, Transition, doc_has_text,
+    Ctx, ProjectInput, RateInput, RequiredField, RoundingInput, ShiftInput, TaskInput, TaskPatch,
+    Transition, cold_required, doc_has_text,
 };
 use crate::merge::merge;
 use crate::model::{
-    DeviceFile, LocalFile, PauseReason, PendingCopy, RemoteDevice, SCHEMA_VERSION, Shared,
-    SyncTarget, Task, TaskState, Theme,
+    AuditEntry, DeviceFile, GapDecision, LocalFile, PauseReason, PendingCopy, RemoteDevice,
+    SCHEMA_VERSION, Segment, Shared, SyncTarget, Task, TaskState, Theme,
 };
 use crate::persist::{self, Paths};
+use crate::pieces;
+use crate::reminder::{self, Reminder};
 use crate::report::ExportSource;
+use crate::subtasks;
+use crate::summary::{
+    ProjectFigures, SummaryPreview, SummaryRequest, project_figures, task_totals,
+};
 use crate::sync::{APP_FOLDER, HungTargets, TargetStatus};
 use crate::time::{Clock, Ts};
 use crate::view::{
-    CopySource, LaunchView, Notice, PrefsView, ProjectView, SegmentView, Snapshot, SyncView,
-    TargetView, TaskView,
+    BillingView, CopySource, LaunchView, Notice, PrefsView, ProjectView, RawSegmentView,
+    ReminderSettings, SegmentView, Snapshot, SubtaskView, SyncView, TargetView, TaskView,
 };
 
 pub struct Service {
@@ -44,7 +54,23 @@ pub struct Service {
     /// A failure to save merged data. Folder writes must not clear it.
     local_error: Option<String>,
     hung: HungTargets,
+    idle: IdleTracker,
+    /// The reminder is quiet until this moment.
+    reminder_quiet_until: Option<Ts>,
+    /// The reminder last shown as a system notification, so it isn't repeated each minute.
+    reminder_told: Option<Reminder>,
 }
+
+/// The setting's value in minutes, or the default when it was never set. `null` or 0 is off.
+fn minutes_setting(data: &Shared, key: &str, default: i64) -> i64 {
+    match data.settings.get(key).map(|e| &e.value) {
+        None => default,
+        Some(v) => v.as_i64().unwrap_or(0).max(0),
+    }
+}
+
+const DEFAULT_IDLE_MINUTES: i64 = 10;
+pub const PDF_LOGO_FILE: &str = "pdf-logo.png";
 
 impl Service {
     /// Opens the store. An open segment left by a crash is closed at the last heartbeat here.
@@ -66,7 +92,11 @@ impl Service {
             last_worked: None,
             local_error: None,
             hung: HungTargets::default(),
+            idle: IdleTracker::default(),
+            reminder_quiet_until: None,
+            reminder_told: None,
         };
+        svc.file.data.seed_tags();
         for n in outcome.notices {
             svc.notify("warning", n);
         }
@@ -207,17 +237,22 @@ impl Service {
             .get(id)
             .filter(|t| t.is_live())
             .ok_or(CoreError::NotFound("task"))?;
-        for field in COLD_REQUIRED {
+        for field in cold_required(&self.file.data) {
             let missing = match field {
                 RequiredField::Name => task.name.trim().is_empty(),
                 RequiredField::Project => task.project_id.is_empty(),
                 RequiredField::Description => !doc_has_text(&task.description),
+                RequiredField::Tags => !task
+                    .tags
+                    .iter()
+                    .any(|t| self.file.data.tags.get(t).is_some_and(|x| !x.deleted)),
             };
             if missing {
                 let label = match field {
                     RequiredField::Name => "Task name",
                     RequiredField::Project => "Project",
                     RequiredField::Description => "Description",
+                    RequiredField::Tags => "A tag",
                 };
                 return Err(CoreError::Validation(format!(
                     "{label} is required for the first start after launch"
@@ -285,7 +320,14 @@ impl Service {
             name: task.name.clone(),
             project_id: task.project_id.clone(),
             project_archived: project.is_none_or(|p| p.archived || p.deleted),
-            description: task.description.clone(),
+            // A copy keeps subtask text, with ticks cleared and no time carried over.
+            description: crate::subtasks::reset(&task.description),
+            tags: task
+                .tags
+                .iter()
+                .filter(|t| data.tags.get(*t).is_some_and(|x| !x.deleted))
+                .cloned()
+                .collect(),
             last_worked_at: data
                 .segments
                 .values()
@@ -293,6 +335,248 @@ impl Service {
                 .map(|s| s.end.unwrap_or(s.start))
                 .max(),
         })
+    }
+
+    pub fn add_manual_entry(&mut self, input: &ManualEntryInput) -> Result<String, CoreError> {
+        self.mutate(|f, c| f.data.add_manual_entry(c, input))
+    }
+    pub fn correct_segment(&mut self, input: &CorrectionInput) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.correct_segment(c, input))
+    }
+    pub fn void_segment(&mut self, id: &str, reason: &str) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.void_segment(c, id, reason))
+    }
+    pub fn restore_segment(&mut self, id: &str, reason: &str) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.restore_segment(c, id, reason))
+    }
+    pub fn decide_gap(&mut self, id: &str, decision: GapDecision) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.decide_gap(c, id, decision))
+    }
+    pub fn mark_billable_pause(&mut self, input: &PauseInput) -> Result<String, CoreError> {
+        self.mutate(|f, c| f.data.mark_billable_pause(c, input))
+    }
+    pub fn unmark_billable_pause(&mut self, id: &str) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.unmark_billable_pause(c, id))
+    }
+    pub fn set_active_subtask(
+        &mut self,
+        task: &str,
+        subtask: Option<&str>,
+    ) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.set_active_subtask(c, task, subtask))
+    }
+    pub fn save_tag(&mut self, input: &TagInput) -> Result<String, CoreError> {
+        self.mutate(|f, c| f.data.save_tag(c, input))
+    }
+    pub fn delete_tag(&mut self, id: &str) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.delete_tag(c, id))
+    }
+    pub fn save_template(&mut self, input: &TemplateInput) -> Result<String, CoreError> {
+        self.mutate(|f, c| f.data.save_template(c, input))
+    }
+    pub fn delete_template(&mut self, id: &str) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.delete_template(c, id))
+    }
+    pub fn task_from_template(
+        &mut self,
+        id: &str,
+        project: Option<&str>,
+    ) -> Result<String, CoreError> {
+        self.mutate(|f, c| f.data.task_from_template(c, id, project))
+    }
+    pub fn summary_preview(&self, req: &SummaryRequest) -> Result<SummaryPreview, CoreError> {
+        self.file.data.summary_preview(req)
+    }
+    pub fn create_summary(&mut self, req: &SummaryRequest) -> Result<String, CoreError> {
+        self.mutate(|f, c| f.data.create_summary(c, req))
+    }
+    pub fn void_summary(&mut self, id: &str) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.void_summary(c, id))
+    }
+    pub fn set_device_prefix(&mut self, prefix: &str) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.set_device_prefix(c, prefix))
+    }
+
+    /// The record of changes to one item, newest first, or all of them.
+    #[must_use]
+    pub fn audit_entries(&self, entity_id: Option<&str>) -> Vec<AuditEntry> {
+        let mut out: Vec<AuditEntry> = self
+            .file
+            .data
+            .audit_log
+            .values()
+            .filter(|a| entity_id.is_none_or(|id| a.entity_id == id))
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| b.at.cmp(&a.at).then_with(|| a.id.cmp(&b.id)));
+        out
+    }
+
+    /// Called every few seconds with the OS's idle time. Returns true when time away was found.
+    pub fn observe_activity(&mut self, idle_secs: Option<u64>) -> Result<bool, CoreError> {
+        let device = self.file.device_id.clone();
+        let running = self.file.data.own_open_segments(&device).into_iter().next();
+        let threshold = minutes_setting(&self.file.data, "idleMinutes", DEFAULT_IDLE_MINUTES);
+        let gaps = self.idle.tick(
+            self.now(),
+            running.is_some(),
+            idle_secs,
+            u64::try_from(threshold).unwrap_or(0) * 60,
+        );
+        let Some(segment) = running else {
+            return Ok(false);
+        };
+        if gaps.is_empty() {
+            return Ok(false);
+        }
+        self.mutate(|f, c| {
+            for g in &gaps {
+                f.data.add_gap(c, &segment, g.start, g.end, g.kind);
+            }
+            Ok(())
+        })?;
+        Ok(true)
+    }
+
+    #[must_use]
+    pub fn current_reminder(&self) -> Option<Reminder> {
+        if self.reminder_quiet_until.is_some_and(|q| q > self.now()) {
+            return None;
+        }
+        let data = &self.file.data;
+        reminder::due(
+            data,
+            &self.file.device_id,
+            self.now(),
+            minutes_setting(data, "longRunMinutes", reminder::DEFAULT_LONG_RUN_MINUTES),
+            data.settings
+                .get("remindPastShift")
+                .and_then(|e| e.value.as_bool())
+                .unwrap_or(true),
+        )
+    }
+
+    /// Quiets the reminder for a while. Keeps running: this isn't a pause.
+    pub fn snooze_reminder(&mut self, minutes: i64) {
+        self.reminder_quiet_until = Some(self.now().later(minutes.clamp(1, 24 * 60) * 60));
+    }
+
+    fn figures(&self) -> BTreeMap<String, ProjectFigures> {
+        let tz = crate::validate::parse_zone(&self.system_zone).unwrap_or(chrono_tz::UTC);
+        let source = self.export_source();
+        project_figures(&self.file.data, tz, &|s: &Segment| source.end_of(s))
+    }
+
+    /// What deserves a system notification now. Each budget threshold and reminder notifies once.
+    pub fn take_alerts(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        let figures = self.figures();
+        let mut seen = self.file.prefs.budget_alerts_seen.clone();
+        for (id, f) in &figures {
+            let Some(b) = &f.budget else { continue };
+            if b.level > seen.get(id).copied().unwrap_or(0)
+                && let Some(p) = self.file.data.projects.get(id).filter(|p| !p.archived)
+            {
+                out.push(format!(
+                    "{} has reached {}% of its {}.",
+                    p.name,
+                    b.percent,
+                    if b.basis == "fee" {
+                        "fixed fee"
+                    } else {
+                        "budget"
+                    }
+                ));
+                seen.insert(id.clone(), b.level);
+            }
+        }
+        if seen != self.file.prefs.budget_alerts_seen {
+            let _ = self.mutate(|f, _| {
+                f.prefs.budget_alerts_seen = seen;
+                Ok(())
+            });
+        }
+        let reminder = self.current_reminder();
+        if reminder != self.reminder_told {
+            if let Some(r) = &reminder {
+                let name = |id: &str| {
+                    self.file
+                        .data
+                        .tasks
+                        .get(id)
+                        .map_or_else(String::new, |t| t.name.clone())
+                };
+                out.push(match r {
+                    Reminder::LongRun { task_id, .. } => {
+                        format!(
+                            "{} has been running a long time. Still working on it?",
+                            name(task_id)
+                        )
+                    }
+                    Reminder::PastShift { task_id, shift, .. } => {
+                        format!("{} is still running after {shift} ended.", name(task_id))
+                    }
+                });
+            }
+            self.reminder_told = reminder;
+        }
+        out
+    }
+
+    /// Writes today's dated copy if it's missing.
+    pub fn run_daily_backup(&self) -> Result<bool, CoreError> {
+        backup::daily(&self.paths, &self.file, self.now(), self.backup_keep())
+    }
+
+    fn backup_keep(&self) -> u32 {
+        self.file.prefs.backup_keep.unwrap_or(backup::DEFAULT_KEEP)
+    }
+
+    pub fn set_backup_keep(&mut self, keep: u32) -> Result<(), CoreError> {
+        if !(1..=365).contains(&keep) {
+            return Err(CoreError::Validation(
+                "keep between 1 and 365 backups".into(),
+            ));
+        }
+        self.mutate(|f, _| {
+            f.prefs.backup_keep = Some(keep);
+            Ok(())
+        })
+    }
+
+    pub fn list_backups(&self) -> Result<Vec<BackupInfo>, CoreError> {
+        Ok(backup::list(&self.paths)?)
+    }
+
+    /// Replaces the store with a backup, keeping a safety copy of the current one first. Settings of
+    /// this device, such as sync folders, stay as they are. The launch counts as cold afterwards.
+    pub fn restore_backup(&mut self, name: &str) -> Result<String, CoreError> {
+        let mut restored = backup::read(&self.paths, name)?;
+        self.on_exit()?;
+        let safety = backup::safety_copy(&self.paths, &self.file, self.now())?;
+        restored.prefs = self.file.prefs.clone();
+        restored.device_id = self.file.device_id.clone();
+        restored.device_name = self.file.device_name.clone();
+        restored.remote_devices = self.file.remote_devices.clone();
+        persist::save(&self.paths, &restored, self.now())?;
+        self.file = restored;
+        self.file.data.seed_tags();
+        self.recover_crash()?;
+        persist::save(&self.paths, &self.file, self.now())?;
+        self.revision += 1;
+        self.warm = false;
+        self.last_worked = None;
+        self.notify(
+            "info",
+            format!("Restored {name}. The data just before it is kept as {safety}."),
+        );
+        if !self.file.prefs.sync_targets.is_empty() {
+            self.notify(
+                "warning",
+                "Sync is on, so newer records in your sync folders will merge back in at the next sync.".to_owned(),
+            );
+        }
+        Ok(safety)
     }
 
     pub fn save_shift(&mut self, input: &ShiftInput) -> Result<String, CoreError> {
@@ -580,6 +864,14 @@ impl Service {
             .map(|s| s.device_id.as_str())
             .collect();
 
+        let figures = self.figures();
+        let source = self.export_source();
+        let end_of = |s: &Segment| source.end_of(s);
+        let all_pieces = pieces::pieces(data, &end_of);
+        let totals = task_totals(data, &all_pieces);
+        let unconfirmed = pieces::unconfirmed_secs(data);
+        let billed = data.billed_segments();
+
         let projects = data
             .projects
             .values()
@@ -595,6 +887,10 @@ impl Service {
                 client_zone: p.client_zone.clone(),
                 created_at: p.created_at,
                 has_tasks: with_tasks.contains(p.id.as_str()),
+                billing_type: p.billing_type,
+                fixed_fee_cents: p.fixed_fee_cents,
+                fee_currency: p.fee_currency.clone(),
+                figures: figures.get(&p.id).cloned().unwrap_or_default(),
             })
             .collect();
 
@@ -621,6 +917,26 @@ impl Service {
                 created_at: t.created_at,
                 stopped_at: t.stopped_at,
                 continued_from: t.continued_from.clone(),
+                tags: t.tags.clone(),
+                active_subtask: t.active_subtask.clone(),
+                subtasks: subtasks::items(&t.description)
+                    .into_iter()
+                    .map(|i| SubtaskView {
+                        secs: totals
+                            .get(&t.id)
+                            .and_then(|x| x.subtask_secs.get(&i.id))
+                            .copied()
+                            .unwrap_or(0),
+                        id: i.id,
+                        text: i.text,
+                        checked: i.checked,
+                    })
+                    .collect(),
+                billed_secs: totals.get(&t.id).map_or(0, |x| x.billed_secs),
+                unbilled_secs: totals.get(&t.id).map_or(0, |x| x.unbilled_secs),
+                thinking_secs: totals.get(&t.id).map_or(0, |x| x.thinking_secs),
+                pause_secs: totals.get(&t.id).map_or(0, |x| x.pause_secs),
+                unconfirmed_secs: unconfirmed.get(&t.id).copied().unwrap_or(0),
                 running_elsewhere: if t.state == TaskState::Running
                     && !open_here.contains(t.id.as_str())
                 {
@@ -633,18 +949,47 @@ impl Service {
             })
             .collect();
 
-        let source = self.export_source();
-        let segments = data
+        let mut segments: Vec<SegmentView> = all_pieces
+            .iter()
+            .map(|p| {
+                let device = p.device_id.clone().unwrap_or_default();
+                SegmentView {
+                    id: p.id.clone(),
+                    task_id: p.task_id.clone(),
+                    start: p.start,
+                    end: (!p.open).then_some(p.end),
+                    provisional_end: (p.open && device != own).then_some(p.end),
+                    device_id: device,
+                    segment_id: p.source_id.clone(),
+                    kind: p.kind,
+                    subtask_id: p.subtask_id.clone(),
+                }
+            })
+            .collect();
+        segments.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.id.cmp(&b.id)));
+        let raw_segments = data
             .segments
             .values()
             .filter(|s| data.tasks.get(&s.task_id).is_some_and(Task::is_live))
-            .map(|s| SegmentView {
-                id: s.id.clone(),
-                task_id: s.task_id.clone(),
-                device_id: s.device_id.clone(),
-                start: s.start,
-                end: s.end,
-                provisional_end: (s.end.is_none() && s.device_id != own).then(|| source.end_of(s)),
+            .map(|s| {
+                let effective = s.effective();
+                RawSegmentView {
+                    id: s.id.clone(),
+                    task_id: s.task_id.clone(),
+                    device_id: s.device_id.clone(),
+                    raw_start: s.start,
+                    raw_end: s.end,
+                    start: effective.map_or(s.start, |e| e.0),
+                    end: effective.map_or(s.end, |e| e.1),
+                    voided: effective.is_none(),
+                    corrected: s.edit.as_ref().is_some_and(|e| !e.voided),
+                    manual: s.manual,
+                    reason: s
+                        .edit
+                        .as_ref()
+                        .map_or_else(String::new, |e| e.reason.clone()),
+                    billed: billed.contains(s.id.as_str()),
+                }
             })
             .collect();
 
@@ -667,6 +1012,17 @@ impl Service {
         }
 
         warnings.extend(self.local_error.clone());
+        let clashes: Vec<String> = data
+            .prefix_clashes(own)
+            .iter()
+            .map(|d| self.device_name_of(d))
+            .collect();
+        if !clashes.is_empty() {
+            warnings.push(format!(
+                "Another device uses the same reference prefix: {}. Choose a different prefix, or references can repeat.",
+                clashes.join(", ")
+            ));
+        }
 
         let targets = self
             .file
@@ -733,9 +1089,50 @@ impl Service {
             },
             launch: LaunchView {
                 warm: self.warm,
-                cold_required: COLD_REQUIRED,
+                cold_required: cold_required(data),
                 copy_source: if self.warm { self.copy_source() } else { None },
             },
+            raw_segments,
+            gaps: data
+                .gaps
+                .values()
+                .filter(|g| data.tasks.get(&g.task_id).is_some_and(Task::is_live))
+                .cloned()
+                .collect(),
+            pauses: data
+                .pauses
+                .values()
+                .filter(|p| !p.deleted)
+                .cloned()
+                .collect(),
+            tags: data.tags.values().filter(|t| !t.deleted).cloned().collect(),
+            templates: data
+                .templates
+                .values()
+                .filter(|t| !t.deleted)
+                .cloned()
+                .collect(),
+            billing: BillingView {
+                prefix: data.prefix_of(own),
+                clashes,
+                summaries: data.summaries.values().cloned().collect(),
+            },
+            reminder: self.current_reminder(),
+            reminder_settings: ReminderSettings {
+                idle_minutes: minutes_setting(data, "idleMinutes", DEFAULT_IDLE_MINUTES),
+                long_run_minutes: minutes_setting(
+                    data,
+                    "longRunMinutes",
+                    reminder::DEFAULT_LONG_RUN_MINUTES,
+                ),
+                remind_past_shift: data
+                    .settings
+                    .get("remindPastShift")
+                    .and_then(|e| e.value.as_bool())
+                    .unwrap_or(true),
+            },
+            backup_keep: self.backup_keep(),
+            has_pdf_logo: self.paths.dir.join(PDF_LOGO_FILE).exists(),
         }
     }
 }
@@ -766,6 +1163,9 @@ mod tests {
             billable: true,
             budget_hours: None,
             client_zone: None,
+            billing_type: Default::default(),
+            fixed_fee_cents: None,
+            fee_currency: None,
         }
     }
     fn tinput(name: &str, p: &str) -> TaskInput {
@@ -774,6 +1174,7 @@ mod tests {
             project_id: p.into(),
             description: doc("Details"),
             continued_from: None,
+            tags: vec!["tag-concept".to_owned()],
         }
     }
     fn doc(text: &str) -> Value {
@@ -797,13 +1198,14 @@ mod tests {
         let clock = ManualClock::at(T0);
         let mut s = open(dir.path(), &clock);
         assert!(!s.snapshot().launch.warm);
-        assert_eq!(s.snapshot().launch.cold_required, COLD_REQUIRED);
+        assert_eq!(s.snapshot().launch.cold_required.len(), 4);
         let p = s.create_project(&pinput("P")).unwrap();
         let blank = TaskInput {
             name: "T".into(),
             project_id: p.clone(),
             description: Value::Null,
             continued_from: None,
+            tags: Vec::new(),
         };
         let t = s.create_task(&blank).unwrap();
         assert!(matches!(s.start_task(&t), Err(CoreError::Validation(_))));
@@ -817,6 +1219,7 @@ mod tests {
         assert!(s.file().data.segments.is_empty());
         let filled = TaskInput {
             description: doc("Real"),
+            tags: vec!["tag-concept".to_owned()],
             ..blank.clone()
         };
         s.update_task(&t, &filled).unwrap();
@@ -871,6 +1274,7 @@ mod tests {
                 project_id: p,
                 description: doc("More"),
                 continued_from: Some(t.clone()),
+                tags: vec!["tag-concept".to_owned()],
             })
             .unwrap();
         s.start_task(&next).unwrap();
@@ -1098,5 +1502,186 @@ mod tests {
         assert_eq!(j["now"], "2026-03-01T09:00:00Z");
         assert!(j["segments"][0]["end"].is_null());
         assert!(j["tzdbVersion"].as_str().unwrap().starts_with("20"));
+    }
+
+    // ---- Phase 2 service paths
+
+    fn pending_gaps(s: &Service) -> Vec<crate::model::IdleGap> {
+        s.file()
+            .data
+            .gaps
+            .values()
+            .filter(|g| g.decision == GapDecision::Pending)
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn time_asleep_is_not_billable_until_confirmed_and_the_raw_segment_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        let raw_start = s.file().data.segments.values().next().unwrap().start;
+        assert!(
+            !s.observe_activity(Some(0)).unwrap(),
+            "first tick only arms"
+        );
+        clock.advance(5);
+        assert!(!s.observe_activity(Some(0)).unwrap());
+        // The machine slept for three hours: the next tick arrives late.
+        clock.advance(3 * 3600);
+        assert!(s.observe_activity(Some(0)).unwrap());
+        let gaps = pending_gaps(&s);
+        assert_eq!(gaps.len(), 1);
+        let task_secs = |s: &Service| {
+            s.snapshot()
+                .segments
+                .iter()
+                .filter(|x| x.task_id == t && x.kind == crate::pieces::PieceKind::Work)
+                .map(|x| x.end.unwrap_or_else(|| clock.now()).0 - x.start.0)
+                .sum::<i64>()
+        };
+        assert!(task_secs(&s) < 3 * 3600, "unanswered gap counts nowhere");
+        let seg = s.file().data.segments.values().next().unwrap();
+        assert_eq!(seg.start, raw_start, "raw timestamps are preserved");
+        assert!(seg.edit.is_none());
+        s.decide_gap(&gaps[0].id, GapDecision::Keep).unwrap();
+        assert!(pending_gaps(&s).is_empty());
+        assert!(task_secs(&s) >= 3 * 3600, "kept time counts again");
+    }
+
+    #[test]
+    fn a_restore_keeps_a_safety_copy_and_comes_back_cold() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        s.pause_task(&t).unwrap();
+        assert!(s.run_daily_backup().unwrap());
+        let name = s.list_backups().unwrap()[0].name.clone();
+        clock.advance(60);
+        let late = s
+            .create_task(&tinput(
+                "Added after",
+                &s.file().data.tasks[&t].project_id.clone(),
+            ))
+            .unwrap();
+        let safety = s.restore_backup(&name).unwrap();
+        assert!(!s.file().data.tasks.contains_key(&late));
+        assert!(s.file().data.tasks.contains_key(&t));
+        assert!(!s.is_warm(), "a restore counts as a cold start");
+        let listed: Vec<String> = s
+            .list_backups()
+            .unwrap()
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        assert!(listed.contains(&safety), "{listed:?}");
+        // The safety copy brings the undone work back.
+        s.restore_backup(&safety).unwrap();
+        assert!(s.file().data.tasks.contains_key(&late));
+    }
+
+    #[test]
+    fn a_restore_refuses_a_name_outside_the_backup_folder_and_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        assert!(s.restore_backup("../z-work-data.json").is_err());
+        assert!(s.file().data.tasks.contains_key(&t));
+        assert!(s.is_warm());
+    }
+
+    #[test]
+    fn a_warm_copy_keeps_tags_and_subtask_text_and_clears_ticks_and_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let description = serde_json::json!({"type":"doc","content":[
+            {"type":"taskList","content":[
+                {"type":"taskItem","attrs":{"checked":true},"content":[
+                    {"type":"paragraph","content":[{"type":"text","text":"Sketch"}]}]}]}]});
+        let t = s
+            .create_task(&TaskInput {
+                description: description.clone(),
+                ..tinput("T", &p)
+            })
+            .unwrap();
+        s.start_task(&t).unwrap();
+        let copy = s.snapshot().launch.copy_source.unwrap();
+        assert_eq!(copy.tags, vec!["tag-concept".to_owned()]);
+        let items = crate::subtasks::items(&copy.description);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "Sketch");
+        assert!(!items[0].checked);
+        // The copy is a new task with no time of its own.
+        let copied = s
+            .create_task(&TaskInput {
+                description: copy.description,
+                tags: copy.tags,
+                ..tinput("T again", &p)
+            })
+            .unwrap();
+        assert!(s.file().data.segments.values().all(|x| x.task_id != copied));
+    }
+
+    #[test]
+    fn a_cold_start_refuses_missing_tags_and_a_warm_one_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let bare = TaskInput {
+            tags: Vec::new(),
+            ..tinput("T", &p)
+        };
+        let t = s.create_task(&bare).unwrap();
+        assert!(matches!(s.start_task(&t), Err(CoreError::Validation(_))));
+        assert!(s.file().data.segments.is_empty());
+        let tagged = s.create_task(&tinput("Tagged", &p)).unwrap();
+        s.start_task(&tagged).unwrap();
+        s.start_task(&t).unwrap();
+    }
+
+    #[test]
+    fn colors_are_canonical_on_tags_and_projects_and_anything_else_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let tag = crate::catalog::TagInput {
+            id: None,
+            name: "Pick".into(),
+            color: "#AbCdEf".into(),
+        };
+        let id = s.save_tag(&tag).unwrap();
+        assert_eq!(s.file().data.tags[&id].color, "#abcdef");
+        let p = s
+            .create_project(&ProjectInput {
+                color: "#010203".into(),
+                ..pinput("Coloured")
+            })
+            .unwrap();
+        assert_eq!(s.file().data.projects[&p].color, "#010203");
+        for bad in [
+            "",
+            "abcdef",
+            "#abc",
+            "#abcdefff",
+            "#ggggGG",
+            "rgb(1,2,3)",
+            "#12345\u{e9}",
+        ] {
+            let refused = s.save_tag(&crate::catalog::TagInput {
+                id: None,
+                name: format!("Bad {bad}"),
+                color: bad.into(),
+            });
+            assert!(matches!(refused, Err(CoreError::Validation(_))), "{bad}");
+            let refused = s.create_project(&ProjectInput {
+                color: bad.into(),
+                ..pinput(&format!("Bad {bad}"))
+            });
+            assert!(matches!(refused, Err(CoreError::Validation(_))), "{bad}");
+        }
     }
 }

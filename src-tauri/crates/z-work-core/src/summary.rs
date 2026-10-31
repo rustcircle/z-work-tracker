@@ -13,7 +13,7 @@ use crate::billing::{cents_from_numerator, day_of, task_days};
 use crate::error::CoreError;
 use crate::machine::Ctx;
 use crate::model::{BillingSummary, BillingType, DevicePrefix, Segment, Shared, SummaryRow};
-use crate::pieces::{PieceKind, pieces};
+use crate::pieces::{Piece, PieceKind};
 use crate::time::Ts;
 use crate::validate::{check_date, parse_zone};
 
@@ -145,7 +145,9 @@ impl Shared {
         }
         let open_end = |s: &Segment| s.end.unwrap_or(s.start);
         for td in task_days(&view, tz, &open_end) {
-            let task = &view.tasks[&td.task_id];
+            let Some(task) = view.tasks.get(&td.task_id) else {
+                continue;
+            };
             let cents: BTreeMap<String, i64> = td
                 .numerators()
                 .into_iter()
@@ -196,7 +198,8 @@ impl Shared {
 
     pub fn set_device_prefix(&mut self, ctx: &Ctx<'_>, raw: &str) -> Result<(), CoreError> {
         let prefix = raw.trim().to_uppercase();
-        let ok = (1..=4).contains(&prefix.len()) && prefix.bytes().all(|b| b.is_ascii_alphanumeric());
+        let ok =
+            (1..=4).contains(&prefix.len()) && prefix.bytes().all(|b| b.is_ascii_alphanumeric());
         if !ok {
             return Err(CoreError::Validation(
                 "a prefix is 1 to 4 letters or digits".into(),
@@ -337,10 +340,42 @@ pub fn project_figures(
 ) -> BTreeMap<String, ProjectFigures> {
     let mut out: BTreeMap<String, ProjectFigures> = BTreeMap::new();
     // Rates apply to every project here, so a fixed-fee project's time can be valued.
-    let mut all_hourly = shared.clone();
-    for p in all_hourly.projects.values_mut() {
-        p.billing_type = BillingType::Hourly;
-        p.billable = true;
+    let wanted: BTreeSet<&str> = shared
+        .projects
+        .values()
+        .filter(|p| p.budget_hours.is_some() || p.billing_type == BillingType::FixedFee)
+        .map(|p| p.id.as_str())
+        .collect();
+    let mut all_hourly = Shared::default();
+    if !wanted.is_empty() {
+        all_hourly.rates = shared.rates.clone();
+        all_hourly.rounding = shared.rounding.clone();
+        all_hourly.gaps = shared.gaps.clone();
+        all_hourly.pauses = shared.pauses.clone();
+        for p in shared
+            .projects
+            .values()
+            .filter(|p| wanted.contains(p.id.as_str()))
+        {
+            let mut p = p.clone();
+            p.billing_type = BillingType::Hourly;
+            p.billable = true;
+            all_hourly.projects.insert(p.id.clone(), p);
+        }
+        for t in shared
+            .tasks
+            .values()
+            .filter(|t| wanted.contains(t.project_id.as_str()))
+        {
+            all_hourly.tasks.insert(t.id.clone(), t.clone());
+        }
+        for s in shared
+            .segments
+            .values()
+            .filter(|s| all_hourly.tasks.contains_key(&s.task_id))
+        {
+            all_hourly.segments.insert(s.id.clone(), s.clone());
+        }
     }
     for td in task_days(&all_hourly, tz, end_of) {
         let f = out.entry(td.project_id.clone()).or_default();
@@ -405,13 +440,10 @@ pub struct TaskTotals {
 }
 
 #[must_use]
-pub fn task_totals(
-    shared: &Shared,
-    end_of: &dyn Fn(&Segment) -> Ts,
-) -> BTreeMap<String, TaskTotals> {
+pub fn task_totals(shared: &Shared, all: &[Piece]) -> BTreeMap<String, TaskTotals> {
     let (segs, pauses) = shared.billed_sets();
     let mut out: BTreeMap<String, TaskTotals> = BTreeMap::new();
-    for p in pieces(shared, end_of) {
+    for p in all {
         let t = out.entry(p.task_id.clone()).or_default();
         let billed = match p.kind {
             PieceKind::BillablePause => pauses.contains(p.source_id.as_str()),
@@ -456,9 +488,15 @@ pub fn summary_csv(b: &BillingSummary, project_name: &str) -> String {
         format!("{} to {} ({})", b.from, b.to, b.zone),
     ]);
     let currencies: Vec<&String> = b.totals.keys().collect();
-    let mut head: Vec<String> = ["Day", "Task", "Exact hours", "Billable pause hours", "Billable hours"]
-        .map(str::to_owned)
-        .to_vec();
+    let mut head: Vec<String> = [
+        "Day",
+        "Task",
+        "Exact hours",
+        "Billable pause hours",
+        "Billable hours",
+    ]
+    .map(str::to_owned)
+    .to_vec();
     head.extend(currencies.iter().map(|c| (*c).clone()));
     line(&head);
     #[allow(clippy::cast_precision_loss)]
@@ -487,7 +525,11 @@ pub fn summary_csv(b: &BillingSummary, project_name: &str) -> String {
         hours(b.rows.iter().map(|r| r.pause_secs).sum()),
         hours(b.rows.iter().map(|r| r.billable_secs).sum()),
     ];
-    total.extend(currencies.iter().map(|c| amount(b.totals[*c])));
+    total.extend(
+        currencies
+            .iter()
+            .map(|c| amount(b.totals.get(*c).copied().unwrap_or(0))),
+    );
     line(&total);
     out
 }
@@ -508,20 +550,41 @@ mod tests {
         let mut s = Shared::default();
         let c = ctx("2026-01-01T08:00:00Z");
         let p = s.create_project(&c, input).unwrap();
-        s.set_rate(&c, &RateInput {
-            project_id: p.clone(), rate_cents: Some(6000), currency: "EUR".into(),
-            effective_from: Some(ts("2026-01-01T00:00:00Z")), confirm_retroactive: true,
-        }).unwrap();
+        s.set_rate(
+            &c,
+            &RateInput {
+                project_id: p.clone(),
+                rate_cents: Some(6000),
+                currency: "EUR".into(),
+                effective_from: Some("2026-01-01T00:00:00Z".to_owned()),
+                confirm_retroactive: true,
+            },
+        )
+        .unwrap();
         let t = s.create_task(&c, &task_input("Job", &p)).unwrap();
         (s, p, t)
     }
     fn entry(s: &mut Shared, t: &str, a: &str, b: &str) -> String {
-        s.add_manual_entry(&ctx(NOW), &ManualEntryInput {
-            task_id: t.into(), start: ts(a), end: ts(b), reason: String::new(), subtask_id: None, allow_overlap: true,
-        }).unwrap()
+        s.add_manual_entry(
+            &ctx(NOW),
+            &ManualEntryInput {
+                task_id: t.into(),
+                start: ts(a),
+                end: ts(b),
+                reason: String::new(),
+                subtask_id: None,
+                allow_overlap: true,
+            },
+        )
+        .unwrap()
     }
     fn req(p: &str) -> SummaryRequest {
-        SummaryRequest { project_id: p.into(), from: "2026-03-01".into(), to: "2026-03-31".into(), zone: "UTC".into() }
+        SummaryRequest {
+            project_id: p.into(),
+            from: "2026-03-01".into(),
+            to: "2026-03-31".into(),
+            zone: "UTC".into(),
+        }
     }
 
     #[test]
@@ -534,8 +597,12 @@ mod tests {
         assert_eq!(b.totals["EUR"], 6000);
         assert_eq!(b.rows[0].billable_secs, 3600);
         assert!(s.create_summary(&ctx(NOW), &req(&p)).is_err());
-        let totals = task_totals(&s, &|x| x.end.unwrap_or(x.start));
-        assert_eq!((totals[&t].billed_secs, totals[&t].unbilled_secs), (3600, 0));
+        let all = crate::pieces::pieces(&s, &|x: &Segment| x.end.unwrap_or(x.start));
+        let totals = task_totals(&s, &all);
+        assert_eq!(
+            (totals[&t].billed_secs, totals[&t].unbilled_secs),
+            (3600, 0)
+        );
     }
 
     #[test]
@@ -543,7 +610,10 @@ mod tests {
         let (mut s, p, t) = world(&project_input("A"));
         let seg = entry(&mut s, &t, "2026-03-02T09:00:00Z", "2026-03-02T10:00:00Z");
         let id = s.create_summary(&ctx(NOW), &req(&p)).unwrap();
-        assert!(matches!(s.void_segment(&ctx(NOW), &seg, "x"), Err(CoreError::Conflict(_))));
+        assert!(matches!(
+            s.void_segment(&ctx(NOW), &seg, "x"),
+            Err(CoreError::Conflict(_))
+        ));
         s.void_summary(&ctx(NOW), &id).unwrap();
         assert!(s.void_segment(&ctx(NOW), &seg, "x").is_ok());
     }
@@ -566,8 +636,14 @@ mod tests {
     #[test]
     fn two_devices_get_different_prefixes_and_a_forced_clash_is_reported() {
         let mut s = Shared::default();
-        let a = Ctx { now: ts(NOW), device: "pc-a" };
-        let b = Ctx { now: ts(NOW), device: "pc-b" };
+        let a = Ctx {
+            now: ts(NOW),
+            device: "pc-a",
+        };
+        let b = Ctx {
+            now: ts(NOW),
+            device: "pc-b",
+        };
         s.set_device_prefix(&a, &s.prefix_of("pc-a")).unwrap();
         assert_eq!(s.prefix_of("pc-b"), "B");
         s.set_device_prefix(&b, "A").unwrap();
@@ -579,37 +655,75 @@ mod tests {
         let (mut s, p, t) = world(&project_input("A"));
         entry(&mut s, &t, "2026-03-02T09:00:00Z", "2026-03-02T10:00:00Z");
         entry(&mut s, &t, "2026-03-02T11:00:00Z", "2026-03-02T12:00:00Z");
-        s.mark_billable_pause(&ctx(NOW), &PauseInput {
-            task_id: t.clone(), start: ts("2026-03-02T10:00:00Z"), end: ts("2026-03-02T11:00:00Z"), note: String::new(),
-        }).unwrap();
+        s.mark_billable_pause(
+            &ctx(NOW),
+            &PauseInput {
+                task_id: t.clone(),
+                start: ts("2026-03-02T10:00:00Z"),
+                end: ts("2026-03-02T11:00:00Z"),
+                note: String::new(),
+            },
+        )
+        .unwrap();
         let pre = s.summary_preview(&req(&p)).unwrap();
-        assert_eq!((pre.exact_secs, pre.pause_secs, pre.billable_secs), (7200, 3600, 10800));
+        assert_eq!(
+            (pre.exact_secs, pre.pause_secs, pre.billable_secs),
+            (7200, 3600, 10800)
+        );
         assert_eq!(pre.totals["EUR"], 18000);
     }
 
     #[test]
     fn budget_levels_on_hours() {
-        let input = ProjectInput { budget_hours: Some(10.0), ..project_input("A") };
+        let input = ProjectInput {
+            budget_hours: Some(10.0),
+            ..project_input("A")
+        };
         let (mut s, p, t) = world(&input);
         // Rounding is off here so the percentages are exact.
-        s.set_rounding(&ctx(NOW), &crate::machine::RoundingInput {
-            project_id: None, effective_from: "2000-01-01".into(), increment_minutes: 0, method: crate::model::RoundMethod::Up, confirm_retroactive: true,
-        }, "2026-03-20").unwrap();
+        s.set_rounding(
+            &ctx(NOW),
+            &crate::machine::RoundingInput {
+                project_id: None,
+                effective_from: "2000-01-01".into(),
+                increment_minutes: 0,
+                method: crate::model::RoundMethod::Up,
+                confirm_retroactive: true,
+            },
+            "2026-03-20",
+        )
+        .unwrap();
         let end = |x: &Segment| x.end.unwrap_or(x.start);
         let tz = parse_zone("UTC").unwrap();
         entry(&mut s, &t, "2026-03-02T00:00:00Z", "2026-03-02T07:59:00Z");
-        assert_eq!(project_figures(&s, tz, &end)[&p].budget.as_ref().unwrap().level, 0);
+        assert_eq!(
+            project_figures(&s, tz, &end)[&p]
+                .budget
+                .as_ref()
+                .unwrap()
+                .level,
+            0
+        );
         entry(&mut s, &t, "2026-03-03T00:00:00Z", "2026-03-03T00:01:00Z");
         let b = project_figures(&s, tz, &end)[&p].budget.clone().unwrap();
         assert_eq!((b.percent, b.level, b.basis), (80, 80, "hours"));
         entry(&mut s, &t, "2026-03-04T00:00:00Z", "2026-03-04T02:00:00Z");
-        assert_eq!(project_figures(&s, tz, &end)[&p].budget.as_ref().unwrap().level, 100);
+        assert_eq!(
+            project_figures(&s, tz, &end)[&p]
+                .budget
+                .as_ref()
+                .unwrap()
+                .level,
+            100
+        );
     }
 
     #[test]
     fn a_fixed_fee_project_earns_no_hourly_money_but_has_an_effective_rate() {
         let input = ProjectInput {
-            billing_type: BillingType::FixedFee, fixed_fee_cents: Some(100_000), fee_currency: Some("EUR".into()),
+            billing_type: BillingType::FixedFee,
+            fixed_fee_cents: Some(100_000),
+            fee_currency: Some("EUR".into()),
             ..project_input("A")
         };
         let (mut s, p, t) = world(&input);
@@ -622,17 +736,30 @@ mod tests {
         assert_eq!(f.effective_hourly_cents, Some(10_000));
         let b = f.budget.clone().unwrap();
         // 10 h at 60.00 is 600.00 of a 1000.00 fee.
-        assert_eq!((b.basis, b.percent, b.level, b.needs_target_rate), ("fee", 60, 0, false));
+        assert_eq!(
+            (b.basis, b.percent, b.level, b.needs_target_rate),
+            ("fee", 60, 0, false)
+        );
     }
 
     #[test]
     fn a_fixed_fee_without_a_rate_says_it_needs_one() {
         let mut s = Shared::default();
         let c = ctx("2026-01-01T08:00:00Z");
-        let p = s.create_project(&c, &ProjectInput {
-            billing_type: BillingType::FixedFee, fixed_fee_cents: Some(100), fee_currency: Some("EUR".into()), ..project_input("A")
-        }).unwrap();
-        let f = &project_figures(&s, parse_zone("UTC").unwrap(), &|x: &Segment| x.end.unwrap_or(x.start))[&p];
+        let p = s
+            .create_project(
+                &c,
+                &ProjectInput {
+                    billing_type: BillingType::FixedFee,
+                    fixed_fee_cents: Some(100),
+                    fee_currency: Some("EUR".into()),
+                    ..project_input("A")
+                },
+            )
+            .unwrap();
+        let f = &project_figures(&s, parse_zone("UTC").unwrap(), &|x: &Segment| {
+            x.end.unwrap_or(x.start)
+        })[&p];
         assert!(f.budget.as_ref().unwrap().needs_target_rate);
     }
 

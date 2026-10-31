@@ -7,13 +7,15 @@ use uuid::Uuid;
 
 use crate::error::CoreError;
 use crate::model::{
-    PauseReason, Project, RateVersion, RoundMethod, RoundingVersion, Segment, SettingEntry, Shared,
-    ShiftVersion, Stamp, Task, TaskState,
+    BillingType, PauseReason, Project, RateVersion, RoundMethod, RoundingVersion, Segment,
+    SettingEntry, Shared, ShiftVersion, Stamp, Task, TaskState,
 };
+use crate::subtasks;
 use crate::time::Ts;
 use crate::validate::{
     MAX_NAME, MAX_PROJECT_NAME, check_date, check_description, check_hhmm, check_rate,
-    check_rounding, check_shift, clean_color, clean_non_negative, clean_text, parse_zone,
+    check_rounding, check_shift, clean_color, clean_non_negative, clean_text, is_currency,
+    parse_zone,
 };
 
 /// The moment and the device an operation happens on.
@@ -196,7 +198,7 @@ fn new_id() -> String {
 }
 
 impl Shared {
-    fn live_project(&self, id: &str) -> Result<&Project, CoreError> {
+    pub(crate) fn live_project(&self, id: &str) -> Result<&Project, CoreError> {
         self.projects
             .get(id)
             .filter(|p| !p.deleted)
@@ -245,9 +247,10 @@ impl Shared {
             client_zone: client_zone.map(str::to_owned),
             billing_type: input.billing_type,
             fixed_fee_cents: self.clean_fee(input)?,
-            fee_currency: input.fee_currency.clone().filter(|_| {
-                input.billing_type == BillingType::FixedFee
-            }),
+            fee_currency: input
+                .fee_currency
+                .clone()
+                .filter(|_| input.billing_type == BillingType::FixedFee),
         })
     }
 
@@ -593,7 +596,10 @@ impl Shared {
             .filter_map(|s| s.end)
             .max(); // own device only: another's clock may run ahead
         let start = last_end.map_or(ctx.now, |e| e.max(ctx.now));
-        let subtask_id = self.tasks.get(task_id).and_then(|t| t.active_subtask.clone());
+        let subtask_id = self
+            .tasks
+            .get(task_id)
+            .and_then(|t| t.active_subtask.clone());
         let id = new_id();
         self.segments.insert(
             id.clone(),
@@ -1020,6 +1026,9 @@ pub(crate) mod tests {
             billable: true,
             budget_hours: None,
             client_zone: None,
+            billing_type: Default::default(),
+            fixed_fee_cents: None,
+            fee_currency: None,
         }
     }
 

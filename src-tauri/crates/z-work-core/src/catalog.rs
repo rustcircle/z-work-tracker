@@ -218,7 +218,8 @@ mod tests {
     fn starter_tags_appear_once_and_a_deleted_one_stays_deleted() {
         let (mut s, _) = world();
         assert_eq!(s.tags.len(), 4);
-        s.delete_tag(&ctx("2026-01-01T09:00:00Z"), "tag-admin").unwrap();
+        s.delete_tag(&ctx("2026-01-01T09:00:00Z"), "tag-admin")
+            .unwrap();
         s.seed_tags();
         assert!(s.tags["tag-admin"].deleted);
     }
@@ -227,9 +228,20 @@ mod tests {
     fn tag_names_are_unique_ignoring_case() {
         let (mut s, _) = world();
         let c = ctx("2026-01-01T09:00:00Z");
-        let input = TagInput { id: None, name: "concept".into(), color: "#112233".into() };
-        assert!(matches!(s.save_tag(&c, &input), Err(CoreError::Conflict(_))));
-        let renamed = TagInput { id: Some("tag-concept".into()), name: "CONCEPT".into(), color: "#112233".into() };
+        let input = TagInput {
+            id: None,
+            name: "concept".into(),
+            color: "#112233".into(),
+        };
+        assert!(matches!(
+            s.save_tag(&c, &input),
+            Err(CoreError::Conflict(_))
+        ));
+        let renamed = TagInput {
+            id: Some("tag-concept".into()),
+            name: "CONCEPT".into(),
+            color: "#112233".into(),
+        };
         s.save_tag(&c, &renamed).unwrap();
         assert_eq!(s.tags["tag-concept"].name, "CONCEPT");
     }
@@ -240,14 +252,26 @@ mod tests {
         let c = ctx("2026-01-01T09:00:00Z");
         let doc = json!({"type":"doc","content":[{"type":"taskList","content":[
             {"type":"taskItem","attrs":{"checked":true,"subtaskId":"x"},"content":[{"type":"paragraph","content":[{"type":"text","text":"Sketch"}]}]}]}]});
-        let id = s.save_template(&c, &TemplateInput {
-            id: None, name: "Logo job".into(), project_id: Some(p.clone()), description: doc, tags: vec!["tag-concept".into()],
-        }).unwrap();
+        let id = s
+            .save_template(
+                &c,
+                &TemplateInput {
+                    id: None,
+                    name: "Logo job".into(),
+                    project_id: Some(p.clone()),
+                    description: doc,
+                    tags: vec!["tag-concept".into()],
+                },
+            )
+            .unwrap();
         let a = s.task_from_template(&c, &id, None).unwrap();
         let b = s.task_from_template(&c, &id, None).unwrap();
         assert_ne!(a, b);
         let items = subtasks::items(&s.tasks[&a].description);
-        assert_eq!((items[0].text.as_str(), items[0].checked), ("Sketch", false));
+        assert_eq!(
+            (items[0].text.as_str(), items[0].checked),
+            ("Sketch", false)
+        );
         assert_ne!(items[0].id, subtasks::items(&s.tasks[&b].description)[0].id);
         assert_eq!(s.tasks[&a].tags, vec!["tag-concept".to_owned()]);
     }
@@ -256,7 +280,18 @@ mod tests {
     fn a_template_without_a_project_needs_one_to_be_used() {
         let (mut s, p) = world();
         let c = ctx("2026-01-01T09:00:00Z");
-        let id = s.save_template(&c, &TemplateInput { id: None, name: "T".into(), project_id: None, description: Value::Null, tags: vec![] }).unwrap();
+        let id = s
+            .save_template(
+                &c,
+                &TemplateInput {
+                    id: None,
+                    name: "T".into(),
+                    project_id: None,
+                    description: Value::Null,
+                    tags: vec![],
+                },
+            )
+            .unwrap();
         assert!(s.task_from_template(&c, &id, None).is_err());
         assert!(s.task_from_template(&c, &id, Some(&p)).is_ok());
     }

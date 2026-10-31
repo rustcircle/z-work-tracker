@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::billing::{day_of, iso_weekday};
 use crate::machine::stamp_order;
-use crate::model::{ShiftVersion, Shared};
+use crate::model::{Shared, ShiftVersion};
 use crate::time::Ts;
 use crate::validate::parse_zone;
 
@@ -54,7 +54,11 @@ fn shift_end(v: &ShiftVersion, day: NaiveDate) -> Option<Ts> {
     } else {
         day
     };
-    let time = NaiveTime::from_hms_opt(u32::try_from(end / 60).ok()?, u32::try_from(end % 60).ok()?, 0)?;
+    let time = NaiveTime::from_hms_opt(
+        u32::try_from(end / 60).ok()?,
+        u32::try_from(end % 60).ok()?,
+        0,
+    )?;
     let local = NaiveDateTime::new(end_day, time);
     let at = tz.from_local_datetime(&local).earliest()?;
     Some(Ts(at.timestamp()))
@@ -142,10 +146,22 @@ mod tests {
     }
     fn shift(start: &str, end: &str) -> ShiftVersion {
         ShiftVersion {
-            id: "v".into(), shift_id: "s".into(), effective_from: "2026-01-01".into(), name: "Day".into(),
-            color: "#123456".into(), start: start.into(), end: end.into(), weekdays: vec![1, 2, 3, 4, 5, 6, 7],
-            zone: "UTC".into(), break_minutes: 0, retired: false, deleted: false,
-            stamp: Stamp { at: at("2026-01-01T00:00:00Z"), by: "d".into() },
+            id: "v".into(),
+            shift_id: "s".into(),
+            effective_from: "2026-01-01".into(),
+            name: "Day".into(),
+            color: "#123456".into(),
+            start: start.into(),
+            end: end.into(),
+            weekdays: vec![1, 2, 3, 4, 5, 6, 7],
+            zone: "UTC".into(),
+            break_minutes: 0,
+            retired: false,
+            deleted: false,
+            stamp: Stamp {
+                at: at("2026-01-01T00:00:00Z"),
+                by: "d".into(),
+            },
         }
     }
 
@@ -153,9 +169,15 @@ mod tests {
     fn a_long_run_reminds_at_the_limit_and_zero_is_off() {
         let (s, d) = running("2026-03-02T09:00:00Z");
         assert_eq!(due(&s, &d, at("2026-03-02T12:59:00Z"), 240, true), None);
-        assert!(matches!(due(&s, &d, at("2026-03-02T13:00:00Z"), 240, true), Some(Reminder::LongRun { .. })));
+        assert!(matches!(
+            due(&s, &d, at("2026-03-02T13:00:00Z"), 240, true),
+            Some(Reminder::LongRun { .. })
+        ));
         assert_eq!(due(&s, &d, at("2026-03-03T13:00:00Z"), 0, true), None);
-        assert_eq!(due(&s, "other-device", at("2026-03-03T13:00:00Z"), 240, true), None);
+        assert_eq!(
+            due(&s, "other-device", at("2026-03-03T13:00:00Z"), 240, true),
+            None
+        );
     }
 
     #[test]
@@ -164,7 +186,9 @@ mod tests {
         s.shifts.insert("v".into(), shift("22:00", "06:00"));
         assert_eq!(due(&s, &d, at("2026-03-03T05:59:00Z"), 0, true), None);
         let got = due(&s, &d, at("2026-03-03T06:01:00Z"), 0, true);
-        assert!(matches!(got, Some(Reminder::PastShift { ended, .. }) if ended == at("2026-03-03T06:00:00Z")));
+        assert!(
+            matches!(got, Some(Reminder::PastShift { ended, .. }) if ended == at("2026-03-03T06:00:00Z"))
+        );
         assert_eq!(due(&s, &d, at("2026-03-03T06:01:00Z"), 0, false), None);
     }
 

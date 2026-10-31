@@ -877,6 +877,9 @@ mod tests {
             billable: true,
             budget_hours: None,
             client_zone: None,
+            billing_type: Default::default(),
+            fixed_fee_cents: None,
+            fee_currency: None,
         }
     }
 
@@ -886,6 +889,7 @@ mod tests {
             project_id: p.into(),
             description: serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Details"}]}]}),
             continued_from: None,
+            tags: vec!["tag-concept".to_owned()],
         }
     }
 
@@ -1062,9 +1066,10 @@ mod tests {
         b.s().create_project(&pinput("Future")).unwrap();
         b.cycle();
         let path = own_file(&b, root.path());
-        let text = std::fs::read_to_string(&path)
-            .unwrap()
-            .replace("\"schemaVersion\":1", "\"schemaVersion\":99");
+        let text = std::fs::read_to_string(&path).unwrap().replace(
+            &format!("\"schemaVersion\":{}", crate::model::SCHEMA_VERSION),
+            "\"schemaVersion\":99",
+        );
         std::fs::write(&path, &text).unwrap();
         a.cycle();
         assert!(a.data().projects.is_empty());
@@ -2042,5 +2047,43 @@ mod tests {
         drop(svc);
         let reopened = Service::open(dir.path(), Arc::new(clock), "pc").unwrap();
         assert!(reopened.file().data.projects.contains_key(&id));
+    }
+
+    #[test]
+    fn tag_and_project_colors_reach_the_other_device_and_the_later_edit_wins() {
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let a = device(&clock, &[root.path()]);
+        let b = device(&clock, &[root.path()]);
+        let tag = a
+            .s()
+            .save_tag(&crate::catalog::TagInput {
+                id: None,
+                name: "Spectrum".into(),
+                color: "#123456".into(),
+            })
+            .unwrap();
+        let project = a
+            .s()
+            .create_project(&ProjectInput {
+                color: "#654321".into(),
+                ..pinput("Painted")
+            })
+            .unwrap();
+        a.cycle();
+        b.cycle();
+        assert_eq!(b.data().tags[&tag].color, "#123456");
+        assert_eq!(b.data().projects[&project].color, "#654321");
+        clock.advance(5);
+        b.s()
+            .save_tag(&crate::catalog::TagInput {
+                id: Some(tag.clone()),
+                name: "Spectrum".into(),
+                color: "#fedcba".into(),
+            })
+            .unwrap();
+        b.cycle();
+        a.cycle();
+        assert_eq!(a.data().tags[&tag].color, "#fedcba");
     }
 }

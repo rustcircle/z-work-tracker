@@ -6,6 +6,7 @@ use chrono_tz::Tz;
 
 use crate::billing::{cents_from_numerator, split_by_rate};
 use crate::error::CoreError;
+use crate::pieces::PieceKind;
 use crate::report::{ExportRequest, ExportSource, hms, zoned};
 use crate::validate::parse_zone;
 
@@ -45,7 +46,7 @@ pub fn quote(cell: &str) -> String {
     }
 }
 
-fn text(cell: &str) -> String {
+pub(crate) fn text(cell: &str) -> String {
     quote(&neutralize(cell))
 }
 
@@ -84,6 +85,11 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<String, C
             "amount".to_owned(),
         ]);
     }
+    header.extend([
+        "kind".to_owned(),
+        "raw_start_utc".to_owned(),
+        "raw_end_utc".to_owned(),
+    ]);
     let mut out = String::from("\u{feff}");
     out.push_str(
         &header
@@ -123,8 +129,14 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<String, C
                 row.push(safe_end(shown_end, |t| zoned(t, z)));
             }
             let secs = piece.end.secs() - piece.start.secs();
-            row.push(hms(secs));
-            row.push(String::new());
+            // A billable pause is billable time only, so it stays out of the exact column.
+            if seg.kind == PieceKind::BillablePause {
+                row.push(String::new());
+                row.push(hms(secs));
+            } else {
+                row.push(hms(secs));
+                row.push(String::new());
+            }
             if request.include_earnings {
                 match (piece.rate_cents, &piece.currency) {
                     (Some(rate), Some(cur)) => {
@@ -136,6 +148,13 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<String, C
                     _ => row.extend([String::new(), String::new(), String::new()]),
                 }
             }
+            row.push(match seg.kind {
+                PieceKind::Work => "work".to_owned(),
+                PieceKind::Thinking => "thinking".to_owned(),
+                PieceKind::BillablePause => "billable_pause".to_owned(),
+            });
+            row.push(safe_end(seg.raw_start, crate::time::Ts::iso));
+            row.push(safe_end(seg.raw_end, crate::time::Ts::iso));
             out.push_str(&row.join(","));
             out.push_str("\r\n");
         }
@@ -171,6 +190,7 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<String, C
             row.push(quote(&amounts.join(";")));
         }
         let mut line = String::new();
+        row.extend([String::new(), String::new(), String::new()]);
         let _ = write!(line, "{}\r\n", row.join(","));
         out.push_str(&line);
     }
@@ -262,13 +282,13 @@ mod tests {
             "US on DST, Lisbon not yet: {}",
             lines[1]
         );
-        assert!(lines[1].ends_with(",0:20:00,"));
+        assert!(lines[1].contains(",0:20:00,,work,"));
         assert!(lines[2].contains("'=evil()"));
         assert!(
             lines
                 .iter()
                 .any(|l| l.starts_with("task_day,Write,Alpha,2026-03-20")
-                    && l.ends_with(",0:20:00,0:15:00"))
+                    && l.ends_with(",0:20:00,0:15:00,,,"))
         );
     }
 

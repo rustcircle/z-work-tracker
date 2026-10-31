@@ -89,8 +89,29 @@ pub fn write_atomic(dest: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// Upgrades an older store step by step before it is parsed. New fields that are optional need no
 /// step here, since every replicated record defaults missing fields. Add `1 => ...` for a schema 2.
-fn migrate(value: Value) -> Value {
+fn migrate(mut value: Value) -> Value {
+    // Schema 2 adds optional records and fields only, all of which default when missing. Starter
+    // tags are added when the store opens, so the step just records the new version.
+    if value.get("version").and_then(Value::as_u64) == Some(1)
+        && let Some(obj) = value.as_object_mut()
+    {
+        obj.insert("version".to_owned(), Value::from(2u64));
+    }
     value
+}
+
+/// Reads a store file from elsewhere, such as a backup, without touching the disk.
+pub fn parse_checked(bytes: &[u8]) -> Result<LocalFile, CoreError> {
+    match parse_local(bytes) {
+        Parsed::Good(f) => Ok(*f),
+        Parsed::Newer(found) => Err(CoreError::FutureVersion {
+            found,
+            supported: SCHEMA_VERSION,
+        }),
+        Parsed::Corrupt(why) => Err(CoreError::Validation(format!(
+            "that file can't be read: {why}"
+        ))),
+    }
 }
 
 #[derive(Debug)]
@@ -166,6 +187,23 @@ pub fn new_local_file(device_name: &str) -> LocalFile {
     }
 }
 
+/// Keeps the original bytes of an older-format store the first time it is upgraded.
+fn keep_before_migration(paths: &Paths, bytes: &[u8]) -> io::Result<()> {
+    let version = serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|v| v.get("version").and_then(Value::as_u64))
+        .unwrap_or(SCHEMA_VERSION);
+    if version >= SCHEMA_VERSION {
+        return Ok(());
+    }
+    let copy = paths.dir.join(format!("z-work-data.v{version}.json"));
+    if copy.exists() {
+        return Ok(());
+    }
+    let tmp = paths.dir.join(format!("z-work-data.v{version}.tmp"));
+    write_atomic(&copy, &tmp, bytes)
+}
+
 /// Loads the store, recovering from `.bak` when needed. A newer-version file is refused and left alone.
 pub fn load(
     paths: &Paths,
@@ -180,7 +218,10 @@ pub fn load(
 
     if let Some(bytes) = &main {
         match parse_local(bytes) {
-            Parsed::Good(file) => return Ok((*file, outcome)),
+            Parsed::Good(file) => {
+                keep_before_migration(paths, bytes)?;
+                return Ok((*file, outcome));
+            }
             Parsed::Newer(found) => {
                 return Err(CoreError::FutureVersion {
                     found,
@@ -249,6 +290,65 @@ pub fn save(paths: &Paths, file: &LocalFile, now: Ts) -> Result<(), CoreError> {
     }
     with_local_retry(|| fs::rename(&tmp, paths.main()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    /// A store written by the phase 1 build, as it was on disk.
+    const V1: &str = r##"{"version":1,"deviceId":"11111111-1111-4111-8111-111111111111","deviceName":"pc",
+      "lastHeartbeat":"2026-03-01T09:10:00Z","prefs":{"theme":"dark","hideEarnings":true},
+      "remoteDevices":{},"data":{
+        "projects":{"p":{"id":"p","name":"Old","color":"#112233","billable":true,"createdAt":"2026-01-01T00:00:00Z",
+          "stamp":{"at":"2026-01-01T00:00:00Z","by":"d"}}},
+        "tasks":{"t":{"id":"t","name":"Old task","nameStamp":{"at":"2026-01-01T00:00:00Z","by":"d"},"projectId":"p",
+          "projectStamp":{"at":"2026-01-01T00:00:00Z","by":"d"},"description":null,
+          "descriptionStamp":{"at":"2026-01-01T00:00:00Z","by":"d"},"deletedStamp":{"at":"2026-01-01T00:00:00Z","by":"d"},
+          "createdAt":"2026-01-01T00:00:00Z","state":"paused","pauseReason":{"kind":"user"},
+          "stateStamp":{"at":"2026-01-01T00:00:00Z","by":"d"}}},
+        "segments":{"s":{"id":"s","taskId":"t","deviceId":"d","start":"2026-03-01T09:00:00Z","end":"2026-03-01T09:10:00Z"}}
+      }}"##;
+
+    #[test]
+    fn a_phase_1_store_loads_keeps_its_data_and_a_copy_of_the_original() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::new(d.path());
+        fs::write(paths.main(), V1).unwrap();
+        let now = Ts::parse("2026-04-01T00:00:00Z").unwrap();
+        let (file, _) = load(&paths, "pc", now).unwrap();
+        assert_eq!(file.version, SCHEMA_VERSION);
+        assert_eq!(file.data.tasks["t"].name, "Old task");
+        assert!(file.data.tasks["t"].tags.is_empty());
+        assert_eq!(
+            file.data.segments["s"].effective().unwrap().0,
+            Ts::parse("2026-03-01T09:00:00Z").unwrap()
+        );
+        assert_eq!(
+            file.data.projects["p"].billing_type,
+            crate::model::BillingType::Hourly
+        );
+        assert_eq!(
+            fs::read_to_string(d.path().join("z-work-data.v1.json")).unwrap(),
+            V1
+        );
+        save(&paths, &file, now).unwrap();
+        let (again, _) = load(&paths, "pc", now).unwrap();
+        assert_eq!(again, file);
+    }
+
+    #[test]
+    fn a_phase_1_device_file_is_readable_and_passes_the_sync_checks() {
+        let v: Value = serde_json::from_str(V1).unwrap();
+        let text = serde_json::json!({
+            "schemaVersion": 1, "deviceId": "d", "deviceName": "old pc",
+            "writtenAt": "2026-03-01T09:10:00Z", "data": v["data"],
+        })
+        .to_string();
+        let f: crate::model::DeviceFile = serde_json::from_str(&text).unwrap();
+        let now = Ts::parse("2026-04-01T00:00:00Z").unwrap();
+        crate::validate::check_device_file(&f, now).unwrap();
+    }
 }
 
 #[cfg(test)]

@@ -92,6 +92,10 @@ fn seg_json(s: &Segment) -> Value {
 }
 
 impl Shared {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one flat audit record; a builder adds nothing"
+    )]
     pub fn audit(
         &mut self,
         ctx: &Ctx<'_>,
@@ -170,7 +174,15 @@ impl Shared {
         };
         let after = seg_json(&seg);
         self.segments.insert(id.clone(), seg);
-        self.audit(ctx, "segment", &id, "manualEntry", &reason, Value::Null, after);
+        self.audit(
+            ctx,
+            "segment",
+            &id,
+            "manualEntry",
+            &reason,
+            Value::Null,
+            after,
+        );
         Ok(id)
     }
 
@@ -441,7 +453,6 @@ impl Shared {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,24 +494,52 @@ mod tests {
         let (mut s, t) = world();
         let c = ctx("2026-01-02T12:00:00Z");
         let id = s
-            .add_manual_entry(&c, &manual(&t, "2026-01-02T09:00:00Z", "2026-01-02T10:00:00Z"))
+            .add_manual_entry(
+                &c,
+                &manual(&t, "2026-01-02T09:00:00Z", "2026-01-02T10:00:00Z"),
+            )
             .unwrap();
         assert!(s.segments[&id].manual);
         assert_eq!(secs_by(&s, PieceKind::Work), 3600);
         let log: Vec<_> = s.audit_log.values().collect();
-        assert_eq!((log[0].action.as_str(), log[0].reason.as_str()), ("manualEntry", "forgot"));
+        assert_eq!(
+            (log[0].action.as_str(), log[0].reason.as_str()),
+            ("manualEntry", "forgot")
+        );
     }
 
     #[test]
     fn manual_entries_refuse_nonsense_and_warn_about_overlap() {
         let (mut s, t) = world();
         let c = ctx("2026-01-02T12:00:00Z");
-        assert!(s.add_manual_entry(&c, &manual(&t, "2026-01-02T10:00:00Z", "2026-01-02T09:00:00Z")).is_err());
-        assert!(s.add_manual_entry(&c, &manual(&t, "2026-01-02T11:00:00Z", "2026-01-02T13:00:00Z")).is_err());
-        s.add_manual_entry(&c, &manual(&t, "2026-01-02T09:00:00Z", "2026-01-02T10:00:00Z")).unwrap();
+        assert!(
+            s.add_manual_entry(
+                &c,
+                &manual(&t, "2026-01-02T10:00:00Z", "2026-01-02T09:00:00Z")
+            )
+            .is_err()
+        );
+        assert!(
+            s.add_manual_entry(
+                &c,
+                &manual(&t, "2026-01-02T11:00:00Z", "2026-01-02T13:00:00Z")
+            )
+            .is_err()
+        );
+        s.add_manual_entry(
+            &c,
+            &manual(&t, "2026-01-02T09:00:00Z", "2026-01-02T10:00:00Z"),
+        )
+        .unwrap();
         let over = manual(&t, "2026-01-02T09:30:00Z", "2026-01-02T10:30:00Z");
-        assert!(matches!(s.add_manual_entry(&c, &over), Err(CoreError::Overlap(_))));
-        let ok = ManualEntryInput { allow_overlap: true, ..over };
+        assert!(matches!(
+            s.add_manual_entry(&c, &over),
+            Err(CoreError::Overlap(_))
+        ));
+        let ok = ManualEntryInput {
+            allow_overlap: true,
+            ..over
+        };
         assert!(s.add_manual_entry(&c, &ok).is_ok());
     }
 
@@ -508,12 +547,28 @@ mod tests {
     fn a_correction_keeps_raw_times_and_can_be_undone() {
         let (mut s, t) = world();
         let c = ctx("2026-01-02T12:00:00Z");
-        let id = s.add_manual_entry(&c, &manual(&t, "2026-01-02T09:00:00Z", "2026-01-02T10:00:00Z")).unwrap();
-        s.correct_segment(&c, &CorrectionInput {
-            segment_id: id.clone(), start: ts("2026-01-02T09:00:00Z"), end: ts("2026-01-02T09:30:00Z"),
-            reason: "left early".into(), allow_overlap: false,
-        }).unwrap();
-        assert_eq!(s.segments[&id].end, Some(ts("2026-01-02T10:00:00Z")), "raw stays");
+        let id = s
+            .add_manual_entry(
+                &c,
+                &manual(&t, "2026-01-02T09:00:00Z", "2026-01-02T10:00:00Z"),
+            )
+            .unwrap();
+        s.correct_segment(
+            &c,
+            &CorrectionInput {
+                segment_id: id.clone(),
+                start: ts("2026-01-02T09:00:00Z"),
+                end: ts("2026-01-02T09:30:00Z"),
+                reason: "left early".into(),
+                allow_overlap: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            s.segments[&id].end,
+            Some(ts("2026-01-02T10:00:00Z")),
+            "raw stays"
+        );
         assert_eq!(secs_by(&s, PieceKind::Work), 1800);
         s.void_segment(&c, &id, "duplicate").unwrap();
         assert_eq!(secs_by(&s, PieceKind::Work), 0);
@@ -531,7 +586,10 @@ mod tests {
         let c = ctx("2026-01-02T09:00:00Z");
         s.start(&c, &t).unwrap();
         let id = s.segments.keys().next().unwrap().clone();
-        assert!(s.void_segment(&ctx("2026-01-02T10:00:00Z"), &id, "x").is_err());
+        assert!(
+            s.void_segment(&ctx("2026-01-02T10:00:00Z"), &id, "x")
+                .is_err()
+        );
     }
 
     fn with_gap(decision: GapDecision) -> Shared {
@@ -541,7 +599,15 @@ mod tests {
         let later = ctx("2026-01-02T12:00:00Z");
         s.pause(&later, &t).unwrap();
         let id = s.segments.keys().next().unwrap().clone();
-        let g = s.add_gap(&later, &id, ts("2026-01-02T10:00:00Z"), ts("2026-01-02T11:00:00Z"), GapKind::Sleep).unwrap();
+        let g = s
+            .add_gap(
+                &later,
+                &id,
+                ts("2026-01-02T10:00:00Z"),
+                ts("2026-01-02T11:00:00Z"),
+                GapKind::Sleep,
+            )
+            .unwrap();
         if decision != GapDecision::Pending {
             s.decide_gap(&later, &g, decision).unwrap();
         }
@@ -551,11 +617,21 @@ mod tests {
     #[test]
     fn time_away_counts_only_after_it_is_confirmed() {
         let s = with_gap(GapDecision::Pending);
-        assert_eq!(secs_by(&s, PieceKind::Work), 2 * 3600, "unanswered counts nowhere");
+        assert_eq!(
+            secs_by(&s, PieceKind::Work),
+            2 * 3600,
+            "unanswered counts nowhere"
+        );
         let seg = s.segments.values().next().unwrap();
         assert_eq!(seg.end, Some(ts("2026-01-02T12:00:00Z")), "raw stays");
-        assert_eq!(secs_by(&with_gap(GapDecision::Drop), PieceKind::Work), 2 * 3600);
-        assert_eq!(secs_by(&with_gap(GapDecision::Keep), PieceKind::Work), 3 * 3600);
+        assert_eq!(
+            secs_by(&with_gap(GapDecision::Drop), PieceKind::Work),
+            2 * 3600
+        );
+        assert_eq!(
+            secs_by(&with_gap(GapDecision::Keep), PieceKind::Work),
+            3 * 3600
+        );
         let thinking = with_gap(GapDecision::Thinking);
         assert_eq!(secs_by(&thinking, PieceKind::Work), 2 * 3600);
         assert_eq!(secs_by(&thinking, PieceKind::Thinking), 3600);
@@ -565,11 +641,27 @@ mod tests {
     fn a_billable_pause_never_counts_time_already_counted() {
         let (mut s, t) = world();
         let c = ctx("2026-01-02T18:00:00Z");
-        s.add_manual_entry(&c, &manual(&t, "2026-01-02T09:00:00Z", "2026-01-02T10:00:00Z")).unwrap();
-        s.add_manual_entry(&c, &manual(&t, "2026-01-02T11:00:00Z", "2026-01-02T12:00:00Z")).unwrap();
-        let id = s.mark_billable_pause(&c, &PauseInput {
-            task_id: t.clone(), start: ts("2026-01-02T09:30:00Z"), end: ts("2026-01-02T11:30:00Z"), note: "sketching".into(),
-        }).unwrap();
+        s.add_manual_entry(
+            &c,
+            &manual(&t, "2026-01-02T09:00:00Z", "2026-01-02T10:00:00Z"),
+        )
+        .unwrap();
+        s.add_manual_entry(
+            &c,
+            &manual(&t, "2026-01-02T11:00:00Z", "2026-01-02T12:00:00Z"),
+        )
+        .unwrap();
+        let id = s
+            .mark_billable_pause(
+                &c,
+                &PauseInput {
+                    task_id: t.clone(),
+                    start: ts("2026-01-02T09:30:00Z"),
+                    end: ts("2026-01-02T11:30:00Z"),
+                    note: "sketching".into(),
+                },
+            )
+            .unwrap();
         assert_eq!(secs_by(&s, PieceKind::Work), 2 * 3600);
         assert_eq!(secs_by(&s, PieceKind::BillablePause), 3600);
         s.unmark_billable_pause(&c, &id).unwrap();
@@ -586,13 +678,22 @@ mod tests {
         s.tasks.get_mut(&t).unwrap().description = doc;
         s.set_active_subtask(&c, &t, Some("a")).unwrap();
         s.start(&c, &t).unwrap();
-        s.set_active_subtask(&ctx("2026-01-02T09:10:00Z"), &t, Some("b")).unwrap();
+        s.set_active_subtask(&ctx("2026-01-02T09:10:00Z"), &t, Some("b"))
+            .unwrap();
         s.pause(&ctx("2026-01-02T09:30:00Z"), &t).unwrap();
         let end = |seg: &Segment| seg.end.unwrap_or(seg.start);
         let all = pieces(&s, &end);
-        let on = |id: &str| -> i64 { all.iter().filter(|p| p.subtask_id.as_deref() == Some(id)).map(crate::pieces::Piece::secs).sum() };
+        let on = |id: &str| -> i64 {
+            all.iter()
+                .filter(|p| p.subtask_id.as_deref() == Some(id))
+                .map(crate::pieces::Piece::secs)
+                .sum()
+        };
         assert_eq!((on("a"), on("b")), (600, 1200));
-        assert_eq!(all.iter().map(crate::pieces::Piece::secs).sum::<i64>(), 1800);
+        assert_eq!(
+            all.iter().map(crate::pieces::Piece::secs).sum::<i64>(),
+            1800
+        );
         assert_eq!(s.tasks[&t].state, TaskState::Paused);
         assert!(s.set_active_subtask(&c, &t, Some("nope")).is_err());
     }

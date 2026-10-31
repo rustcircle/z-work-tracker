@@ -8,9 +8,12 @@ use serde_json::Value;
 use crate::detect::Detected;
 use crate::machine::RequiredField;
 use crate::model::{
-    PauseReason, PendingCopy, RateVersion, RoundingVersion, ShiftVersion, SyncProvider, TaskState,
-    Theme,
+    BillablePause, BillingSummary, BillingType, IdleGap, PauseReason, PendingCopy, RateVersion,
+    RoundingVersion, ShiftVersion, SyncProvider, Tag, TaskState, Template, Theme,
 };
+use crate::pieces::PieceKind;
+use crate::reminder::Reminder;
+use crate::summary::ProjectFigures;
 use crate::sync::TargetStatus;
 use crate::time::Ts;
 
@@ -26,6 +29,10 @@ pub struct ProjectView {
     pub client_zone: Option<String>,
     pub created_at: Ts,
     pub has_tasks: bool,
+    pub billing_type: BillingType,
+    pub fixed_fee_cents: Option<i64>,
+    pub fee_currency: Option<String>,
+    pub figures: ProjectFigures,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -42,6 +49,52 @@ pub struct TaskView {
     /// Name of the other device this task is running on, if any.
     pub running_elsewhere: Option<String>,
     pub continued_from: Option<String>,
+    pub tags: Vec<String>,
+    pub active_subtask: Option<String>,
+    pub subtasks: Vec<SubtaskView>,
+    /// Seconds on a live billing summary, and seconds not yet on one.
+    pub billed_secs: i64,
+    pub unbilled_secs: i64,
+    pub thinking_secs: i64,
+    pub pause_secs: i64,
+    /// Away with no answer yet: counted nowhere until confirmed.
+    pub unconfirmed_secs: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskView {
+    pub id: String,
+    pub text: String,
+    pub checked: bool,
+    pub secs: i64,
+}
+
+/// One recorded segment with its correction, for the corrections screen.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawSegmentView {
+    pub id: String,
+    pub task_id: String,
+    pub device_id: String,
+    pub raw_start: Ts,
+    pub raw_end: Option<Ts>,
+    pub start: Ts,
+    pub end: Option<Ts>,
+    pub voided: bool,
+    pub corrected: bool,
+    pub manual: bool,
+    pub reason: String,
+    pub billed: bool,
+}
+
+/// This device's reference prefix, and any other device using the same one.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BillingView {
+    pub prefix: String,
+    pub clashes: Vec<String>,
+    pub summaries: Vec<BillingSummary>,
 }
 
 /// What a warm start copies into a new task, a snapshot of the most recently worked task.
@@ -54,6 +107,7 @@ pub struct CopySource {
     pub project_archived: bool,
     pub description: Value,
     pub last_worked_at: Option<Ts>,
+    pub tags: Vec<String>,
 }
 
 /// Cold until the first task of this launch has started.
@@ -61,7 +115,7 @@ pub struct CopySource {
 #[serde(rename_all = "camelCase")]
 pub struct LaunchView {
     pub warm: bool,
-    pub cold_required: &'static [RequiredField],
+    pub cold_required: Vec<RequiredField>,
     pub copy_source: Option<CopySource>,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -74,6 +128,10 @@ pub struct SegmentView {
     pub end: Option<Ts>,
     /// For a segment still open on another device: the last moment known about it.
     pub provisional_end: Option<Ts>,
+    /// The recorded segment this piece came from, or the pause record.
+    pub segment_id: String,
+    pub kind: PieceKind,
+    pub subtask_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -132,4 +190,22 @@ pub struct Snapshot {
     pub warnings: Vec<String>,
     pub sync: SyncView,
     pub launch: LaunchView,
+    pub raw_segments: Vec<RawSegmentView>,
+    pub gaps: Vec<IdleGap>,
+    pub pauses: Vec<BillablePause>,
+    pub tags: Vec<Tag>,
+    pub templates: Vec<Template>,
+    pub billing: BillingView,
+    pub reminder: Option<Reminder>,
+    pub reminder_settings: ReminderSettings,
+    pub backup_keep: u32,
+    pub has_pdf_logo: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderSettings {
+    pub idle_minutes: i64,
+    pub long_run_minutes: i64,
+    pub remind_past_shift: bool,
 }
