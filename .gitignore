@@ -77,3 +77,9 @@ z-work-data.corrupt-*.json
 # Agent and tool output
 .stack/
 dist-e2e/
+
+# Signing material must never be committed
+*.pfx
+*.p12
+*.pem
+*.key

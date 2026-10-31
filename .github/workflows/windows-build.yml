@@ -1,7 +1,10 @@
 name: Windows build
 
-# Manual or tag only, as a fallback to the build from macOS. Signing is opt-in through repository
-# secrets: without them the build succeeds and says it is unsigned. With them, verification must pass.
+# Manual or tag only, as a fallback to the build from macOS. Signing is opt-in and has three states,
+# chosen by the repository variable SIGNING_ROUTE:
+#   unset or anything else  the build job. Without secrets it succeeds and says it is unsigned. With
+#                           Azure or certificate secrets, verification must pass.
+#   signpath                the signpath job. Each request waits for manual approval in SignPath.
 on:
   workflow_dispatch:
   push:
@@ -12,6 +15,7 @@ permissions:
 
 jobs:
   build:
+    if: vars.SIGNING_ROUTE != 'signpath'
     runs-on: windows-latest
     timeout-minutes: 45
     # Add protection rules to this environment in the repository settings; secrets live there.
@@ -90,4 +94,107 @@ jobs:
         with:
           name: z-work-tracker-windows
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          retention-days: 14
+
+  # SignPath Foundation signs only what a GitHub-hosted runner built from this repository, so nothing
+  # built on macOS goes through here. The exe is signed first, then packed into the installer, then
+  # the installer is signed. The publisher Windows shows will be "SignPath Foundation".
+  signpath:
+    if: vars.SIGNING_ROUTE == 'signpath'
+    runs-on: windows-latest
+    # A hosted job ends after 6 hours, so approve each request within that time.
+    timeout-minutes: 350
+    environment: signpath
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_DIR: src-tauri\target\release
+      NSIS_DIR: src-tauri\target\release\nsis\x64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - run: pnpm install --frozen-lockfile
+      - name: Tests
+        run: |
+          pnpm exec tsc --noEmit
+          pnpm exec vitest run
+          cargo test --manifest-path src-tauri/Cargo.toml -p z-work-core
+      # Bundling writes into the exe, which would break a signature, so it runs before the exe is signed.
+      - name: Build the exe and the unsigned installer script
+        run: pnpm tauri build --bundles nsis
+      - id: upload-exe
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-exe
+          path: src-tauri/target/release/zWorkTracker.exe
+          if-no-files-found: error
+      - name: Sign the exe (waits for manual approval)
+        uses: SignPath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          connector-url: ${{ vars.SIGNPATH_CONNECTOR_URL }}
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: z-work-tracker
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: exe
+          github-artifact-id: ${{ steps.upload-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 18000
+          output-artifact-directory: signed-exe
+      - name: Pack the signed exe into the installer
+        shell: pwsh
+        run: |
+          Copy-Item signed-exe\zWorkTracker.exe "$env:RELEASE_DIR\zWorkTracker.exe" -Force
+          $makensis = Get-ChildItem "$env:LOCALAPPDATA\tauri" -Recurse -Filter makensis.exe | Select-Object -First 1
+          if (-not $makensis) { Write-Error 'makensis.exe not found in the Tauri tools folder'; exit 1 }
+          Push-Location $env:NSIS_DIR
+          & $makensis.FullName -INPUTCHARSET UTF8 installer.nsi
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Pop-Location
+          New-Item -ItemType Directory -Force to-sign | Out-Null
+          Copy-Item "$env:NSIS_DIR\nsis-output.exe" "to-sign\zWorkTracker_${{ github.ref_name }}_x64-setup.exe"
+      - id: upload-installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: unsigned-installer
+          path: to-sign/*.exe
+          if-no-files-found: error
+      - name: Sign the installer (waits for manual approval)
+        uses: SignPath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          connector-url: ${{ vars.SIGNPATH_CONNECTOR_URL }}
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: z-work-tracker
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.upload-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 18000
+          output-artifact-directory: signed-installer
+      - name: Verify the installer and the exe inside it
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+          $installer = Get-ChildItem signed-installer\*.exe | Select-Object -First 1
+          & $signtool.FullName verify /pa /v $installer.FullName
+          if ($LASTEXITCODE -ne 0) { Write-Error 'The installer signature did not verify'; exit 1 }
+          7z x $installer.FullName -oinstaller-content zWorkTracker.exe -r -y
+          $inner = Get-ChildItem installer-content -Recurse -Filter zWorkTracker.exe | Select-Object -First 1
+          if (-not $inner) { Write-Error 'zWorkTracker.exe was not found inside the installer'; exit 1 }
+          & $signtool.FullName verify /pa /v $inner.FullName
+          if ($LASTEXITCODE -ne 0) { Write-Error 'The exe inside the installer did not verify'; exit 1 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: z-work-tracker-windows-signed
+          path: signed-installer/*.exe
           retention-days: 14

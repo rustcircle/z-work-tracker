@@ -20,6 +20,8 @@ Status: first build. It has been run and tested on macOS, and the Windows instal
 - [Known limitations](#known-limitations)
 - [Roadmap](#roadmap)
 - [Third-party data licences](#third-party-data-licences)
+- [Code signing policy](#code-signing-policy)
+- [Licence](#licence)
 
 ## Install and uninstall
 
@@ -339,13 +341,13 @@ This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-window
 
 ### Windows installer from GitHub
 
-`.github/workflows/windows-build.yml` builds on `windows-latest`, by manual run or a `v*` tag. It hasn't been pushed or run yet.
+`.github/workflows/windows-build.yml` builds on `windows-latest`, by manual run or a `v*` tag. That build uses Rust's MSVC target, and the build from macOS uses MinGW; the bundling config is the same, but only the MinGW build has been produced so far. It hasn't been pushed or run yet.
 
 ### Windows code signing
 
 The artifacts are **unsigned** until you add credentials. No certificate is included, and none is created. Signing runs through `bundle.windows.signCommand` for the exe, the installer, the uninstaller and the bundled DLLs. It always uses SHA-256 with an RFC 3161 timestamp. With no credentials the build prints `UNSIGNED` and succeeds. Partly set credentials fail the build, so a release isn't silently unsigned.
 
-**First, set your publisher.** In `src-tauri/tauri.conf.json`, replace `REPLACE-WITH-PUBLISHER-NAME-ON-THE-CERTIFICATE` in `bundle.publisher` and `bundle.copyright`. The name must match the certificate.
+**First, check the metadata.** In `src-tauri/tauri.conf.json`, `bundle.publisher` is what Installed Apps shows, and `bundle.copyright` holds a placeholder until the copyright holder is confirmed. With your own certificate, set the publisher to the name on it. The name Windows shows in security prompts always comes from the certificate.
 
 **Route 1: Azure Artifact Signing (formerly Trusted Signing), recommended.**
 
@@ -359,6 +361,14 @@ The artifacts are **unsigned** until you add credentials. No certificate is incl
 - On Windows, use a certificate in the store with `WINDOWS_CERT_THUMBPRINT`, or a PFX with `WINDOWS_CERT_PFX_PATH` and `WINDOWS_CERT_PASSWORD`, through signtool.
 - From macOS, `brew install osslsigncode` and use the PFX variables.
 - `WINDOWS_TIMESTAMP_URL` is optional.
+
+**Route 3: SignPath Foundation, free for open source (if the project is accepted).** Acceptance isn't assured, and the routes above and unsigned builds keep working regardless. **The publisher Windows shows will be "SignPath Foundation", not you.**
+
+1. Set the repository variable `SIGNING_ROUTE` to `signpath`. This selects the workflow's `signpath` job; the `build` job then skips.
+2. Add the secret `SIGNPATH_API_TOKEN`, and the variables `SIGNPATH_ORGANIZATION_ID` and `SIGNPATH_CONNECTOR_URL`.
+3. In SignPath, create project `z-work-tracker`, policy `release-signing` with manual approval, and artifact configurations `exe` and `installer`.
+
+The job runs only on a GitHub-hosted Windows runner, because SignPath won't sign what's built elsewhere, so the installer built from macOS can't take this route. It signs the exe, packs it into the installer with `makensis`, signs the installer, then verifies both with `signtool verify /pa`. That's two approvals per release. The uninstaller embedded in the installer stays unsigned on this route. None of this has run yet.
 
 **On GitHub,** add the same names as repository secrets, with the PFX as base64 in `WINDOWS_CERT_PFX_BASE64`. The workflow runs `signtool verify /pa` and fails if credentials were supplied but verification fails.
 
@@ -457,3 +467,20 @@ After that, a performance pass with measurements on its own branch.
 | IANA Time Zone Database, through `chrono-tz` | Public domain | Time zone rules |
 
 The map shows outlines for orientation only and takes no position on borders, names or status.
+
+The full list of components, including a note on the ODbL data behind the map lookup, is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Code signing policy
+
+**No release has been signed yet.** If SignPath Foundation accepts the project: free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/), and Windows will show "SignPath Foundation" as the publisher.
+
+- **Team:** Authors, Reviewers and Approvers are named in [docs/code-signing-policy.md](docs/code-signing-policy.md).
+- **Approval:** every signing request, and so every release, needs manual approval by an Approver.
+- **Accounts:** multi-factor authentication is required for all team members.
+- **Builds:** only builds by this repository's workflow on GitHub-hosted runners are submitted.
+- **Privacy:** this program makes no network calls and sends no telemetry. Data leaves your computer only through a OneDrive or Google Drive folder you choose, uploaded by that service's own desktop client.
+- **Contact:** p@rustcircle.com
+
+## Licence
+
+[MIT](LICENSE). The copyright line holds a placeholder until the holder is confirmed.

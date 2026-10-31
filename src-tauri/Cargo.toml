@@ -20,6 +20,9 @@ indexing_slicing = "warn"
 name = "z-work-tracker"
 version = "0.1.0"
 description = "Local-first labor hours tracker"
+license = "MIT"
+authors = ["zWorkTracker project <p@rustcircle.com>"]
+repository = "https://github.com/pmrjgg/z-work-tracker"
 edition.workspace = true
 rust-version.workspace = true
 

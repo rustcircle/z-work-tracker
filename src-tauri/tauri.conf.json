@@ -57,8 +57,8 @@
       "nsis",
       "app"
     ],
-    "publisher": "REPLACE-WITH-PUBLISHER-NAME-ON-THE-CERTIFICATE",
-    "copyright": "Copyright (c) REPLACE-WITH-PUBLISHER-NAME-ON-THE-CERTIFICATE",
+    "publisher": "zWorkTracker project",
+    "copyright": "Copyright (c) 2026 COPYRIGHT-HOLDER-TO-CONFIRM",
     "category": "Productivity",
     "shortDescription": "Labor hours tracker",
     "longDescription": "Local-first tracker of labor hours by project and task, with timeline, analysis and spreadsheet exports.",
