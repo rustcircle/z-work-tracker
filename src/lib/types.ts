@@ -37,6 +37,28 @@ export interface Task {
   createdAt: string;
   stoppedAt: string | null;
   runningElsewhere: string | null;
+  /** The earlier task this one continues. Each copy is a separate task. */
+  continuedFrom: string | null;
+}
+
+/** Fields that must be filled before the first start of a launch. Data-driven: tags join this later. */
+export type RequiredField = 'name' | 'project' | 'description';
+
+/** What a warm start copies: the task most recently worked in this launch. */
+export interface CopySource {
+  taskId: string;
+  name: string;
+  projectId: string;
+  projectArchived: boolean;
+  description: RichDoc;
+  lastWorkedAt: string | null;
+}
+
+/** Cold until the first task of this launch has started. Hiding to the tray stays warm. */
+export interface LaunchState {
+  warm: boolean;
+  coldRequired: RequiredField[];
+  copySource: CopySource | null;
 }
 
 export interface Segment {
@@ -164,6 +186,7 @@ export interface Snapshot {
   notices: Notice[];
   warnings: string[];
   sync: { targets: SyncTargetView[]; detected: Detected[]; promptPending: boolean };
+  launch: LaunchState;
 }
 
 export interface CommandError {
@@ -183,6 +206,8 @@ export interface TaskInput {
   name: string;
   projectId: string;
   description: RichDoc;
+  /** Only read when creating a task. */
+  continuedFrom?: string | null;
 }
 
 export interface ShiftInput {

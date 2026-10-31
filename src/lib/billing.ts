@@ -5,7 +5,7 @@
 // cents only at the total shown. Currencies are never added together. The rounding difference goes
 // to the last rate in force that day, moving back to earlier buckets if it would go below zero.
 import { addDays, dayOf, startOfDay } from './tz';
-import type { Currency, Project, RateVersion, RoundMethod, RoundingVersion } from './types';
+import type { Currency, Project, RateVersion, RoundMethod, RoundingVersion, Stamp } from './types';
 import { parseIso } from './tz';
 
 export const DEFAULT_INCREMENT_MINUTES = 15;
@@ -33,15 +33,28 @@ export interface Rule {
   method: RoundMethod;
 }
 
+/** The order used by the Rust core: effective date, then the edit stamp, then the id. */
+function compareStamped(a: { stamp: Stamp; id: string }, b: { stamp: Stamp; id: string }): number {
+  if (a.stamp.at !== b.stamp.at) return a.stamp.at < b.stamp.at ? -1 : 1;
+  if (a.stamp.by !== b.stamp.by) return a.stamp.by < b.stamp.by ? -1 : 1;
+  if (a.id !== b.id) return a.id < b.id ? -1 : 1;
+  return 0;
+}
+
+export function newerVersion<T extends { effectiveFrom: string; stamp: Stamp; id: string }>(a: T, b: T): boolean {
+  if (a.effectiveFrom !== b.effectiveFrom) return a.effectiveFrom > b.effectiveFrom;
+  return compareStamped(a, b) > 0;
+}
+
 export function ruleFor(rounding: readonly RoundingVersion[], projectId: string, day: string): Rule {
   let own: RoundingVersion | null = null;
   let global: RoundingVersion | null = null;
   for (const r of rounding) {
     if (r.deleted || r.effectiveFrom > day) continue;
     if (r.projectId === projectId) {
-      if (!own || r.effectiveFrom > own.effectiveFrom || (r.effectiveFrom === own.effectiveFrom && r.id > own.id)) own = r;
+      if (!own || newerVersion(r, own)) own = r;
     } else if (r.projectId === null) {
-      if (!global || r.effectiveFrom > global.effectiveFrom || (r.effectiveFrom === global.effectiveFrom && r.id > global.id)) global = r;
+      if (!global || newerVersion(r, global)) global = r;
     }
   }
   const chosen = own ?? global;
@@ -55,6 +68,7 @@ export const isCurrency = (c: string): c is Currency => c === 'EUR' || c === 'US
 interface CompiledRate {
   from: number;
   id: string;
+  stamp: Stamp;
   rateCents: number | null;
   currency: Currency;
 }
@@ -67,11 +81,11 @@ export class RateBook {
     for (const r of rates) {
       if (r.deleted || !isCurrency(r.currency) || !billable.has(r.projectId)) continue;
       const list = this.byProject.get(r.projectId) ?? [];
-      list.push({ from: parseIso(r.effectiveFrom), id: r.id, rateCents: r.rateCents, currency: r.currency });
+      list.push({ from: parseIso(r.effectiveFrom), id: r.id, stamp: r.stamp, rateCents: r.rateCents, currency: r.currency });
       this.byProject.set(r.projectId, list);
     }
     for (const list of this.byProject.values()) {
-      list.sort((a, b) => a.from - b.from || (a.id < b.id ? -1 : 1));
+      list.sort((a, b) => a.from - b.from || compareStamped(a, b));
     }
   }
 

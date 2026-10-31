@@ -5,6 +5,7 @@
 // goes to exactly one window: the one that started earliest, ties by shift id. So worked totals are
 // never double-counted. Time in no window is "outside any shift".
 import { addDays, dayOf, hhmmToMinutes, instantOfWall, weekdayOf } from './tz';
+import { newerVersion } from './billing';
 import type { ShiftVersion } from './types';
 
 export interface ShiftWindow {
@@ -27,7 +28,7 @@ export function versionOn(versions: readonly ShiftVersion[], day: string): Shift
   let best: ShiftVersion | null = null;
   for (const v of versions) {
     if (v.deleted || v.effectiveFrom > day) continue;
-    if (!best || v.effectiveFrom > best.effectiveFrom || (v.effectiveFrom === best.effectiveFrom && v.id > best.id)) best = v;
+    if (!best || newerVersion(v, best)) best = v;
   }
   return best && !best.retired ? best : null;
 }

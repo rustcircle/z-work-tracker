@@ -40,7 +40,7 @@ export function demoState(): MockState {
   rate('r3', 'p-web', '2026-01-01T00:00:00Z', 6000, 'EUR');
 
   const task = (id: string, name: string, projectId: string, state: TaskState, description: RichDoc = null, stoppedAt: string | null = null) =>
-    s.tasks.push({ id, name, projectId, description, state, pauseReason: state === 'paused' ? { kind: 'user' } : null, createdAt: '2026-02-20T09:00:00Z', stoppedAt, runningElsewhere: null });
+    s.tasks.push({ id, name, projectId, description, state, pauseReason: state === 'paused' ? { kind: 'user' } : null, createdAt: '2026-02-20T09:00:00Z', stoppedAt, runningElsewhere: null, continuedFrom: null });
   task('t-logo', 'Logo concepts', 'p-brand', 'running', steps);
   task('t-guide', 'Brand guidelines', 'p-brand', 'paused');
   task('t-home', 'Homepage layout', 'p-web', 'stopped', null, '2026-03-11T16:30:00Z');
@@ -89,6 +89,8 @@ export function demoState(): MockState {
   s.clientZonePromptDone = true;
   s.syncPromptDone = true;
   s.nextId = 1000;
+  s.warm = true;
+  s.lastWorked = s.tasks.find((t) => t.state === 'running')?.id ?? s.tasks[0]?.id ?? null;
   return s;
 }
 

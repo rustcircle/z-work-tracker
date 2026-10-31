@@ -5,14 +5,17 @@ import { mockIPC } from '@tauri-apps/api/mocks';
 
 import { PROJECT_PALETTE } from '../lib/color';
 import { isCurrency } from '../lib/billing';
+import { docHasText } from '../lib/docText';
 import { isZone, parseIso, toIso } from '../lib/tz';
 import type {
+  CopySource,
   ExportRequest,
   PauseReason,
   Project,
   ProjectInput,
   RateInput,
   RateVersion,
+  RequiredField,
   RoundingInput,
   RoundingVersion,
   Segment,
@@ -51,6 +54,9 @@ export interface MockState {
   calls: { cmd: string; args: unknown }[];
   autostart: boolean;
   nextId: number;
+  /** Launch-scoped, like the Rust service: false until the first task of this launch has started. */
+  warm: boolean;
+  lastWorked: string | null;
 }
 
 export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
@@ -77,10 +83,69 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     calls: [],
     autostart: false,
     nextId: 1,
+    warm: false,
+    lastWorked: null,
   };
 }
 
 const err = (code: string, message: string) => ({ code, message });
+
+const COLD_REQUIRED: RequiredField[] = ['name', 'project', 'description'];
+
+function copySource(s: MockState): CopySource | null {
+  const t = s.tasks.find((x) => x.id === s.lastWorked);
+  if (!t) return null;
+  const ends = s.segments.filter((x) => x.taskId === t.id).map((x) => x.end ?? x.start).sort();
+  return {
+    taskId: t.id,
+    name: t.name,
+    projectId: t.projectId,
+    projectArchived: s.projects.find((p) => p.id === t.projectId)?.archived ?? true,
+    description: t.description,
+    lastWorkedAt: ends.at(-1) ?? null,
+  };
+}
+
+function checkColdFields(s: MockState, t: Task): void {
+  if (s.warm) return;
+  if (!t.name.trim()) throw err('validation', 'Task name is required for the first start after launch');
+  if (!t.projectId) throw err('validation', 'Project is required for the first start after launch');
+  if (!docHasText(t.description)) throw err('validation', 'Description is required for the first start after launch');
+}
+
+/** A real launch after a clean quit: the running task pauses, and the launch is cold. */
+export function relaunch(s: MockState): void {
+  closeAllAndPause(s, { kind: 'appQuit' });
+  s.warm = false;
+  s.lastWorked = null;
+}
+
+/** A relaunch after a crash: the running task pauses, a notice explains it, and the launch is cold. */
+export function crashRelaunch(s: MockState): void {
+  const names = closeAllAndPause(s, { kind: 'crashRecovery' });
+  s.warm = false;
+  s.lastWorked = null;
+  if (names.length) {
+    s.notices.push({
+      id: `crash-${s.nextId}`,
+      level: 'warning',
+      message: `The app did not shut down cleanly. ${names.join(', ')} was paused at its last recorded moment (${toIso(s.now)}). Time after that was not logged. The next start asks for every field.`,
+    });
+    s.nextId += 1;
+  }
+}
+
+function closeAllAndPause(s: MockState, reason: PauseReason): string[] {
+  const names: string[] = [];
+  for (const t of s.tasks) {
+    if (t.state === 'running' && !t.runningElsewhere) {
+      closeOwn(s, t.id);
+      setState(t, 'paused', reason);
+      names.push(t.name);
+    }
+  }
+  return names;
+}
 
 function snapshot(s: MockState): Snapshot {
   const withTasks = new Set(s.tasks.map((t) => t.projectId));
@@ -106,6 +171,7 @@ function snapshot(s: MockState): Snapshot {
     notices: s.notices,
     warnings: s.warnings,
     sync: { targets: s.targets, detected: s.detected, promptPending: !s.syncPromptDone && s.targets.length === 0 },
+    launch: { warm: s.warm, coldRequired: COLD_REQUIRED, copySource: s.warm ? copySource(s) : null },
   });
 }
 
@@ -154,6 +220,7 @@ function begin(s: MockState, id: string, required: TaskState, action: string) {
   const project = s.projects.find((p) => p.id === t.projectId);
   if (!project) throw err('validation', 'Project is required');
   if (project.archived) throw err('validation', `project "${project.name}" is archived; restore it first`);
+  checkColdFields(s, t);
   let autoPausedTaskId: string | null = null;
   let autoPausedTaskName: string | null = null;
   for (const other of s.tasks) {
@@ -166,6 +233,8 @@ function begin(s: MockState, id: string, required: TaskState, action: string) {
   }
   s.segments.push({ id: newId(s, 'seg'), taskId: id, deviceId: DEVICE_ID, start: toIso(s.now), end: null, provisionalEnd: null });
   setState(t, 'running', null);
+  s.warm = true;
+  s.lastWorked = id;
   return { autoPausedTaskId, autoPausedTaskName, snapshot: snapshot(s) };
 }
 
@@ -209,6 +278,7 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       s.tasks.push({
         id, name: input.name.trim(), projectId: input.projectId, description: input.description, state: 'draft',
         pauseReason: null, createdAt: toIso(s.now), stoppedAt: null, runningElsewhere: null,
+        continuedFrom: input.continuedFrom ?? null,
       });
       return { id, snapshot: snapshot(s) };
     }
@@ -229,6 +299,7 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     case 'start_task':
       return begin(s, a.id as string, 'draft', 'start');
     case 'resume_task':
+      if (!s.warm) throw err('cold_start_required', 'this launch has not started a task yet, so continuing needs every field filled in again');
       return begin(s, a.id as string, 'paused', 'resume');
     case 'pause_task': {
       const t = task(s, a.id as string);
@@ -236,6 +307,7 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       if (t.runningElsewhere) throw err('running_elsewhere', `this task is running on another device (${t.runningElsewhere}); pause it there`);
       closeOwn(s, t.id);
       setState(t, 'paused', { kind: 'user' });
+      s.lastWorked = t.id;
       return snapshot(s);
     }
     case 'stop_task': {
@@ -244,6 +316,7 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       closeOwn(s, t.id);
       setState(t, 'stopped', null);
       t.stoppedAt = toIso(s.now);
+      s.lastWorked = t.id;
       return snapshot(s);
     }
     case 'save_shift': {
@@ -357,10 +430,14 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
 }
 
 export function installMock(state: MockState): void {
-  mockIPC((cmd, args) => {
-    state.calls.push({ cmd, args });
-    return handle(state, cmd, (args ?? {}) as Record<string, unknown>);
-  });
+  // Events are mocked too, so tests can `emit('cold-resume', ...)` and the app's listeners fire.
+  mockIPC(
+    (cmd, args) => {
+      state.calls.push({ cmd, args });
+      return handle(state, cmd, (args ?? {}) as Record<string, unknown>);
+    },
+    { shouldMockEvents: true },
+  );
 }
 
 export const paletteColor = (i: number): string => PROJECT_PALETTE[i % PROJECT_PALETTE.length] as string;

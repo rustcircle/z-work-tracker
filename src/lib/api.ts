@@ -63,4 +63,9 @@ export const events = {
   onStateChanged: (handler: () => void): Promise<UnlistenFn> => listen('state-changed', () => handler()),
   onFirstHide: (handler: (p: HideNoticePayload) => void): Promise<UnlistenFn> =>
     listen<HideNoticePayload>('first-hide-notice', (e) => handler(e.payload)),
+  /** The tray asked to resume on a cold launch: open the form, start nothing. */
+  onColdResume: (handler: (taskId: string) => void): Promise<UnlistenFn> =>
+    listen<{ taskId: string }>('cold-resume', (e) => handler(e.payload.taskId)),
+  /** The window is hiding or the app is quitting: save any edit in progress now. */
+  onFlushEdits: (handler: () => void): Promise<UnlistenFn> => listen('flush-edits', () => handler()),
 };
