@@ -329,8 +329,6 @@ mod tests {
             )
     }
 
-    }
-
     fn segment() -> impl Strategy<Value = Segment> {
         (
             0u8..4,
