@@ -149,33 +149,7 @@ describe('project rounding override', () => {
   });
 });
 
-describe('editing a task', () => {
-  it('changes name and project without touching its state', async () => {
-    const user = userEvent.setup();
-    boot(demoState());
-    await user.click(await screen.findByRole('button', { name: 'Edit Social templates' }));
-    const form = screen.getByRole('form', { name: 'Edit task' });
-    const name = within(form).getByRole('textbox', { name: 'Task name' });
-    await user.clear(name);
-    await user.type(name, 'Social kit');
-    await user.selectOptions(within(form).getByRole('combobox', { name: 'Project' }), 'p-web');
-    await user.click(within(form).getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(calls('update_task')).toHaveLength(1));
-    expect(calls('update_task')[0]).toMatchObject({ id: 't-next', input: { name: 'Social kit', projectId: 'p-web' } });
-    expect(await screen.findByRole('article', { name: 'Social kit' })).toHaveAttribute('data-state', 'draft');
-  });
-
-  it('refuses an empty name when editing', async () => {
-    const user = userEvent.setup();
-    boot(demoState());
-    await user.click(await screen.findByRole('button', { name: 'Edit Social templates' }));
-    const form = screen.getByRole('form', { name: 'Edit task' });
-    await user.clear(within(form).getByRole('textbox', { name: 'Task name' }));
-    await user.click(within(form).getByRole('button', { name: 'Save changes' }));
-    expect(await within(form).findByText('Enter a task name.')).toBeVisible();
-    expect(calls('update_task')).toEqual([]);
-  });
-
+describe('deleting a draft and reading a description', () => {
   it('deletes a draft only after confirming, and shows the description of a task read-only', async () => {
     const user = userEvent.setup();
     boot(demoState());

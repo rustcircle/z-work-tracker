@@ -50,6 +50,7 @@ export function mkSnapshot(spec: Spec): Snapshot {
         createdAt: '2026-01-01T00:00:00Z',
         stoppedAt: t.stoppedAt ?? null,
         runningElsewhere: null,
+        continuedFrom: null,
       }),
     ),
     segments: (spec.segs ?? []).map(([taskId, start, end]): Segment => {
@@ -85,6 +86,7 @@ export function mkSnapshot(spec: Spec): Snapshot {
     notices: [],
     warnings: [],
     sync: { targets: [], detected: [], promptPending: false },
+    launch: { warm: true, coldRequired: ['name', 'project', 'description'], copySource: null },
   };
 }
 

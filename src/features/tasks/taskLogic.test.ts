@@ -4,7 +4,7 @@ import type { Project, Task } from '../../lib/types';
 import { controlsFor, pauseReasonText, validateTask } from './taskLogic';
 
 const project = (o: Partial<Project> = {}): Project => ({ id: 'p1', name: 'Brand', color: '#2563eb', archived: false, billable: true, budgetHours: null, clientZone: null, createdAt: '', hasTasks: false, ...o });
-const task = (o: Partial<Task> = {}): Task => ({ id: 't1', name: 'Logo', projectId: 'p1', description: null, state: 'draft', pauseReason: null, createdAt: '', stoppedAt: null, runningElsewhere: null, ...o });
+const task = (o: Partial<Task> = {}): Task => ({ id: 't1', name: 'Logo', projectId: 'p1', description: null, state: 'draft', pauseReason: null, createdAt: '', stoppedAt: null, runningElsewhere: null, continuedFrom: null, ...o });
 const enabled = (t: Task, p: Project | undefined = project()) => Object.entries(controlsFor(t, p)).filter(([, c]) => c.enabled).map(([k]) => k);
 
 describe('validateTask', () => {

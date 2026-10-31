@@ -27,19 +27,23 @@ function emptyWithProject(): MockState {
 }
 
 describe('new task form', () => {
-  it('keeps Start disabled, with visible text, until the name and project are valid', async () => {
+  it('keeps Start disabled, with visible text, until every field the cold launch needs is valid', async () => {
     const user = userEvent.setup();
     boot(emptyWithProject());
     await user.click(await screen.findByRole('button', { name: 'New task' }));
     const start = screen.getByRole('button', { name: 'Start' });
     expect(start).toBeDisabled();
-    expect(screen.getByText('To start, enter a task name and a project.')).toBeVisible();
+    expect(screen.getByText('To start, enter a task name, a project and a description.')).toBeVisible();
 
     await user.type(screen.getByRole('textbox', { name: 'Task name' }), 'Draft logo');
     expect(start).toBeDisabled();
-    expect(screen.getByText('To start, enter a project.')).toBeVisible();
+    expect(screen.getByText('To start, enter a project and a description.')).toBeVisible();
 
     await user.selectOptions(screen.getByRole('combobox', { name: 'Project' }), 'p1');
+    expect(start).toBeDisabled();
+    expect(screen.getByText('To start, enter a description.')).toBeVisible();
+
+    await user.type(screen.getByRole('textbox', { name: 'Description' }), 'Three directions');
     expect(start).toBeEnabled();
     expect(screen.queryByText(/To start, enter/)).toBeNull();
   });
