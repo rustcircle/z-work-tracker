@@ -219,6 +219,8 @@ Two projects created offline with the same name on two PCs stay as two projects.
 
 The old folder is never changed or deleted: it just stops being written to, and you can remove it yourself. Time logging carries on during the copy. If a copy fails, the setting stays on the old folder and local data is unharmed, and running it again is safe. If the previous folder can't be read, for instance when it's offline or its client was removed, the move goes ahead from local data, says so, and offers **Retry copy** for later.
 
+![Changing the sync folder](docs/images/sync-change-folder.png)
+
 **Each PC needs switching.** Other PCs keep using the old folder until you change them too, and PCs on different folders don't see each other's changes.
 
 **Keep the sync folder to yourself.** The files there are plain data, and whoever can write to that folder can change your hours and rates on every connected PC. The app rejects implausible files, such as impossible dates, oversized files or too many devices, but it can't tell a false entry from a real one. Don't use a folder shared with other people.

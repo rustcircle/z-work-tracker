@@ -1,6 +1,7 @@
 // Entry for the e2e build. `?seed=demo` (default) or `?seed=empty`, `?theme=`, `?firstRun=1`, `?launch=cold`.
 import { emit } from '@tauri-apps/api/event';
 
+import { toIso } from '../lib/tz';
 import type { Theme } from '../lib/types';
 import { demoState } from './demoSeed';
 import { crashRelaunch, emptyState, installMock, relaunch, type MockState } from './ipcMock';
@@ -12,6 +13,18 @@ declare global {
     /** Fires a backend event at the app, such as 'state-changed', 'cold-resume' or 'flush-edits'. */
     __mockEmit: (event: string, payload?: unknown) => Promise<void>;
   }
+}
+
+/** `?sync=1`: a OneDrive folder in use with data from two PCs, and a Google Drive folder found but not connected. */
+function seedSync(state: MockState): void {
+  const root = 'C:\\Users\\me\\OneDrive';
+  const stamp = toIso(state.now);
+  state.targets = [
+    { provider: 'oneDrive', root, folder: `${root}\\zWorkTracker`, status: { lastWrittenAt: stamp, lastReadAt: stamp, lastError: null, lastErrorAt: null, warnings: [], ignoredFiles: 0, devicesSeen: 1 } },
+  ];
+  state.detected = [{ provider: 'googleDrive', root: 'G:\\My Drive', source: 'a mounted drive' }];
+  state.folders = { [root]: { devices: ['Office PC', 'Mock PC'], counts: { projects: 4, tasks: 12, segments: 300 }, available: true } };
+  state.syncPromptDone = true;
 }
 
 export function installE2eBackend(): void {
@@ -26,6 +39,7 @@ export function installE2eBackend(): void {
     state.clientZonePromptDone = false;
     state.settings.clientZone = null;
   }
+  if (q.get('sync') === '1') seedSync(state);
   if (q.get('launch') === 'cold') relaunch(state);
   window.__mock = state;
   // A real relaunch restarts the page and the process: the test reloads nothing but the launch state.

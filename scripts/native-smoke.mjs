@@ -18,6 +18,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const work = mkdtempSync(join(tmpdir(), 'z-work-smoke-'));
 const dataDir = join(work, 'data');
 const syncRoot = join(work, 'sync');
+const moveRoot = join(work, 'sync-moved');
+mkdirSync(moveRoot, { recursive: true });
 const exportDir = join(work, 'exports');
 mkdirSync(syncRoot);
 mkdirSync(exportDir);
@@ -125,6 +127,9 @@ run(async () => {
   await inv('sync_now');
   s = await inv('get_snapshot');
   r.syncStatus = s.sync.targets[0].status;
+  r.movePreview = await inv('preview_sync_move', { from: ${JSON.stringify(syncRoot)}, to: ${JSON.stringify(moveRoot)} });
+  r.moveResult = await inv('move_sync_target', { from: ${JSON.stringify(syncRoot)}, to: ${JSON.stringify(moveRoot)}, provider: 'custom', replacing: true });
+  r.movedTargets = (await inv('get_snapshot')).sync.targets.map((t) => t.root);
   r.visibleBefore = await inv('smoke_window_visible');
   await inv('smoke_close_window');
   await until(() => /tray/i.test(document.body.innerText) && button('OK'), 'first-hide notice');
@@ -162,6 +167,7 @@ run(async () => {
   check('Excel and CSV exports written', existsSync(r1.xlsx ?? '') && existsSync(r1.csv ?? ''));
   const deviceFiles = readdirSync(join(syncRoot, 'zWorkTracker', 'devices'));
   check('sync wrote this device file', Boolean(r1.syncStatus?.lastWrittenAt) && !r1.syncStatus?.lastError && deviceFiles.length === 1, JSON.stringify({ status: r1.syncStatus, deviceFiles }));
+  check('changing the sync folder copies, checks and switches, and leaves the old file', r1.movePreview?.sourceAvailable === true && r1.moveResult?.checksum?.length === 16 && r1.movedTargets?.length === 1 && r1.movedTargets[0] === moveRoot && existsSync(join(moveRoot, 'zWorkTracker', 'devices', deviceFiles[0])) && existsSync(join(syncRoot, 'zWorkTracker', 'devices', deviceFiles[0])), JSON.stringify(r1.moveResult));
   check('closing the window hides it after the one-time notice', r1.visibleBefore === true && r1.visibleAfterClose === false, r1.noticeText);
   check('a running task keeps running while hidden', r1.runningWhileHidden === 'running' && r1.openWhileHidden === 1);
   check('tray Pause/Resume action works (command path, not an icon click)', r1.afterTrayPause === 'paused' && r1.afterTrayResume === 'running');

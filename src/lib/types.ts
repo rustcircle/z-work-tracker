@@ -152,6 +152,48 @@ export interface FolderPreview {
   warnings: string[];
 }
 
+/** Counts of what a sync folder (or this computer) holds. */
+export interface DataCounts {
+  projects: number;
+  tasks: number;
+  segments: number;
+}
+
+/** What moving sync to another folder would do, read without changing anything. */
+export interface MovePreview {
+  sourceAvailable: boolean;
+  sourceDevices: string[];
+  sourceCounts: DataCounts;
+  destinationHasData: boolean;
+  destinationDevices: string[];
+  destinationCounts: DataCounts;
+  localCounts: DataCounts;
+  warnings: string[];
+}
+
+export interface MoveResult {
+  filesCopied: number;
+  filesAlreadyThere: number;
+  filesIgnored: number;
+  sourceMissing: boolean;
+  counts: DataCounts;
+  checksum: string;
+  warnings: string[];
+}
+
+/** Payload of the `sync-move-progress` event. */
+export interface MoveProgress {
+  step: string | number;
+  done: number;
+  total: number;
+}
+
+/** The previous folder could not be read, so a copy into `to` is still owed. */
+export interface PendingCopy {
+  from: string;
+  to: string;
+}
+
 /** Replicated settings; every key is optional. */
 export interface Settings {
   myZone?: string | null;
@@ -185,7 +227,7 @@ export interface Snapshot {
   };
   notices: Notice[];
   warnings: string[];
-  sync: { targets: SyncTargetView[]; detected: Detected[]; promptPending: boolean };
+  sync: { targets: SyncTargetView[]; detected: Detected[]; promptPending: boolean; pendingCopy: PendingCopy | null };
   launch: LaunchState;
 }
 

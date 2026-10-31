@@ -5,6 +5,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   ExportRequest,
   FolderPreview,
+  MovePreview,
+  MoveProgress,
+  MoveResult,
   ProjectInput,
   RateInput,
   RoundingInput,
@@ -48,6 +51,9 @@ export const api = {
   pickSyncFolder: () => invoke<string | null>('pick_sync_folder'),
   previewSyncFolder: (root: string) => invoke<FolderPreview>('preview_sync_folder', { root }),
   syncNow: () => invoke<Snapshot>('sync_now'),
+  previewSyncMove: (from: string | null, to: string) => invoke<MovePreview>('preview_sync_move', { from, to }),
+  /** Rejects with a message on failure, and then no setting has changed. */
+  moveSyncTarget: (from: string | null, to: string, provider: SyncProvider, replacing: boolean) => invoke<MoveResult>('move_sync_target', { from, to, provider, replacing }),
   exportXlsx: (request: ExportRequest) => invoke<string | null>('export_xlsx', { request }),
   exportCsv: (request: ExportRequest) => invoke<string | null>('export_csv', { request }),
   getAutostart: () => invoke<boolean>('get_autostart'),
@@ -68,6 +74,8 @@ export const events = {
   /** The tray asked to resume on a cold launch: open the form, start nothing. */
   onColdResume: (handler: (taskId: string) => void): Promise<UnlistenFn> =>
     listen<{ taskId: string }>('cold-resume', (e) => handler(e.payload.taskId)),
+  /** Copy progress while a sync folder is being changed. */
+  onSyncMoveProgress: (handler: (p: MoveProgress) => void): Promise<UnlistenFn> => listen<MoveProgress>('sync-move-progress', (e) => handler(e.payload)),
   /** The window is hiding or the app is quitting: save any edit in progress now. */
   onFlushEdits: (handler: () => void): Promise<UnlistenFn> => listen('flush-edits', () => handler()),
 };

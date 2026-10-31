@@ -1,6 +1,7 @@
 // Test-only stand-in for the Rust backend, installed in the `e2e` build mode and in component tests.
 // It mirrors z-work-core's command behaviour. Real-backend behaviour is covered by the Rust tests and
 // by scripts/native-smoke.mjs; anything verified only against this mock is reported as such.
+import { emit } from '@tauri-apps/api/event';
 import { mockIPC } from '@tauri-apps/api/mocks';
 
 import { PROJECT_PALETTE } from '../lib/color';
@@ -9,8 +10,12 @@ import { docHasText } from '../lib/docText';
 import { isZone, parseIso, toIso } from '../lib/tz';
 import type {
   CopySource,
+  DataCounts,
   ExportRequest,
+  MovePreview,
+  MoveResult,
   PauseReason,
+  PendingCopy,
   Project,
   ProjectInput,
   RateInput,
@@ -32,6 +37,17 @@ import type {
 
 export const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 
+/** What the mock knows about one sync folder, keyed by its root. A root nobody described is empty and readable. */
+export interface MockFolder {
+  /** Names of the devices that have written there. */
+  devices: string[];
+  counts: DataCounts;
+  /** False when the folder cannot be read, like an unplugged drive. */
+  available: boolean;
+  /** Test hook: the next move into this folder fails once, before anything changes. */
+  failNext?: boolean;
+}
+
 export interface MockState {
   now: number;
   projects: Project[];
@@ -48,6 +64,11 @@ export interface MockState {
   syncPromptDone: boolean;
   systemZone: string;
   targets: Snapshot['sync']['targets'];
+  folders: Record<string, MockFolder>;
+  /** Set when a move could not read the previous folder; cleared by a successful retry. */
+  pendingCopy: PendingCopy | null;
+  /** Test hook: pause between the steps of a move, so progress can be seen. */
+  moveDelayMs: number;
   detected: Snapshot['sync']['detected'];
   notices: Snapshot['notices'];
   warnings: string[];
@@ -79,6 +100,9 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     syncPromptDone: true,
     systemZone: 'Europe/Lisbon',
     targets: [],
+    folders: {},
+    pendingCopy: null,
+    moveDelayMs: 0,
     detected: [],
     notices: [],
     warnings: [],
@@ -92,6 +116,99 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
 }
 
 const err = (code: string, message: string) => ({ code, message });
+
+// ---- sync folder moves, shaped like the Rust service: preview reads, the move copies, verifies and only
+// then changes anything, and an unreadable source still switches but leaves a copy owed.
+
+const NO_COUNTS: DataCounts = { projects: 0, tasks: 0, segments: 0 };
+const FILES_PER_DEVICE = 3;
+
+const folderOf = (s: MockState, root: string): MockFolder => s.folders[root] ?? { devices: [], counts: { ...NO_COUNTS }, available: true };
+const folderHasData = (f: MockFolder): boolean => f.devices.length > 0 || f.counts.projects + f.counts.tasks + f.counts.segments > 0;
+const localCounts = (s: MockState): DataCounts => ({ projects: s.projects.length, tasks: s.tasks.length, segments: s.segments.length });
+const mergeCounts = (...all: DataCounts[]): DataCounts => ({
+  projects: Math.max(...all.map((c) => c.projects)),
+  tasks: Math.max(...all.map((c) => c.tasks)),
+  segments: Math.max(...all.map((c) => c.segments)),
+});
+
+function movePreview(s: MockState, from: string | null, to: string): MovePreview {
+  const src = from === null ? null : folderOf(s, from);
+  const dst = folderOf(s, to);
+  const ok = src !== null && src.available;
+  return {
+    sourceAvailable: ok,
+    sourceDevices: ok ? [...src.devices] : [],
+    sourceCounts: ok ? { ...src.counts } : { ...NO_COUNTS },
+    destinationHasData: folderHasData(dst),
+    destinationDevices: [...dst.devices],
+    destinationCounts: { ...dst.counts },
+    localCounts: localCounts(s),
+    warnings: dst.available ? [] : [`The folder ${to} cannot be read right now.`],
+  };
+}
+
+function sendProgress(step: string, done: number, total: number): void {
+  try {
+    emit('sync-move-progress', { step, done, total }).catch(() => undefined);
+  } catch {
+    // No event system installed (a bare `handle` call): progress is simply not observed.
+  }
+}
+
+async function moveSyncTarget(s: MockState, a: Record<string, unknown>): Promise<MoveResult> {
+  const from = (a.from as string | null) ?? null;
+  const to = a.to as string;
+  const replacing = a.replacing === true;
+  const dst = folderOf(s, to);
+  const src = from === null ? null : folderOf(s, from);
+  const sourceMissing = from !== null && !(src?.available ?? true);
+  const srcDevices = !src || sourceMissing ? [] : src.devices;
+  const shared = srcDevices.filter((d) => dst.devices.includes(d)).length;
+  const total = Math.max(1, srcDevices.length * FILES_PER_DEVICE);
+  const pause = (): Promise<void> => new Promise((r) => setTimeout(r, s.moveDelayMs));
+
+  sendProgress('copy', 0, total);
+  await pause();
+  if (!dst.available) throw err('io', `The folder ${to} cannot be read right now.`);
+  if (dst.failNext) {
+    dst.failNext = false;
+    s.folders[to] = dst;
+    throw err('io', `Could not write to ${to}: the folder is read-only.`);
+  }
+  sendProgress('copy', total, total);
+  await pause();
+  sendProgress('verify', total, total);
+  await pause();
+
+  // Verified: only now does anything change.
+  const counts = mergeCounts(sourceMissing || !src ? NO_COUNTS : src.counts, dst.counts, localCounts(s));
+  s.folders[to] = { ...dst, devices: [...new Set([...dst.devices, ...srcDevices, 'Mock PC'])], counts };
+  const view: Snapshot['sync']['targets'][number] = {
+    provider: a.provider as Snapshot['sync']['targets'][number]['provider'],
+    root: to,
+    folder: `${to}/zWorkTracker`,
+    status: { lastWrittenAt: toIso(s.now), lastReadAt: toIso(s.now), lastError: null, lastErrorAt: null, warnings: [], ignoredFiles: 0, devicesSeen: Math.max(0, s.folders[to].devices.length - 1) },
+  };
+  const at = replacing && from !== null ? s.targets.findIndex((t) => t.root === from) : -1;
+  if (!s.targets.some((t) => t.root === to)) {
+    if (at >= 0) s.targets.splice(at, 1, view);
+    else s.targets.push(view);
+  } else if (at >= 0) s.targets.splice(at, 1);
+  s.syncPromptDone = true;
+  if (sourceMissing && from !== null) s.pendingCopy = { from, to };
+  else if (s.pendingCopy?.to === to) s.pendingCopy = null;
+  const fingerprint = counts.projects * 1_000_000 + counts.tasks * 1_000 + counts.segments;
+  return {
+    filesCopied: (srcDevices.length - shared) * FILES_PER_DEVICE,
+    filesAlreadyThere: shared * FILES_PER_DEVICE,
+    filesIgnored: 0,
+    sourceMissing,
+    counts,
+    checksum: `sha256:${fingerprint.toString(16).padStart(16, '0')}`,
+    warnings: [],
+  };
+}
 
 const COLD_REQUIRED: RequiredField[] = ['name', 'project', 'description'];
 
@@ -173,7 +290,7 @@ function snapshot(s: MockState): Snapshot {
     },
     notices: s.notices,
     warnings: s.warnings,
-    sync: { targets: s.targets, detected: s.detected, promptPending: !s.syncPromptDone && s.targets.length === 0 },
+    sync: { targets: s.targets, detected: s.detected, promptPending: !s.syncPromptDone && s.targets.length === 0, pendingCopy: s.pendingCopy },
     launch: { warm: s.warm, coldRequired: COLD_REQUIRED, copySource: s.warm ? copySource(s) : null },
   });
 }
@@ -423,6 +540,10 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       return { hasData: false, devices: [], projects: 0, tasks: 0, segments: 0, warnings: [] };
     case 'sync_now':
       return snapshot(s);
+    case 'preview_sync_move':
+      return movePreview(s, (a.from as string | null) ?? null, a.to as string);
+    case 'move_sync_target':
+      return moveSyncTarget(s, a);
     case 'export_xlsx':
       s.exports.push({ kind: 'xlsx', request: a.request as ExportRequest });
       return '/mock/export.xlsx';

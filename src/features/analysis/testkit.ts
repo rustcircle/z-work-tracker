@@ -85,7 +85,7 @@ export function mkSnapshot(spec: Spec): Snapshot {
     prefs: { theme: 'light', hideEarnings: false, lastCurrency: null, clientZonePromptDone: true },
     notices: [],
     warnings: [],
-    sync: { targets: [], detected: [], promptPending: false },
+    sync: { targets: [], detected: [], promptPending: false, pendingCopy: null },
     launch: { warm: true, coldRequired: ['name', 'project', 'description'], copySource: null },
   };
 }

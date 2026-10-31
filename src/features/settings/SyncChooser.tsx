@@ -41,7 +41,19 @@ function PreviewText({ p }: { p: Preview }) {
   );
 }
 
-export function SyncChooser({ detected, existing, onConnected, onSkip, skipLabel }: { detected: readonly Detected[]; existing: readonly string[]; onConnected?: () => void; onSkip?: () => void; skipLabel?: string }) {
+interface ChooserProps {
+  detected: readonly Detected[];
+  existing: readonly string[];
+  onConnected?: () => void;
+  onSkip?: () => void;
+  skipLabel?: string;
+  /** Pick mode: exactly one folder is chosen and handed back, and nothing is connected here. */
+  onPick?: (d: Detected) => void;
+  pickLabel?: string;
+}
+
+export function SyncChooser({ detected, existing, onConnected, onSkip, skipLabel, onPick, pickLabel }: ChooserProps) {
+  const pickMode = onPick !== undefined;
   const { adopt, snapshot } = useApp();
   const { act } = useCommands();
   const base = useId();
@@ -62,12 +74,12 @@ export function SyncChooser({ detected, existing, onConnected, onSkip, skipLabel
 
   function toggle(d: Detected, on: boolean): void {
     setPicked((s) => {
-      const n = new Set(s);
+      const n = pickMode ? new Set<string>() : new Set(s);
       if (on) n.add(d.root);
       else n.delete(d.root);
       return n;
     });
-    if (on && !previews.has(d.root)) loadPreview(d.root);
+    if (on && !pickMode && !previews.has(d.root)) loadPreview(d.root);
   }
 
   async function choose(): Promise<void> {
@@ -117,7 +129,7 @@ export function SyncChooser({ detected, existing, onConnected, onSkip, skipLabel
             return (
               <li key={d.root}>
                 <div className="check">
-                  <input id={id} type="checkbox" checked={picked.has(d.root)} onChange={(e) => toggle(d, e.target.checked)} />
+                  <input id={id} type={pickMode ? 'radio' : 'checkbox'} name={pickMode ? `${base}-pick` : undefined} checked={picked.has(d.root)} onChange={(e) => toggle(d, e.target.checked)} />
                   <label htmlFor={id}>{folderLabel(d)}</label>
                 </div>
                 <p className="field-hint">Found via {d.source}.</p>
@@ -129,9 +141,22 @@ export function SyncChooser({ detected, existing, onConnected, onSkip, skipLabel
       )}
       <p className="sync-privacy">{SYNC_PRIVACY}</p>
       <div className="form-actions">
-        <Button variant="primary" disabled={picked.size === 0 || busy} onClick={() => void connect()}>
-          {picked.size > 1 ? `Connect ${picked.size} folders` : 'Connect folder'}
-        </Button>
+        {onPick ? (
+          <Button
+            variant="primary"
+            disabled={picked.size === 0}
+            onClick={() => {
+              const d = list.find((x) => picked.has(x.root));
+              if (d) onPick(d);
+            }}
+          >
+            {pickLabel ?? 'Continue'}
+          </Button>
+        ) : (
+          <Button variant="primary" disabled={picked.size === 0 || busy} onClick={() => void connect()}>
+            {picked.size > 1 ? `Connect ${picked.size} folders` : 'Connect folder'}
+          </Button>
+        )}
         <Button icon={<IconFolder />} onClick={() => void choose()}>
           Choose another folder
         </Button>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { useApp } from '../../app/store';
 import { api } from '../../lib/api';
@@ -8,6 +8,7 @@ import { ago } from '../../components/format';
 import { Button, ConfirmDialog } from '../../components/ui';
 import { IconRefresh } from '../../components/icons';
 import { useCommands } from '../../components/useCommands';
+import { MovePanel, useMoveFlow } from './MoveFlow';
 import { SYNC_PRIVACY, SyncChooser, providerName } from './SyncChooser';
 
 function writtenText(t: SyncTargetView, nowSec: number): string {
@@ -22,10 +23,17 @@ export function SyncSection() {
   const [removing, setRemoving] = useState<SyncTargetView | null>(null);
   const [syncing, setSyncing] = useState(false);
   const targets = snapshot.sync.targets;
+  const root = useRef<HTMLDivElement | null>(null);
+  const move = useMoveFlow(root);
+  const pending = snapshot.sync.pendingCopy;
+  const copying = move.flow.phase === 'copying';
 
   return (
-    <div className="settings-stack">
+    <div className="settings-stack" ref={root}>
       <p className="sync-privacy">{SYNC_PRIVACY}</p>
+      <p className="field-hint" data-testid="sync-when">
+        Once a folder is connected, sync runs by itself: shortly after each major action (such as starting, pausing or stopping a task), shortly after text edits settle, every 30 minutes, when the app starts and when it quits. A failed attempt is retried after a wait that grows each time.
+      </p>
       {targets.length === 0 ? (
         <p className="muted">Sync is off. This device keeps its data only on this computer.</p>
       ) : (
@@ -37,10 +45,25 @@ export function SyncSection() {
                   <h4>{t.provider === 'custom' ? 'Chosen folder' : `${providerName(t.provider)} folder`}</h4>
                   <p className="muted sync-path">{t.folder}</p>
                 </div>
-                <Button small variant="danger" onClick={() => setRemoving(t)}>
-                  Remove <span className="visually-hidden">{t.root}</span> (keeps files)
-                </Button>
+                <div className="inline-actions">
+                  <Button small disabled={move.busy} onClick={() => move.begin(t.root, true)}>
+                    Change folder <span className="visually-hidden">{t.root}</span>
+                  </Button>
+                  <Button small variant="danger" disabled={copying} onClick={() => setRemoving(t)}>
+                    Remove <span className="visually-hidden">{t.root}</span> (keeps files)
+                  </Button>
+                </div>
               </div>
+              {pending && pending.to === t.root && (
+                <div className="sync-pending" data-testid="sync-pending">
+                  <p className="field-warning" role="status">
+                    The previous folder ({pending.from}) couldn&apos;t be read when you switched, so its data has not been copied here yet. Sync is using the data on this computer.
+                  </p>
+                  <Button small disabled={move.busy} onClick={() => move.retryCopy(pending, t.provider)}>
+                    Retry copy
+                  </Button>
+                </div>
+              )}
               <p data-testid="sync-written">{writtenText(t, nowSec)}</p>
               <p className="muted">
                 {t.status.lastReadAt ? `Other devices' changes read ${ago(parseIso(t.status.lastReadAt), nowSec)}` : "Other devices' changes not read yet"} · {t.status.devicesSeen} other {t.status.devicesSeen === 1 ? 'device' : 'devices'} seen
@@ -64,7 +87,7 @@ export function SyncSection() {
       <div className="inline-actions">
         <Button
           icon={<IconRefresh />}
-          disabled={targets.length === 0 || syncing}
+          disabled={targets.length === 0 || syncing || copying}
           onClick={() => {
             setSyncing(true);
             void act(() => api.syncNow()).finally(() => setSyncing(false));
@@ -72,10 +95,19 @@ export function SyncSection() {
         >
           Sync now
         </Button>
-        <Button aria-expanded={adding} onClick={() => setAdding((v) => !v)}>
+        <Button
+          aria-expanded={targets.length === 0 ? adding : move.flow.phase === 'choose' && !move.flow.replacing}
+          disabled={move.busy && targets.length > 0}
+          onClick={() => {
+            const first = targets[0];
+            if (first) move.begin(first.root, false);
+            else setAdding((v) => !v);
+          }}
+        >
           Add a folder
         </Button>
       </div>
+      <MovePanel actions={move} detected={snapshot.sync.detected} existing={targets.map((t) => t.root)} />
       {adding && <SyncChooser detected={snapshot.sync.detected} existing={targets.map((t) => t.root)} onConnected={() => setAdding(false)} onSkip={() => setAdding(false)} skipLabel="Cancel" />}
       <ConfirmDialog
         open={removing !== null}
