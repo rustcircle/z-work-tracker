@@ -317,7 +317,8 @@ test.describe('billing tab', () => {
     await card.getByRole('button', { name: 'Copy', exact: true }).click();
     await expect(card.getByText('Copied to the clipboard.')).toBeVisible();
     const text = await page.evaluate(() => navigator.clipboard.readText());
-    const lines = text.split('\n');
+    // Chromium hands the clipboard back with the platform's line ending, so Windows reads CRLF.
+    const lines = text.split(/\r?\n/);
     expect(lines[0]).toBe(GUIDANCE);
     expect(lines).toContain('Project: Brand refresh');
     expect(lines).toContain('Period: Sun 1 Mar 2026 to Tue 31 Mar 2026 (Europe/Lisbon)');
@@ -331,7 +332,7 @@ test.describe('billing tab', () => {
     await a1.getByRole('button', { name: 'Copy A-001' }).click();
     await expect(a1.getByText('Copied to the clipboard.')).toBeVisible();
     const saved = await page.evaluate(() => navigator.clipboard.readText());
-    expect(saved.split('\n').slice(0, 3)).toEqual([GUIDANCE, 'A-001 (Live)', 'Project: Website']);
+    expect(saved.split(/\r?\n/).slice(0, 3)).toEqual([GUIDANCE, 'A-001 (Live)', 'Project: Website']);
     expect(saved).toContain('Total | exact 12h 10m | billable 12h 30m | €750.00');
   });
 
