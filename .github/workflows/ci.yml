@@ -54,12 +54,10 @@ jobs:
       - run: pnpm exec playwright install chromium
       - name: End-to-end tests against the mock backend
         run: pnpm exec playwright test
-      # Tauri reads the built page at compile time, and dist/ isn't in the repository.
-      - name: Build the page the Rust app embeds
-        run: pnpm exec vite build
       - name: Rust format
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
-      # The no-network test reads the dependency tree of every target offline.
+      # The no-network test reads the dependency tree of every desktop target offline, and a build only
+      # downloads the crates of the host, so a fresh runner needs them fetched first.
       - name: Fetch crates for every target
         run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
       - name: Rust lint
@@ -68,6 +66,8 @@ jobs:
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked --features smoke -- -D warnings
       - name: Rust tests, running on Windows
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
+      - name: Add the MinGW target
+        run: rustup target add x86_64-pc-windows-gnu
       - name: Rust test code compiles for the MinGW target
         run: cargo check --manifest-path src-tauri/Cargo.toml -p z-work-core --tests --locked --target x86_64-pc-windows-gnu
 

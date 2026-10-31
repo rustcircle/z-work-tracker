@@ -60,7 +60,7 @@ mod no_network {
                 .unwrap();
             assert!(
                 out.status.success(),
-                "{}",
+                "cargo tree failed for {target}; run `cargo fetch --locked` first if crates are missing: {}",
                 String::from_utf8_lossy(&out.stderr)
             );
             let tree = String::from_utf8_lossy(&out.stdout);
