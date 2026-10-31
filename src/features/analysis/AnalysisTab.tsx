@@ -1,8 +1,9 @@
 // The Analysis tab: controls, key figures, written insights and one section per metric family.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 
-import { useApp } from '../../app/store';
+import { useApp, type Zones } from '../../app/store';
 import { dayOf, zoneLabel } from '../../lib/tz';
+import type { Snapshot } from '../../lib/types';
 import { ActiveZoneBar } from '../zones';
 import './analysis.css';
 import { PatternDefs } from './charts';
@@ -37,19 +38,34 @@ const SECTIONS = [
 
 type Computed = { ok: true; m: Metrics } | { ok: false; error: string };
 
+/** Reads the clock, which ticks every second, and passes on only the steps that can change a figure. */
 export function AnalysisTab() {
   const { snapshot, nowSec, zones } = useApp();
+  const [range, setRange] = useState<RangeSpec>(() => defaultRange(dayOf(nowSec, zones.active)));
+  const live = useMemo(() => snapshot.segments.some((s) => s.end === null && s.provisionalEnd === null), [snapshot]);
+  // Analysis follows the running segment every 10 s, and the calendar once a minute otherwise.
+  const clock = live ? Math.floor(nowSec / 10) * 10 : Math.floor(nowSec / 60) * 60;
+  return <AnalysisView snapshot={snapshot} zones={zones} live={live} clock={clock} range={range} setRange={setRange} />;
+}
+
+interface ViewProps {
+  snapshot: Snapshot;
+  zones: Zones;
+  live: boolean;
+  clock: number;
+  range: RangeSpec;
+  setRange: (r: RangeSpec) => void;
+}
+
+/** Every chart at once, so it is drawn only when its props change, not on every tick of the clock. */
+const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, range, setRange }: ViewProps) {
   const zone = zones.active;
-  const [range, setRange] = useState<RangeSpec>(() => defaultRange(dayOf(nowSec, zone)));
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [basis, setBasis] = useState<Basis>('billable');
   const [compare, setCompare] = useState(true);
   const [drill, setDrill] = useState<DrillSel | null>(null);
   const [glossary, setGlossary] = useState<{ open: boolean; focus: string | null }>({ open: false, focus: null });
 
-  const live = useMemo(() => snapshot.segments.some((s) => s.end === null && s.provisionalEnd === null), [snapshot]);
-  // Analysis follows the running segment every 10 s, and the calendar once a minute otherwise.
-  const clock = live ? Math.floor(nowSec / 10) * 10 : Math.floor(nowSec / 60) * 60;
   const params = useMemo<Params>(() => ({ zone, range, filters, compare }), [zone, range, filters, compare]);
 
   const computed = useMemo<Computed>(() => {
@@ -187,4 +203,4 @@ export function AnalysisTab() {
       </Card>
     </section>
   );
-}
+});
