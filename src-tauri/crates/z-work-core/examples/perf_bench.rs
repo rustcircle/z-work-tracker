@@ -206,9 +206,15 @@ fn write_store(dir: &Path, segments: usize, running: bool) -> Res<()> {
 fn main() -> Res<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("write-store") {
-        let dir = args.get(1).ok_or("write-store <dir> <segments> [running|paused]")?;
+        let dir = args
+            .get(1)
+            .ok_or("write-store <dir> <segments> [running|paused]")?;
         let n = args.get(2).ok_or("segments")?.parse()?;
-        return write_store(Path::new(dir), n, args.get(3).map(String::as_str) != Some("paused"));
+        return write_store(
+            Path::new(dir),
+            n,
+            args.get(3).map(String::as_str) != Some("paused"),
+        );
     }
     let segments: usize = args.first().map_or(Ok(50_000), |s| s.parse())?;
     let out_path = args.get(1).cloned();
@@ -249,7 +255,8 @@ fn main() -> Res<()> {
     svc.set_system_zone("Europe/Lisbon".to_owned());
     // A task runs from here on, half an hour in, as the app is most of the working day.
     // Set by hand rather than through a resume, whose random segment id would change the digests.
-    let open: Segment = serde_json::from_value(json!({ "id": "ffffffff-0000-4000-8000-000000000000",
+    let open: Segment =
+        serde_json::from_value(json!({ "id": "ffffffff-0000-4000-8000-000000000000",
         "taskId": "t013", "deviceId": DEVICE, "start": NOW, "end": Value::Null }))?;
     svc.mutate(|f, _| {
         if let Some(task) = f.data.tasks.get_mut("t013") {
@@ -309,8 +316,12 @@ fn main() -> Res<()> {
     let snap = svc.snapshot();
     let snap_json = serde_json::to_vec(&snap)?;
     println!("snapshot json: {} bytes", snap_json.len());
-    results.borrow_mut().insert("snapshotBytes".into(), json!(snap_json.len()));
-    results.borrow_mut().insert("storeBytes".into(), json!(main_bytes.len()));
+    results
+        .borrow_mut()
+        .insert("snapshotBytes".into(), json!(snap_json.len()));
+    results
+        .borrow_mut()
+        .insert("storeBytes".into(), json!(main_bytes.len()));
     record(
         "snapshot serialize",
         time(20, || serde_json::to_vec(&snap).unwrap()),
@@ -372,9 +383,13 @@ fn main() -> Res<()> {
         time(5, || pdf::build(&source, &pdf_request, None).unwrap()),
     );
     let xlsx_bytes = xlsx::build(&source, &request)?;
-    results.borrow_mut().insert("xlsxBytes".into(), json!(xlsx_bytes.len()));
+    results
+        .borrow_mut()
+        .insert("xlsxBytes".into(), json!(xlsx_bytes.len()));
     let pdf_bytes = pdf::build(&source, &pdf_request, None)?;
-    results.borrow_mut().insert("pdfBytes".into(), json!(pdf_bytes.len()));
+    results
+        .borrow_mut()
+        .insert("pdfBytes".into(), json!(pdf_bytes.len()));
     digests.insert("csv".into(), fnv(csv::build(&source, &request)?.as_bytes()));
     digests.insert("pdf".into(), fnv(&pdf_bytes));
     digests.insert("xlsx_len".into(), xlsx_bytes.len().to_string());
@@ -397,10 +412,7 @@ fn main() -> Res<()> {
     let merged_all = remote
         .iter()
         .fold(svc.file().data.clone(), |acc, r| merge(&acc, r));
-    digests.insert(
-        "merge".into(),
-        fnv(&serde_json::to_vec(&merged_all)?),
-    );
+    digests.insert("merge".into(), fnv(&serde_json::to_vec(&merged_all)?));
 
     let sync_root = work.join("sync");
     let devices = sync_root.join("zWorkTracker").join("devices");
@@ -420,7 +432,9 @@ fn main() -> Res<()> {
     run_cycle(&shared_svc, &RealIo);
     let first_ms = t.elapsed().as_secs_f64() * 1000.0;
     println!("sync cycle, first (data changes):  {first_ms:.2} ms");
-    results.borrow_mut().insert("sync cycle first ms".into(), json!(first_ms));
+    results
+        .borrow_mut()
+        .insert("sync cycle first ms".into(), json!(first_ms));
     record(
         "sync cycle, settled (3 devices)",
         time(5, || run_cycle(&shared_svc, &RealIo)),

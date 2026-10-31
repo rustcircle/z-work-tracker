@@ -633,7 +633,10 @@ mod tests {
         // A store rolled back to an older heartbeat keeps it: nothing newer lingers to overrule it.
         one.last_heartbeat = Some(Ts(NOW.0 - 3600));
         save(&p, &one, NOW).unwrap();
-        assert_eq!(load(&p, "pc", NOW).unwrap().0.last_heartbeat, Some(Ts(NOW.0 - 3600)));
+        assert_eq!(
+            load(&p, "pc", NOW).unwrap().0.last_heartbeat,
+            Some(Ts(NOW.0 - 3600))
+        );
     }
 
     #[test]
@@ -668,7 +671,11 @@ mod tests {
         assert_eq!(*short, long_way(&good).unwrap());
         // Duplicate keys are refused by the short way, and resolved by the long way as they always were.
         let text = String::from_utf8(good).unwrap();
-        let dup = text.replacen("\"deviceName\":\"pc\"", "\"deviceName\":\"a\",\"deviceName\":\"pc\"", 1);
+        let dup = text.replacen(
+            "\"deviceName\":\"pc\"",
+            "\"deviceName\":\"a\",\"deviceName\":\"pc\"",
+            1,
+        );
         assert_ne!(dup, text);
         let Parsed::Good(via_dup, 2) = parse_local(dup.as_bytes()) else {
             panic!("the long way still takes a duplicate key");
@@ -678,7 +685,11 @@ mod tests {
         let wrong = serde_json::to_value(&one).unwrap();
         let mut wrong = wrong;
         let projects = wrong["data"]["projects"].as_object_mut().unwrap();
-        let (id, project) = projects.iter().next().map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let (id, project) = projects
+            .iter()
+            .next()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .unwrap();
         projects.remove(&id);
         projects.insert("other".to_owned(), project);
         let bytes = serde_json::to_vec(&wrong).unwrap();
@@ -741,7 +752,10 @@ mod tests {
         }
         assert_eq!(fs::metadata(p.main()).unwrap().nlink(), 1);
         assert_eq!(fs::metadata(p.bak()).unwrap().nlink(), 1);
-        assert_ne!(fs::metadata(p.main()).unwrap().ino(), fs::metadata(p.bak()).unwrap().ino());
+        assert_ne!(
+            fs::metadata(p.main()).unwrap().ino(),
+            fs::metadata(p.bak()).unwrap().ino()
+        );
         assert!(!p.bak_tmp().exists());
         assert_eq!(
             serde_json::from_slice::<LocalFile>(&fs::read(p.bak()).unwrap()).unwrap(),
@@ -766,7 +780,12 @@ mod tests {
         save(&p, &with_project("Two"), NOW).unwrap();
         assert_eq!(fs::read(p.bak()).unwrap(), bytes);
         assert_eq!(fs::read(&target).unwrap(), bytes);
-        assert!(!fs::symlink_metadata(p.bak()).unwrap().file_type().is_symlink());
+        assert!(
+            !fs::symlink_metadata(p.bak())
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

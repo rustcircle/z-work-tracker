@@ -1541,7 +1541,10 @@ mod tests {
         s.heartbeat().unwrap();
         assert_eq!(std::fs::read(&main).unwrap(), before);
         // In memory it counts at once, for what other devices are told.
-        assert_eq!(s.device_file().last_heartbeat.unwrap().iso(), "2026-03-01T09:00:30Z");
+        assert_eq!(
+            s.device_file().last_heartbeat.unwrap().iso(),
+            "2026-03-01T09:00:30Z"
+        );
         clock.advance(3600);
         drop(s);
         let again = open(dir.path(), &clock);

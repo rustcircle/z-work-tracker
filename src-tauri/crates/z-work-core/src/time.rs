@@ -70,8 +70,28 @@ impl Ts {
     }
     /// The exact form this program writes, without the general parser. None for anything else.
     fn parse_stored(s: &str) -> Option<Self> {
-        let &[y0, y1, y2, y3, b'-', m0, m1, b'-', d0, d1, b'T', h0, h1, b':', i0, i1, b':', s0, s1, b'Z'] =
-            s.as_bytes()
+        let &[
+            y0,
+            y1,
+            y2,
+            y3,
+            b'-',
+            m0,
+            m1,
+            b'-',
+            d0,
+            d1,
+            b'T',
+            h0,
+            h1,
+            b':',
+            i0,
+            i1,
+            b':',
+            s0,
+            s1,
+            b'Z',
+        ] = s.as_bytes()
         else {
             return None;
         };
@@ -79,7 +99,13 @@ impl Ts {
         let (m, d) = (two(m0, m1)?, two(d0, d1)?);
         let (h, i, sec) = (two(h0, h1)?, two(i0, i1)?, two(s0, s1)?);
         // A leap second or any other oddity goes to the general parser, which has the last word.
-        if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) || h > 23 || i > 59 || sec > 59 {
+        if !(1..=12).contains(&m)
+            || d < 1
+            || d > days_in_month(y, m)
+            || h > 23
+            || i > 59
+            || sec > 59
+        {
             return None;
         }
         Some(Self(
@@ -244,7 +270,15 @@ mod tests {
             check(Ts(secs));
             secs += 86_400 * 97 + 3599;
         }
-        for t in [Ts::MIN, Ts::MAX, Ts::EARLIEST, Ts(0), Ts(-1), Ts(86_399), Ts(86_400)] {
+        for t in [
+            Ts::MIN,
+            Ts::MAX,
+            Ts::EARLIEST,
+            Ts(0),
+            Ts(-1),
+            Ts(86_399),
+            Ts(86_400),
+        ] {
             check(t);
         }
     }
@@ -253,7 +287,10 @@ mod tests {
     fn out_of_range_times_still_print_as_before() {
         for t in [Ts(Ts::MAX.0 + 86_400), Ts(Ts::MIN.0 - 1), Ts(i64::MIN / 2)] {
             assert_eq!(t.iso(), t.iso_chrono());
-            assert_eq!(serde_json::to_string(&t).unwrap(), format!("\"{}\"", t.iso_chrono()));
+            assert_eq!(
+                serde_json::to_string(&t).unwrap(),
+                format!("\"{}\"", t.iso_chrono())
+            );
         }
     }
 
