@@ -274,11 +274,14 @@ export function exactNumeratorsOf(rows: readonly TaskDay[]): Numerators {
   return out;
 }
 
+/** The same text as `toLocaleString('en-US')`, which builds a new formatter on every call. */
+const WHOLE = new Intl.NumberFormat('en-US');
+
 export function money(currency: Currency, cents: number): string {
   const symbol = currency === 'EUR' ? '€' : '$';
   const whole = Math.floor(cents / 100);
   const frac = cents - whole * 100;
-  return `${symbol}${whole.toLocaleString('en-US')}.${String(frac).padStart(2, '0')}`;
+  return `${symbol}${WHOLE.format(whole)}.${String(frac).padStart(2, '0')}`;
 }
 
 /** "€12.00 + $3.50", currencies side by side, rounded only here. */
