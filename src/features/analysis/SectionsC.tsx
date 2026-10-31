@@ -94,7 +94,7 @@ export function ShiftsSection({ env }: { env: SecEnv }) {
         <HBars rows={projRows} ariaLabel="Time in each shift by project" empty={EMPTY} />
       </Card>
       <Card title="Start, finish and coverage" info="shifts.late" openGlossary={env.openGlossary}>
-        <div className="a-table-wrap">
+        <div className="a-table-wrap a-table-fit" role="region" aria-label="Start, finish and coverage, scrollable table" tabIndex={0}>
           <table className="a-table tabular">
             <caption className="visually-hidden">Start and finish against shift bounds</caption>
             <thead>

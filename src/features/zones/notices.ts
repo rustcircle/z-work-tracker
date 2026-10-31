@@ -38,7 +38,7 @@ export function clockChangeLines(entries: readonly { zone: string; role: string 
   return [...byZone].map(([zone, roles]) => {
     const next = zone === 'UTC' ? null : nextShift(nowSec, zone);
     if (!next) return { zone, roles, text: 'No clock change is scheduled.', hasChange: false };
-    const base = shiftText(next);
+    const base = shiftText(next, nowSec);
     const w = wallAt(next.at, next.zone);
     const nowYear = wallAt(nowSec, next.zone).year;
     return { zone, roles, text: w.year === nowYear ? base : `${base} ${w.year}`, hasChange: true };

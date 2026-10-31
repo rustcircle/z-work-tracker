@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { contrast, luminance, readableText, suggestColor, PROJECT_PALETTE } from './color';
 import { BANDS, BandClock, splitAll, type Seg } from './split';
@@ -207,5 +207,24 @@ describe('theme token contrast table', () => {
       if (rising) expect(ls[i]!).toBeGreaterThan(ls[i - 1]!);
       else expect(ls[i]!).toBeLessThan(ls[i - 1]!);
     }
+  });
+});
+
+describe('shiftText tense follows the clock it is given', () => {
+  afterEach(() => vi.useRealTimers());
+  const [spring] = shiftsBetween(parseIso('2026-01-01T00:00:00Z'), parseIso('2027-01-01T00:00:00Z'), 'Europe/Lisbon');
+
+  it('says "go forward" for a future change and "went forward" for a past one under a frozen clock', () => {
+    expect(toIso(spring!.at)).toBe('2026-03-29T01:00:00Z');
+    vi.useFakeTimers({ now: new Date('2026-03-12T15:20:00Z') });
+    expect(shiftText(spring!)).toBe('Lisbon clocks go forward 1h, 29 Mar');
+    vi.setSystemTime(new Date('2026-04-02T00:00:00Z'));
+    expect(shiftText(spring!)).toBe('Lisbon clocks went forward 1h, 29 Mar');
+  });
+
+  it('uses the passed clock rather than the system clock', () => {
+    vi.useFakeTimers({ now: new Date('2030-01-01T00:00:00Z') }); // system clock says it is long past
+    expect(shiftText(spring!, parseIso('2026-03-12T15:20:00Z'))).toBe('Lisbon clocks go forward 1h, 29 Mar');
+    expect(shiftText(spring!, parseIso('2026-03-30T00:00:00Z'))).toBe('Lisbon clocks went forward 1h, 29 Mar');
   });
 });

@@ -1,6 +1,14 @@
+import path from 'node:path';
+
 import { expect, type Locator, type Page } from '@playwright/test';
 
 import type { MockState } from '../src/mocks/ipcMock';
+
+/**
+ * Where screenshots go: the ignored test-results folder, so a normal test run never touches reviewed
+ * evidence. Set ZWT_SHOT_DIR to write them somewhere else on purpose, such as the docs folder.
+ */
+export const SHOTS = process.env.ZWT_SHOT_DIR ?? path.resolve(import.meta.dirname, '../test-results/screenshots');
 
 // The demo seed: 12 March 2026 15:20 UTC, My zone Lisbon, Client zone New York.
 export const DEMO_NOW = '2026-03-12T15:20:00Z';

@@ -162,16 +162,19 @@ describe('focus and sessions', () => {
     expect(f.streak?.secs).toBe(14400);
   });
 
-  it('pauses follow the gap rule and a still-paused task has no open gap', () => {
+  it('only same-day gaps count as pauses; overnight and multi-day gaps are breaks', () => {
     const f = run().focus;
-    // t1: 600 + 74400 + 176400 + 3600 (last end 13:10 to stop 14:10); t3: Mon 15:00 -> Sat 10:00 = 414000.
-    expect(f.pauseCount).toBe(5);
-    expect(f.pauseSecs).toBe(669000);
-    expect(f.pauseAvg).toBe(133800);
-    expect(f.pausesPerTask).toBe(5 / 4);
-    expect(f.focusRatio).toBeCloseTo(36000 / (36000 + 669000));
+    // Counted: t1 Mon 10:30 -> 10:40 = 600 and t1 Thu 13:10 -> stop 14:10 = 3600.
+    // Not counted: t1 Mon 11:20 -> Tue 08:00 (74400), t1 Tue 12:00 -> Thu 13:00 (176400), t3 Mon 15:00 -> Sat 10:00 (414000).
+    expect(f.pauseCount).toBe(2);
+    expect(f.pauseSecs).toBe(4200);
+    expect(f.pauseAvg).toBe(2100);
+    expect(f.pausesPerTask).toBe(2 / 4);
+    expect(f.focusRatio).toBeCloseTo(36000 / (36000 + 4200));
     const mon = f.daily[0];
-    expect(mon?.paused).toBe(600 + 74400 + 414000);
+    expect(mon?.paused).toBe(600);
+    // No day can show more paused time than it has hours.
+    for (const d of f.daily) expect(d.paused).toBeLessThanOrEqual(86400);
   });
 
   it('context switches count task changes inside a day', () => {

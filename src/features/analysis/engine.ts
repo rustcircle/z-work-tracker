@@ -593,7 +593,8 @@ function mergeAdditive(a: Additive, b: Additive): Additive {
 
 /**
  * Paused time: the gap between consecutive segments of one task, plus the last segment's end to
- * the task's stop time. A task that is still paused has an open gap, which is not counted.
+ * the task's stop time. A task that is still paused has an open gap, which is not counted. This returns
+ * every gap; `gapsFor` keeps only those that begin and end on one calendar day in the viewing zone.
  */
 export function pauseGaps(snapshot: Snapshot): Gap[] {
   const byTask = new Map<string, Seg[]>();
@@ -629,6 +630,9 @@ function gapsFor(snapshot: Snapshot, env: Env): Gap[] {
   const out: Gap[] = [];
   for (const g of cachedGaps(snapshot)) {
     if (g.start < from || g.start >= to) continue;
+    // A pause counts only when it begins and ends on the same calendar day in the viewing zone.
+    // Overnight, weekend and multi-day gaps between sessions are breaks, not pauses.
+    if (dayOfInstant(g.start, env.zone) !== dayOfInstant(g.end - 1, env.zone)) continue;
     if (proj && !proj.has(g.projectId)) continue;
     if (task && !task.has(g.taskId)) continue;
     if (f.band !== null) {

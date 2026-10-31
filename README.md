@@ -225,7 +225,7 @@ The full list with formulas is in the app's searchable Metrics glossary (source:
 
 Definitions worth knowing:
 
-- **Paused time** is the gap between consecutive segments of a task, plus the last segment's end to its Stop. A still-paused task's open gap isn't counted. Overnight and weekend gaps between sessions of one task count too, so **focus ratio** falls sharply for tasks worked across several days. Read it with that in mind.
+- **A pause** is the gap between two consecutive segments of the same task, or from a task's last segment to its Stop, that begins and ends on the same calendar day in the zone you're viewing. Gaps crossing midnight, such as overnight or weekend breaks, aren't pauses and are excluded from every figure. A pause belongs to the day it began, and a still-paused task's open gap isn't counted. Pauses of different tasks add up, so a day can show more paused time than worked time.
 - A band or shift filter hides Billable figures, because rounding works on whole task-days.
 - Client working hours apply Monday to Friday.
 - A forecast is a straight-line projection and needs 7 or more days, 20% of the period elapsed and 2 active days. Budget pace uses the last 28 days.
@@ -268,7 +268,7 @@ pnpm exec tsc --noEmit                  # types
 pnpm exec eslint . --max-warnings 0     # lint
 pnpm exec vitest run                    # unit and component tests
 pnpm test:perf                          # 50k-segment timings
-pnpm exec playwright test               # e2e against the IPC mock, under the real CSP
+pnpm exec playwright test               # e2e against the IPC mock, under the real CSP; ZWT_SHOT_DIR=<folder> saves screenshots there
 pnpm smoke:native                       # real macOS builds: real webview, IPC and files
 
 cd src-tauri
@@ -418,7 +418,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 | "Written to folder" but another PC has no data | The desktop client may still be uploading. |
 | "newer version" warning | Update the app on this device. |
 | A restored-data notice | The previous file was damaged. The damaged copy is kept in the data folder. |
-| Focus ratio looks very low | It counts gaps between sessions of one task, including overnight. See [Metrics reference](#metrics-reference). |
+| Focus ratio looks low | It counts same-day gaps between sessions of each task, added across tasks. See [Metrics reference](#metrics-reference). |
 | Earnings show "No rate set" | Set a price per hour on the project. |
 
 ## Known limitations
@@ -441,7 +441,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 - At a Windows shutdown or sign-out, an edit typed in the last moment before the autosave may be lost: the page gets no save signal on that path. Tray Quit and hiding the window do flush edits, after a 300 ms wait.
 - Shift analysis can't revert a single version; retire or delete instead.
 - Heatmap and calendar cells have no keyboard drill-down; their View data tables hold the same numbers.
-- Map zone boundaries are approximate near borders and blocky at high zoom. The list is the exact choice.
+- Map zone boundaries are approximate near borders, and the highlight is clipped to country outlines. The list is the exact choice.
 - Time zone rules run from 2000 to 2045; earlier times use the first known offset.
 - Rate is fixed to the task's current project: moving a task to another project re-derives its earnings from that project's rates.
 

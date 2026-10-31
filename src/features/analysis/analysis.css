@@ -131,6 +131,19 @@
 .a-data { margin-top: 10px; font-size: 12.5px; }
 .a-data summary { cursor: pointer; color: var(--accent); }
 .a-table-wrap { overflow: auto; max-height: 320px; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; }
+.a-table-wrap {
+  /* Edge shadows appear only on a side that has more to scroll to: a visible cue that the table moves. */
+  background:
+    linear-gradient(to right, var(--surface) 30%, transparent) left center / 24px 100% no-repeat local,
+    linear-gradient(to left, var(--surface) 30%, transparent) right center / 24px 100% no-repeat local,
+    linear-gradient(to right, color-mix(in srgb, var(--text) 28%, transparent), transparent) left center / 10px 100% no-repeat scroll,
+    linear-gradient(to left, color-mix(in srgb, var(--text) 28%, transparent), transparent) right center / 10px 100% no-repeat scroll;
+}
+.a-table-wrap:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+/* The shift table has long text cells: let them wrap so it fits at the normal window width. */
+.a-table-fit .a-table th, .a-table-fit .a-table td { white-space: normal; vertical-align: top; }
+.a-table-fit .a-table td { text-align: left; }
+.a-table-fit .a-table thead th { text-align: left; }
 .a-table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 .a-table th, .a-table td { padding: 4px 10px; text-align: right; border-bottom: 1px solid var(--border); }
 .a-table th { white-space: nowrap; }

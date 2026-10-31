@@ -3,10 +3,10 @@ import path from 'node:path';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import type { MockState } from '../src/mocks/ipcMock';
+import { SHOTS } from './support';
 
 // Demo seed: 12 March 2026 15:20 UTC, Thursday. My zone Lisbon (UTC+0 in March), Client zone New York.
 // The figures asserted here are derived by hand in src/features/analysis/demo.test.ts.
-const SHOTS = process.env.APP_SHOTS_DIR ?? path.resolve(import.meta.dirname, '../../.stack/out/rust-expert');
 const DEMO_NOW = new Date('2026-03-12T15:20:00Z');
 const THEMES = [
   ['light', 'light'],

@@ -235,11 +235,14 @@ export function humanSpan(secs: number): string {
   return `${m}m`;
 }
 
-/** "New York clocks went forward 1h, 8 Mar". */
-export function shiftText(change: OffsetChange): string {
+/**
+ * "New York clocks went forward 1h, 8 Mar", or "go forward" when the change is after `nowSec`. Pass the
+ * app's own clock; the default is the system clock.
+ */
+export function shiftText(change: OffsetChange, nowSec: number = Date.now() / 1000): string {
   const w = wallAt(change.at, change.zone);
   const dir = change.deltaSecs > 0 ? 'forward' : 'back';
-  const verb = change.at > Date.now() / 1000 ? 'go' : 'went';
+  const verb = change.at > nowSec ? 'go' : 'went';
   return `${cityOf(change.zone)} clocks ${verb} ${dir} ${humanSpan(change.deltaSecs)}, ${w.date} ${MONTHS[w.month - 1]}`;
 }
 

@@ -2,8 +2,9 @@ import path from 'node:path';
 
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
+import { SHOTS } from './support';
+
 // The demo seed: My zone Lisbon, Client zone New York, 12 March 2026 (US clocks forward, EU not yet).
-const SHOTS = process.env.ZONE_SHOTS_DIR ?? path.resolve(import.meta.dirname, '../../.stack/out/rust-expert');
 const THEMES = [
   ['light', 'light'],
   ['solarizedLight', 'solarized-light'],
@@ -198,7 +199,7 @@ test.describe('zone bar and picker', () => {
     const dialog = await openPicker(page);
     const notices = dialog.getByTestId('zone-notices');
     await expect(notices).toContainText('My zone · Lisbon, WET, UTC+0');
-    await expect(notices).toContainText(/Lisbon clocks (go|went) forward 1h, 29 Mar/);
+    await expect(notices).toContainText('Lisbon clocks go forward 1h, 29 Mar');
     await expect(notices).toContainText('Client zone · New York, EDT, UTC-4');
     await expect(notices).toContainText('Now: New York is 4h behind Lisbon');
     await expect(notices).toContainText('New York is 5h behind Lisbon from 29 Mar');

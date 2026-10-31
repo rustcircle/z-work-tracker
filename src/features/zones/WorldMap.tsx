@@ -99,7 +99,6 @@ function WorldMap({ selected, preview, myZone, clientZone, nowSec, onPick, onHov
   // Theme changes recolour the canvas masks; the SVG follows the CSS variables on its own.
   useEffect(() => {
     const mo = new MutationObserver(() => {
-      painter.current?.clearCache();
       setThemeTick((t) => t + 1);
     });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -146,7 +145,6 @@ function WorldMap({ selected, preview, myZone, clientZone, nowSec, onPick, onHov
       size,
       dpr: window.devicePixelRatio || 1,
       view,
-      grid,
       land,
       masks: [
         { zone: selected, color: color('--map-selected', '#0f766e'), landAlpha: 0.6, seaAlpha: 0.2 },
@@ -154,7 +152,7 @@ function WorldMap({ selected, preview, myZone, clientZone, nowSec, onPick, onHov
       ],
     });
     canvas.dataset.paintMs = (performance.now() - started).toFixed(1);
-  }, [grid, land, size, view, selected, highlight, themeTick]);
+  }, [land, size, view, selected, highlight, themeTick]);
 
   const pins = useMemo<Pin[]>(() => {
     const out: Pin[] = [];

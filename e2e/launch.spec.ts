@@ -2,11 +2,10 @@ import path from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
 
-import { advance, card, expectClean, open, refresh, tab } from './support';
+import { SHOTS, advance, card, expectClean, open, refresh, tab } from './support';
 
 // Warm and cold launches, cold Resume, and editing a task at any time. The mock backend is the one in
 // src/mocks: real behaviour of the Rust side is covered by its own tests and the native smoke script.
-const SHOTS = process.env.APP_SHOTS_DIR ?? path.resolve(import.meta.dirname, '../../.stack/out/rust-expert');
 const THEMES = [
   ['light', 'light'],
   ['solarizedLight', 'solarized-light'],

@@ -2,10 +2,9 @@ import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-import { advance, card, expectClean, open, refresh, tab } from './support';
+import { SHOTS, advance, card, expectClean, open, refresh, tab } from './support';
 
 // The demo seed: 12 March 2026 15:20 UTC, My zone Lisbon, Client zone New York.
-const SHOTS = process.env.APP_SHOTS_DIR ?? path.resolve(import.meta.dirname, '../../.stack/out/rust-expert');
 const THEMES = [
   ['light', 'light'],
   ['solarizedLight', 'solarized-light'],

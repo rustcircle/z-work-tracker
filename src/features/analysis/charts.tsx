@@ -929,7 +929,7 @@ export function DataTable({ caption, columns, rows }: { caption: string; columns
     <details className="a-data" onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
       <summary>View data</summary>
       {open ? (
-        <div className="a-table-wrap">
+        <div className="a-table-wrap" role="region" aria-label={`${caption}, scrollable table`} tabIndex={0}>
           <table className="a-table tabular">
             <caption className="visually-hidden">{caption}</caption>
             <thead>

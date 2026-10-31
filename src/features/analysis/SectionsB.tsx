@@ -92,7 +92,7 @@ export function Focus({ env }: { env: SecEnv }) {
         info="focus.pausedTime"
         openGlossary={env.openGlossary}
         wide
-        note="A pause counts from the end of one segment of a task to the start of its next, so overnight gaps between sessions of the same task are included; a pause belongs to the day it began."
+        note="A pause is the gap between two segments of the same task that begins and ends on the same calendar day. Gaps that cross midnight (overnight, weekend or multi-day breaks) are not counted."
         data={{ caption: 'Worked and paused time', columns: ['Period', 'Worked', 'Paused'], rows: fo.labels.map((l, i) => [l, fmtHMS(fo.worked[i] as number), fmtHMS(fo.paused[i] as number)]) }}
       >
         <Legend items={[{ key: 'w', label: 'Worked', concept: 'worked' }, { key: 'p', label: 'Paused', concept: 'paused' }]} />
