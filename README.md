@@ -1,5 +1,7 @@
 # zWorkTracker
 
+[![CI](https://github.com/rustcircle/z-work-tracker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rustcircle/z-work-tracker/actions/workflows/ci.yml)
+
 A desktop app for Windows 11 that accounts for labor hours by project and task. It logs start and end times automatically in UTC, shows them on a timeline in any time zone, works out billable time and earnings, analyses how the time was spent, and exports to Excel and CSV.
 
 It runs locally. It makes no network calls and sends no telemetry. Data leaves the machine only if you choose a OneDrive or Google Drive folder for sync.
@@ -295,6 +297,8 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warn
 ZWT_SAMPLE_XLSX=/tmp/sample.xlsx cargo test -p z-work-core builds_with_earnings
 cd .. && uv run --no-project --with openpyxl scripts/verify_xlsx.py /tmp/sample.xlsx
 ```
+
+Continuous integration: `.github/workflows/ci.yml` runs these gates on `windows-latest` on each push to `main` and each pull request into `main`, and can be started by hand. Playwright there runs against the IPC mock, so it doesn't drive the real backend, and a green run says nothing about the installer or the app on a real desktop. A small macOS job runs the core's lint and tests, for its Unix-only file handling. It uses no secrets and signs nothing. The timing test and packaging run only in `windows-build.yml`, by hand or on a tag.
 
 `pnpm gen:tz` regenerates `src/generated/tzdata.json` from Rust's time zone database. Run it after updating `chrono-tz`.
 

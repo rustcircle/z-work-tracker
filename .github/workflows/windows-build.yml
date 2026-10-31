@@ -14,44 +14,11 @@ permissions:
   contents: read
 
 jobs:
-  # The same gates as the README's. Packaging runs only if they pass.
+  # The same gates as every push to main. Packaging runs only if they pass.
   gates:
-    runs-on: windows-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - name: Install the Rust toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            src-tauri/target
-          key: windows-gates-${{ hashFiles('src-tauri/Cargo.lock') }}
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec tsc --noEmit
-      - run: pnpm exec eslint . --max-warnings 0
-      - run: pnpm exec vitest run
-      - run: pnpm test:perf
-      - run: pnpm exec playwright install chromium
-      - run: pnpm exec playwright test
-      - name: Rust format
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
-      - name: Rust lint, native target
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked -- -D warnings
-      - name: Rust lint, test-only commands
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked --features smoke -- -D warnings
-      - name: Rust tests, running on Windows
-        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
-      - name: Rust test code compiles for the MinGW target
-        run: cargo check --manifest-path src-tauri/Cargo.toml -p z-work-core --tests --locked --target x86_64-pc-windows-gnu
+    uses: ./.github/workflows/ci.yml
+    with:
+      perf: true
 
   build:
     needs: gates

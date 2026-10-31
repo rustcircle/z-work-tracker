@@ -1,0 +1,97 @@
+name: CI
+
+# Fast gates on every push to main and every pull request into main. Nothing here signs, publishes
+# or reads a secret. The Windows build workflow calls this same file before it packages.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      perf:
+        description: Also run the 50k-segment timing test, too noisy to gate every push on
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows gates
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            src-tauri/target
+          key: ci-windows-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ci-windows-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm exec eslint . --max-warnings 0
+      - run: pnpm exec vitest run
+      - if: inputs.perf
+        run: pnpm test:perf
+      - run: pnpm exec playwright install chromium
+      - name: End-to-end tests against the mock backend
+        run: pnpm exec playwright test
+      # Tauri reads the built page at compile time, and dist/ isn't in the repository.
+      - name: Build the page the Rust app embeds
+        run: pnpm exec vite build
+      - name: Rust format
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all --check
+      # The no-network test reads the dependency tree of every target offline.
+      - name: Fetch crates for every target
+        run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
+      - name: Rust lint
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked -- -D warnings
+      - name: Rust lint, test-only commands
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets --locked --features smoke -- -D warnings
+      - name: Rust tests, running on Windows
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace --locked
+      - name: Rust test code compiles for the MinGW target
+        run: cargo check --manifest-path src-tauri/Cargo.toml -p z-work-core --tests --locked --target x86_64-pc-windows-gnu
+
+  # The core only: it has Unix-only file handling that the Windows job never compiles.
+  macos-core:
+    name: macOS core tests
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            src-tauri/target
+          key: ci-macos-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ci-macos-
+      - name: Fetch crates for every target
+        run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
+      - name: Core lint
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -p z-work-core --all-targets --locked -- -D warnings
+      - name: Core tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml -p z-work-core --locked
