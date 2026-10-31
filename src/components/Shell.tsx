@@ -79,6 +79,11 @@ export function Shell() {
     [tab, focusProject, settingsSection, focusTask, continueTaskId],
   );
 
+  // A marker only the page can read: scripts/perf-native.mjs times cold start up to here.
+  useEffect(() => {
+    performance.mark('z-first-render');
+  }, []);
+
   // The tray's Resume on a cold launch: open the form for a new linked task and start nothing.
   const tasksRef = useRef(snapshot.tasks);
   useEffect(() => {
