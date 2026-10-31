@@ -72,6 +72,8 @@ struct Core {
     tray: Mutex<Option<TrayHandles>>,
     quitting: AtomicBool,
     exit_done: AtomicBool,
+    /// One sync cycle at a time: cycles write the same temporary file.
+    cycle_lock: Arc<Mutex<()>>,
 }
 
 fn guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -194,8 +196,10 @@ fn finish_exit(core: &Core) {
     }
     core.tell_sync(SyncMsg::Stop);
     let svc = Arc::clone(svc);
+    let lock = Arc::clone(&core.cycle_lock);
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        let _cycle = guard(&lock);
         run_cycle(&svc, &RealIo);
         let _ = tx.send(());
     });
@@ -492,7 +496,10 @@ fn preview_sync_folder(core: CoreState<'_>, root: String) -> CmdResult<FolderPre
 #[tauri::command(async)]
 fn sync_now(core: CoreState<'_>) -> CmdResult<Snapshot> {
     let svc = core.svc()?;
-    run_cycle(&svc, &RealIo);
+    {
+        let _cycle = guard(&core.cycle_lock);
+        run_cycle(&svc, &RealIo);
+    }
     let snapshot = guard(&svc).snapshot();
     Ok(snapshot)
 }
@@ -618,6 +625,12 @@ mod smoke {
     pub fn smoke_tray_toggle(app: AppHandle) {
         super::tray_toggle(&app);
     }
+
+    #[tauri::command(async)]
+    pub fn smoke_emit_changed(app: AppHandle) -> Result<(), String> {
+        use tauri::Emitter;
+        app.emit("state-changed", ()).map_err(|e| e.to_string())
+    }
 }
 
 fn tray_toggle(app: &AppHandle) {
@@ -732,7 +745,10 @@ fn spawn_sync(app: AppHandle, core: Arc<Core>, svc: Arc<Mutex<Service>>) {
             if due.is_some_and(|d| d <= now) || next_periodic <= now {
                 due = None;
                 next_periodic = now + SYNC_PERIOD;
-                let changed = run_cycle(&svc, &RealIo);
+                let changed = {
+                    let _cycle = guard(&core.cycle_lock);
+                    run_cycle(&svc, &RealIo)
+                };
                 if changed {
                     refresh_tray(&app, &core);
                 }
@@ -823,6 +839,7 @@ pub fn run() {
                 tray: Mutex::new(None),
                 quitting: AtomicBool::new(false),
                 exit_done: AtomicBool::new(false),
+                cycle_lock: Arc::new(Mutex::new(())),
             });
             app.manage(Arc::clone(&core));
             build_tray(&handle, &core)?;
@@ -940,7 +957,8 @@ pub fn run() {
         smoke::smoke_report,
         smoke::smoke_close_window,
         smoke::smoke_window_visible,
-        smoke::smoke_tray_toggle
+        smoke::smoke_tray_toggle,
+        smoke::smoke_emit_changed
     ]);
 
     let app = match builder.build(tauri::generate_context!()) {

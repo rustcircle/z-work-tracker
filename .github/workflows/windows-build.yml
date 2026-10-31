@@ -1,0 +1,83 @@
+name: Windows build
+
+# Manual or tag only, as a fallback to the build from macOS. Signing is opt-in through repository
+# secrets: without them the build succeeds and says it is unsigned. With them, verification must pass.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+      AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+      AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
+      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            src-tauri/target
+          key: windows-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - run: pnpm install --frozen-lockfile
+      - name: Tests
+        run: |
+          pnpm exec tsc --noEmit
+          pnpm exec vitest run
+          cargo test --manifest-path src-tauri/Cargo.toml -p labor-core
+      - name: Prepare signing
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_CERT_PFX_BASE64) {
+            $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+            "WINDOWS_CERT_PFX_PATH=$pfx" >> $env:GITHUB_ENV
+          }
+          if ($env:AZURE_SIGNING_ACCOUNT) { cargo install trusted-signing-cli --locked }
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+          "SIGNTOOL_PATH=$($signtool.FullName)" >> $env:GITHUB_ENV
+      - name: Build the installer
+        run: pnpm tauri build --bundles nsis
+      - name: Verify the signature, or report unsigned
+        shell: pwsh
+        run: |
+          $files = @('src-tauri\target\release\labor-tracker.exe') + (Get-ChildItem 'src-tauri\target\release\bundle\nsis\*-setup.exe').FullName
+          $wanted = $env:AZURE_SIGNING_ACCOUNT -or $env:WINDOWS_CERT_THUMBPRINT -or $env:WINDOWS_CERT_PFX_BASE64
+          foreach ($file in $files) {
+            if ($wanted) {
+              & $env:SIGNTOOL_PATH verify /pa /v $file
+              if ($LASTEXITCODE -ne 0) { Write-Error "Signature verification failed: $file"; exit 1 }
+            } else {
+              Write-Host "UNSIGNED: no signing secrets are set, $file is not signed."
+            }
+          }
+      - name: Remove the temporary certificate
+        if: always()
+        shell: pwsh
+        run: if ($env:WINDOWS_CERT_PFX_PATH) { Remove-Item $env:WINDOWS_CERT_PFX_PATH -Force -ErrorAction SilentlyContinue }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: labor-tracker-windows
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          retention-days: 14
