@@ -1,5 +1,6 @@
 //! Validation of everything entering the core from the UI or from another device's file.
 
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use chrono_tz::Tz;
@@ -7,7 +8,8 @@ use serde_json::Value;
 
 use crate::error::CoreError;
 use crate::model::{
-    DeviceFile, Project, RateVersion, RoundingVersion, Shared, ShiftVersion, Stamp, Task,
+    BillingSummary, DeviceFile, Project, RateVersion, RoundingVersion, Shared, ShiftVersion, Stamp,
+    Task,
 };
 use crate::time::Ts;
 
@@ -206,7 +208,57 @@ fn check_project(p: &Project) -> Result<(), CoreError> {
     if let Some(z) = &p.client_zone {
         parse_zone(z)?;
     }
+    if p.fixed_fee_cents
+        .is_some_and(|c| !(0..=MAX_CENTS).contains(&c))
+    {
+        return Err(bad("a fixed fee is out of range"));
+    }
+    if p.fee_currency.as_deref().is_some_and(|c| !is_currency(c)) {
+        return Err(bad("a fee currency is not supported"));
+    }
     Ok(())
+}
+
+/// A hundred billion in either currency: far past real use and far from overflowing in a sum.
+const MAX_CENTS: i64 = 10_000_000_000_000;
+/// A summary row is one task on one day; a few years' worth bounds any total.
+const MAX_ROW_SECS: i64 = 10 * 366 * 86_400;
+const MAX_ROWS: usize = 100_000;
+
+fn check_cents(cents: &BTreeMap<String, i64>) -> Result<(), CoreError> {
+    for (currency, c) in cents {
+        if !is_currency(currency) || !(-MAX_CENTS..=MAX_CENTS).contains(c) {
+            return Err(bad("a billing summary holds an invalid amount"));
+        }
+    }
+    Ok(())
+}
+
+fn check_summary(b: &BillingSummary) -> Result<(), CoreError> {
+    let prefix_ok = !b.prefix.is_empty()
+        && b.prefix.len() <= 16
+        && b.prefix.bytes().all(|c| c.is_ascii_alphanumeric());
+    if !prefix_ok || b.reference != format!("{}-{:03}", b.prefix, b.number) {
+        return Err(bad("a billing summary has an invalid reference"));
+    }
+    if b.number > 1_000_000_000 {
+        return Err(bad("a billing summary number is out of range"));
+    }
+    check_date(&b.from, "a summary date")?;
+    check_date(&b.to, "a summary date")?;
+    parse_zone(&b.zone)?;
+    if b.rows.len() > MAX_ROWS {
+        return Err(bad("a billing summary has too many rows"));
+    }
+    for r in &b.rows {
+        check_date(&r.day, "a summary row date")?;
+        let secs = [r.exact_secs, r.pause_secs, r.billable_secs];
+        if secs.iter().any(|s| !(0..=MAX_ROW_SECS).contains(s)) {
+            return Err(bad("a billing summary row is out of range"));
+        }
+        check_cents(&r.cents)?;
+    }
+    check_cents(&b.totals)
 }
 
 fn check_task(t: &Task) -> Result<(), CoreError> {
@@ -245,6 +297,16 @@ fn check_id(id: &str) -> Result<(), CoreError> {
         Err(bad("an id has an invalid length"))
     } else {
         Ok(())
+    }
+}
+
+/// A record's map key and id must agree, or it could never be found to change or void.
+fn check_key(key: &str, id: &str) -> Result<(), CoreError> {
+    check_id(id)?;
+    if key == id {
+        Ok(())
+    } else {
+        Err(bad("a record's id does not match its key"))
     }
 }
 
@@ -381,41 +443,43 @@ fn check_phase2(s: &Shared, now: Ts) -> Result<(), CoreError> {
             return Err(bad("a task has too many tags"));
         }
     }
-    for g in s.gaps.values() {
-        check_id(&g.id)?;
+    for (id, g) in &s.gaps {
+        check_key(id, &g.id)?;
         check_span(g.start, g.end, now, "time away")?;
         check_stamp(&g.decision_stamp, now)?;
     }
-    for p in s.pauses.values() {
-        check_id(&p.id)?;
+    for (id, p) in &s.pauses {
+        check_key(id, &p.id)?;
         check_span(p.start, p.end, now, "a billable pause")?;
         check_plain(&p.note, MAX_NAME * 8, "a note")?;
         check_stamp(&p.stamp, now)?;
     }
-    for t in s.tags.values() {
-        check_id(&t.id)?;
+    for (id, t) in &s.tags {
+        check_key(id, &t.id)?;
         check_plain(&t.name, MAX_NAME, "a tag name")?;
         clean_color(&t.color)?;
         check_stamp(&t.stamp, now)?;
     }
-    for t in s.templates.values() {
-        check_id(&t.id)?;
+    for (id, t) in &s.templates {
+        check_key(id, &t.id)?;
         check_plain(&t.name, MAX_NAME * 4, "a template name")?;
         check_description(&t.description)?;
         check_stamp(&t.stamp, now)?;
     }
-    for b in s.summaries.values() {
-        check_id(&b.id)?;
+    for (id, b) in &s.summaries {
+        check_key(id, &b.id)?;
+        check_summary(b)?;
         check_plain(&b.reference, MAX_NAME, "a reference")?;
         check_time(b.created_at, now, "a summary date")?;
         check_stamp(&b.stamp, now)?;
     }
-    for p in s.prefixes.values() {
+    for (device, p) in &s.prefixes {
+        check_id(device)?;
         check_plain(&p.prefix, 16, "a reference prefix")?;
         check_stamp(&p.stamp, now)?;
     }
-    for a in s.audit_log.values() {
-        check_id(&a.id)?;
+    for (id, a) in &s.audit_log {
+        check_key(id, &a.id)?;
         check_time(a.at, now, "an audit entry")?;
         check_plain(&a.reason, MAX_NAME * 8, "an audit reason")?;
     }

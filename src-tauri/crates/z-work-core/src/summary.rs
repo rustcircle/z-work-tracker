@@ -9,11 +9,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::billing::{cents_from_numerator, day_of, task_days};
+use crate::billing::{cents_from_numerator, day_of, task_days, task_days_of};
 use crate::error::CoreError;
 use crate::machine::Ctx;
-use crate::model::{BillingSummary, BillingType, DevicePrefix, Segment, Shared, SummaryRow};
-use crate::pieces::{Piece, PieceKind};
+use crate::model::{
+    BillingSummary, BillingType, DevicePrefix, GapDecision, Segment, Shared, SummaryRow,
+};
+use crate::pieces::{Piece, PieceKind, pieces};
 use crate::time::Ts;
 use crate::validate::{check_date, parse_zone};
 
@@ -39,6 +41,8 @@ pub struct SummaryPreview {
     pub billable_secs: i64,
     /// Time in the period that is still running, so it isn't listed yet.
     pub running_excluded: bool,
+    /// Time away inside these segments with no decision yet. It is left out, and a summary freezes that.
+    pub unconfirmed_secs: i64,
 }
 
 fn view_has(ids: &[String], id: &str) -> bool {
@@ -91,7 +95,6 @@ impl Shared {
             projects: BTreeMap::from([(project.id.clone(), project.clone())]),
             rates: self.rates.clone(),
             rounding: self.rounding.clone(),
-            gaps: self.gaps.clone(),
             ..Shared::default()
         };
         view.tasks = self
@@ -114,7 +117,6 @@ impl Shared {
             }
             if !billed_segs.contains(s.id.as_str()) {
                 out.segment_ids.push(s.id.clone());
-                view.segments.insert(s.id.clone(), s.clone());
             }
         }
         for p in self.pauses.values().filter(|p| !p.deleted) {
@@ -123,28 +125,31 @@ impl Shared {
                 && !billed_pauses.contains(p.id.as_str())
             {
                 out.pause_ids.push(p.id.clone());
-                view.pauses.insert(p.id.clone(), p.clone());
             }
         }
-        // Time outside this view still blocks a pause from billing it twice: a voided copy in `view`
-        // doesn't count, and only a real span subtracts, so such pauses are clipped here instead.
-        for pause in view.pauses.values_mut() {
-            for seg in self.segments.values() {
-                if seg.task_id != pause.task_id || view_has(&out.segment_ids, &seg.id) {
-                    continue;
-                }
-                let Some((s, Some(e))) = seg.effective() else {
-                    continue;
-                };
-                if s <= pause.start && e > pause.start {
-                    pause.start = e.min(pause.end);
-                } else if s > pause.start && s < pause.end {
-                    pause.end = s;
-                }
-            }
-        }
+        out.unconfirmed_secs = self
+            .gaps
+            .values()
+            .filter(|g| {
+                g.decision == GapDecision::Pending && view_has(&out.segment_ids, &g.segment_id)
+            })
+            .map(|g| (g.end.secs() - g.start.secs()).max(0))
+            .fold(0, i64::saturating_add);
+        // Pieces come from the whole store, so a pause never bills what an already billed segment
+        // covers, and are then narrowed to what this summary lists.
         let open_end = |s: &Segment| s.end.unwrap_or(s.start);
-        for td in task_days(&view, tz, &open_end) {
+        let listed: Vec<_> = pieces(self, &open_end)
+            .into_iter()
+            .filter(|p| {
+                let ids = if p.kind == PieceKind::BillablePause {
+                    &out.pause_ids
+                } else {
+                    &out.segment_ids
+                };
+                view_has(ids, &p.source_id)
+            })
+            .collect();
+        for td in task_days_of(&view, tz, listed) {
             let Some(task) = view.tasks.get(&td.task_id) else {
                 continue;
             };
@@ -196,6 +201,19 @@ impl Shared {
             .collect()
     }
 
+    /// References on more than one live summary, which offline devices can produce.
+    #[must_use]
+    pub fn reference_clashes(&self) -> Vec<String> {
+        let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
+        for b in self.summaries.values().filter(|b| !b.voided) {
+            *seen.entry(b.reference.as_str()).or_insert(0) += 1;
+        }
+        seen.into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(r, _)| r.to_owned())
+            .collect()
+    }
+
     pub fn set_device_prefix(&mut self, ctx: &Ctx<'_>, raw: &str) -> Result<(), CoreError> {
         let prefix = raw.trim().to_uppercase();
         let ok =
@@ -230,14 +248,16 @@ impl Shared {
         if !self.prefixes.contains_key(ctx.device) {
             self.set_device_prefix(ctx, &prefix)?;
         }
+        // Across all devices: a prefix can change hands, and the number must not repeat under it.
         let number = self
             .summaries
             .values()
-            .filter(|b| b.device_id == ctx.device && b.prefix == prefix)
+            .filter(|b| b.prefix == prefix)
             .map(|b| b.number)
             .max()
             .unwrap_or(0)
-            + 1;
+            .checked_add(1)
+            .ok_or_else(|| CoreError::Validation("this prefix has run out of numbers".into()))?;
         let id = Uuid::new_v4().to_string();
         let reference = format!("{prefix}-{number:03}");
         self.summaries.insert(
@@ -481,11 +501,11 @@ pub fn summary_csv(b: &BillingSummary, project_name: &str) -> String {
         out.push_str("\r\n");
     };
     line(&["Not a tax document. For your own guidance only.".to_owned()]);
-    line(&["Reference".to_owned(), crate::csv::text(&b.reference)]);
-    line(&["Project".to_owned(), crate::csv::text(project_name)]);
+    line(&["Reference".to_owned(), crate::csv::neutralize(&b.reference)]);
+    line(&["Project".to_owned(), crate::csv::neutralize(project_name)]);
     line(&[
         "Period".to_owned(),
-        format!("{} to {} ({})", b.from, b.to, b.zone),
+        crate::csv::neutralize(&format!("{} to {} ({})", b.from, b.to, b.zone)),
     ]);
     let currencies: Vec<&String> = b.totals.keys().collect();
     let mut head: Vec<String> = [
@@ -497,7 +517,7 @@ pub fn summary_csv(b: &BillingSummary, project_name: &str) -> String {
     ]
     .map(str::to_owned)
     .to_vec();
-    head.extend(currencies.iter().map(|c| (*c).clone()));
+    head.extend(currencies.iter().map(|c| crate::csv::neutralize(c)));
     line(&head);
     #[allow(clippy::cast_precision_loss)]
     let hours = |s: i64| format!("{:.2}", s as f64 / 3600.0);
@@ -505,8 +525,8 @@ pub fn summary_csv(b: &BillingSummary, project_name: &str) -> String {
     let amount = |c: i64| format!("{:.2}", c as f64 / 100.0);
     for r in &b.rows {
         let mut cells = vec![
-            r.day.clone(),
-            crate::csv::text(&r.task_name),
+            crate::csv::neutralize(&r.day),
+            crate::csv::neutralize(&r.task_name),
             hours(r.exact_secs),
             hours(r.pause_secs),
             hours(r.billable_secs),
@@ -521,9 +541,24 @@ pub fn summary_csv(b: &BillingSummary, project_name: &str) -> String {
     let mut total = vec![
         "Total".to_owned(),
         String::new(),
-        hours(b.rows.iter().map(|r| r.exact_secs).sum()),
-        hours(b.rows.iter().map(|r| r.pause_secs).sum()),
-        hours(b.rows.iter().map(|r| r.billable_secs).sum()),
+        hours(
+            b.rows
+                .iter()
+                .map(|r| r.exact_secs)
+                .fold(0, i64::saturating_add),
+        ),
+        hours(
+            b.rows
+                .iter()
+                .map(|r| r.pause_secs)
+                .fold(0, i64::saturating_add),
+        ),
+        hours(
+            b.rows
+                .iter()
+                .map(|r| r.billable_secs)
+                .fold(0, i64::saturating_add),
+        ),
     ];
     total.extend(
         currencies
@@ -542,6 +577,26 @@ mod tests {
     use crate::machine::{ProjectInput, RateInput};
 
     const NOW: &str = "2026-03-20T12:00:00Z";
+
+    fn at(device: &str) -> Ctx<'_> {
+        Ctx {
+            now: Ts::parse("2026-03-20T12:00:00Z").unwrap(),
+            device,
+        }
+    }
+    fn rate_for(s: &mut Shared, project: &str) {
+        s.set_rate(
+            &at("pc-a"),
+            &RateInput {
+                project_id: project.to_owned(),
+                rate_cents: Some(6000),
+                currency: "EUR".into(),
+                effective_from: Some("2026-01-01T00:00:00Z".to_owned()),
+                confirm_retroactive: true,
+            },
+        )
+        .unwrap();
+    }
 
     fn ts(x: &str) -> Ts {
         Ts::parse(x).unwrap()
@@ -773,5 +828,181 @@ mod tests {
         assert!(text.starts_with("Not a tax document"));
         assert!(text.contains("'=HYPERLINK"));
         assert!(text.contains("60.00"));
+    }
+
+    #[test]
+    fn a_reference_number_never_repeats_when_a_prefix_changes_hands() {
+        let (mut s, p, t) = crate::billing::tests::fixture(None);
+        rate_for(&mut s, &p);
+        crate::billing::tests::seg(
+            &mut s,
+            &t,
+            "s1",
+            "2026-03-01T09:00:00Z",
+            "2026-03-01T10:00:00Z",
+        );
+        let a = at("pc-a");
+        let first = s.create_summary(&a, &req(&p)).unwrap();
+        assert_eq!(s.summaries[&first].reference, "A-001");
+        s.set_device_prefix(&a, "X").unwrap();
+        let b = at("pc-b");
+        s.set_device_prefix(&b, "A").unwrap();
+        crate::billing::tests::seg(
+            &mut s,
+            &t,
+            "s2",
+            "2026-03-02T09:00:00Z",
+            "2026-03-02T10:00:00Z",
+        );
+        let second = s.create_summary(&b, &req(&p)).unwrap();
+        assert_eq!(s.summaries[&second].reference, "A-002");
+        assert!(s.reference_clashes().is_empty());
+        // Two offline devices can still pick the same one: that is reported.
+        let mut copy = s.summaries[&second].clone();
+        copy.id = "other".into();
+        s.summaries.insert("other".into(), copy);
+        assert_eq!(s.reference_clashes(), vec!["A-002".to_owned()]);
+        s.summaries.get_mut("other").unwrap().voided = true;
+        assert!(s.reference_clashes().is_empty());
+    }
+
+    #[test]
+    fn a_pause_around_a_billed_segment_keeps_its_unbilled_time_on_the_summary() {
+        let (mut s, p, t) =
+            crate::billing::tests::fixture(Some((0, crate::model::RoundMethod::Nearest)));
+        rate_for(&mut s, &p);
+        crate::billing::tests::seg(
+            &mut s,
+            &t,
+            "billed",
+            "2026-03-01T10:30:00Z",
+            "2026-03-01T11:00:00Z",
+        );
+        let c = at("pc-a");
+        s.create_summary(&c, &req(&p)).unwrap();
+        s.pauses.insert(
+            "pz".into(),
+            crate::model::BillablePause {
+                id: "pz".into(),
+                task_id: t.clone(),
+                start: Ts::parse("2026-03-01T10:00:00Z").unwrap(),
+                end: Ts::parse("2026-03-01T12:00:00Z").unwrap(),
+                note: String::new(),
+                deleted: false,
+                stamp: crate::model::Stamp::default(),
+            },
+        );
+        let preview = s.summary_preview(&req(&p)).unwrap();
+        assert_eq!(preview.pause_secs, 5400, "both sides of the billed segment");
+    }
+
+    #[test]
+    fn the_same_pause_marked_twice_bills_once_in_either_order() {
+        let (mut s, p, t) =
+            crate::billing::tests::fixture(Some((0, crate::model::RoundMethod::Nearest)));
+        rate_for(&mut s, &p);
+        for id in ["pa", "pb"] {
+            s.pauses.insert(
+                id.into(),
+                crate::model::BillablePause {
+                    id: id.into(),
+                    task_id: t.clone(),
+                    start: Ts::parse("2026-03-01T10:00:00Z").unwrap(),
+                    end: Ts::parse("2026-03-01T11:00:00Z").unwrap(),
+                    note: String::new(),
+                    deleted: false,
+                    stamp: crate::model::Stamp::default(),
+                },
+            );
+        }
+        let preview = s.summary_preview(&req(&p)).unwrap();
+        assert_eq!(preview.pause_secs, 3600);
+        assert_eq!(preview.billable_secs, 3600);
+    }
+
+    #[test]
+    fn a_preview_says_how_much_time_away_it_leaves_out() {
+        let (mut s, p, t) = crate::billing::tests::fixture(None);
+        rate_for(&mut s, &p);
+        crate::billing::tests::seg(
+            &mut s,
+            &t,
+            "s1",
+            "2026-03-01T09:00:00Z",
+            "2026-03-01T12:00:00Z",
+        );
+        s.add_gap(
+            &at("pc-a"),
+            "s1",
+            Ts::parse("2026-03-01T10:00:00Z").unwrap(),
+            Ts::parse("2026-03-01T11:00:00Z").unwrap(),
+            crate::model::GapKind::Sleep,
+        )
+        .unwrap();
+        let preview = s.summary_preview(&req(&p)).unwrap();
+        assert_eq!(preview.unconfirmed_secs, 3600);
+        assert_eq!(preview.exact_secs, 2 * 3600);
+    }
+
+    #[test]
+    fn hostile_summary_payloads_are_refused_at_the_sync_check() {
+        let (mut s, p, t) = crate::billing::tests::fixture(None);
+        rate_for(&mut s, &p);
+        crate::billing::tests::seg(
+            &mut s,
+            &t,
+            "s1",
+            "2026-03-01T09:00:00Z",
+            "2026-03-01T10:00:00Z",
+        );
+        let id = s.create_summary(&at("pc-a"), &req(&p)).unwrap();
+        let now = Ts::parse("2026-06-01T00:00:00Z").unwrap();
+        crate::validate::check_shared(&s, now).unwrap();
+        type Attack = fn(&mut BillingSummary);
+        let attacks: [Attack; 8] = [
+            |b| b.number = u32::MAX,
+            |b| b.rows[0].exact_secs = i64::MAX,
+            |b| b.from = "=HYPERLINK(1)".into(),
+            |b| b.rows[0].day = "=1+1".into(),
+            |b| b.zone = "=cmd".into(),
+            |b| b.reference = "=1+1".into(),
+            |b| {
+                b.totals.insert("=X".into(), 1);
+            },
+            |b| {
+                b.totals.insert("EUR".into(), i64::MAX);
+            },
+        ];
+        for attack in attacks {
+            let mut bad = s.clone();
+            attack(bad.summaries.get_mut(&id).unwrap());
+            assert!(crate::validate::check_shared(&bad, now).is_err());
+        }
+        let mut wrong_key = s.clone();
+        let moved = wrong_key.summaries.remove(&id).unwrap();
+        wrong_key.summaries.insert("elsewhere".into(), moved);
+        assert!(crate::validate::check_shared(&wrong_key, now).is_err());
+        let mut fee = s.clone();
+        fee.projects.get_mut(&p).unwrap().fixed_fee_cents = Some(-5);
+        assert!(crate::validate::check_shared(&fee, now).is_err());
+    }
+
+    #[test]
+    fn a_name_with_a_comma_is_quoted_once_and_a_formula_is_neutralised() {
+        let (mut s, p, t) = crate::billing::tests::fixture(None);
+        rate_for(&mut s, &p);
+        s.tasks.get_mut(&t).unwrap().name = "Logo, phase 2".into();
+        crate::billing::tests::seg(
+            &mut s,
+            &t,
+            "s1",
+            "2026-03-01T09:00:00Z",
+            "2026-03-01T10:00:00Z",
+        );
+        let id = s.create_summary(&at("pc-a"), &req(&p)).unwrap();
+        let csv = summary_csv(&s.summaries[&id], "=evil()");
+        assert!(csv.contains(",\"Logo, phase 2\","), "{csv}");
+        assert!(!csv.contains("\"\"\""), "{csv}");
+        assert!(csv.contains("'=evil()"), "{csv}");
     }
 }

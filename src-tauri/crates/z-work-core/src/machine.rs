@@ -452,6 +452,7 @@ impl Shared {
         if t.description != description {
             t.description = description;
             t.description_stamp = ctx.next(&t.description_stamp);
+            clear_missing_active(t, ctx);
         }
         if !input.tags.is_empty() && t.tags != input.tags {
             t.tags = input.tags.clone();
@@ -507,6 +508,7 @@ impl Shared {
             if t.description != d {
                 t.description = d;
                 t.description_stamp = ctx.next(&t.description_stamp);
+                clear_missing_active(t, ctx);
             }
         }
         if let Some(tags) = &patch.tags
@@ -596,10 +598,12 @@ impl Shared {
             .filter_map(|s| s.end)
             .max(); // own device only: another's clock may run ahead
         let start = last_end.map_or(ctx.now, |e| e.max(ctx.now));
-        let subtask_id = self
-            .tasks
-            .get(task_id)
-            .and_then(|t| t.active_subtask.clone());
+        let subtask_id = self.tasks.get(task_id).and_then(|t| {
+            // Merged state can hold an active id whose item is gone.
+            t.active_subtask
+                .clone()
+                .filter(|a| subtasks::items(&t.description).iter().any(|i| i.id == *a))
+        });
         let id = new_id();
         self.segments.insert(
             id.clone(),
@@ -952,6 +956,18 @@ impl Shared {
         self.settings
             .insert(key.to_owned(), SettingEntry { value, stamp });
         Ok(())
+    }
+}
+
+/// An edit removed the active subtask's item: no subtask is active now.
+fn clear_missing_active(t: &mut Task, ctx: &Ctx<'_>) {
+    let gone = t
+        .active_subtask
+        .as_ref()
+        .is_some_and(|a| !subtasks::items(&t.description).iter().any(|i| i.id == *a));
+    if gone {
+        t.active_subtask = None;
+        t.active_subtask_stamp = ctx.next(&t.active_subtask_stamp);
     }
 }
 

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::machine::stamp_order;
 use crate::model::{RateVersion, RoundMethod, Segment, Shared};
-use crate::pieces::{PieceKind, pieces};
+use crate::pieces::{Piece, PieceKind, pieces};
 use crate::time::Ts;
 use crate::validate::is_currency;
 
@@ -263,6 +263,11 @@ fn allocate_rounding(buckets: &mut [Bucket], mut diff: i64) {
 /// Builds every task-day row. `end_of` decides the end of an open segment.
 #[must_use]
 pub fn task_days(shared: &Shared, tz: Tz, end_of: &dyn Fn(&Segment) -> Ts) -> Vec<TaskDay> {
+    task_days_of(shared, tz, pieces(shared, end_of))
+}
+
+/// The task-day rows of these pieces, using the projects, rates and rounding in `shared`.
+pub fn task_days_of(shared: &Shared, tz: Tz, pieces: Vec<Piece>) -> Vec<TaskDay> {
     #[derive(Default)]
     struct Acc {
         first: Option<Ts>,
@@ -274,7 +279,7 @@ pub fn task_days(shared: &Shared, tz: Tz, end_of: &dyn Fn(&Segment) -> Ts) -> Ve
     for t in shared.tasks.values().filter(|t| t.is_live()) {
         project_of.insert(t.id.as_str(), t.project_id.as_str());
     }
-    for piece in pieces(shared, end_of) {
+    for piece in pieces {
         let Some(project_id) = project_of.get(piece.task_id.as_str()).copied() else {
             continue;
         };
@@ -1055,6 +1060,56 @@ pub(crate) mod tests {
                         r["from"].as_str().unwrap(),
                     );
                 }
+                if case["fixedFee"].as_bool().unwrap_or(false) {
+                    s.projects.get_mut(&p).unwrap().billing_type =
+                        crate::model::BillingType::FixedFee;
+                }
+                for (i, pair) in case["pauses"].as_array().into_iter().flatten().enumerate() {
+                    let id = format!("pause{i}");
+                    s.pauses.insert(
+                        id.clone(),
+                        crate::model::BillablePause {
+                            id,
+                            task_id: t.clone(),
+                            start: Ts::parse(pair[0].as_str().unwrap()).unwrap(),
+                            end: Ts::parse(pair[1].as_str().unwrap()).unwrap(),
+                            note: String::new(),
+                            deleted: false,
+                            stamp: crate::model::Stamp::default(),
+                        },
+                    );
+                }
+                for (i, pair) in case["thinking"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    // A segment covering it, with the whole of it marked as thinking.
+                    let sid = format!("t{i}");
+                    seg(
+                        &mut s,
+                        &t,
+                        &sid,
+                        pair[0].as_str().unwrap(),
+                        pair[1].as_str().unwrap(),
+                    );
+                    let gid = format!("g{i}");
+                    s.gaps.insert(
+                        gid.clone(),
+                        crate::model::IdleGap {
+                            id: gid,
+                            segment_id: sid,
+                            task_id: t.clone(),
+                            device_id: DEV.into(),
+                            start: Ts::parse(pair[0].as_str().unwrap()).unwrap(),
+                            end: Ts::parse(pair[1].as_str().unwrap()).unwrap(),
+                            kind: crate::model::GapKind::Idle,
+                            decision: crate::model::GapDecision::Thinking,
+                            decision_stamp: crate::model::Stamp::default(),
+                        },
+                    );
+                }
                 for (i, seg_pair) in case["segments"].as_array().unwrap().iter().enumerate() {
                     seg(
                         &mut s,
@@ -1070,6 +1125,7 @@ pub(crate) mod tests {
                 for (g, w) in got.iter().zip(want) {
                     assert_eq!(g.day.to_string(), w["day"].as_str().unwrap(), "{name}");
                     assert_eq!(g.exact_secs, w["exact"].as_i64().unwrap(), "{name}");
+                    assert_eq!(g.pause_secs, w["pause"].as_i64().unwrap_or(0), "{name}");
                     assert_eq!(g.billable_secs, w["billable"].as_i64().unwrap(), "{name}");
                     assert_eq!(
                         g.rounded_to_zero,

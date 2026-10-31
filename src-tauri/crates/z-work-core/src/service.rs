@@ -11,15 +11,15 @@ use crate::backup::{self, BackupInfo};
 use crate::catalog::{TagInput, TemplateInput};
 use crate::detect::Detected;
 use crate::error::CoreError;
-use crate::idle::IdleTracker;
+use crate::idle::{IdleTracker, NewGap};
 use crate::machine::{
     Ctx, ProjectInput, RateInput, RequiredField, RoundingInput, ShiftInput, TaskInput, TaskPatch,
     Transition, cold_required, doc_has_text,
 };
 use crate::merge::merge;
 use crate::model::{
-    AuditEntry, DeviceFile, GapDecision, LocalFile, PauseReason, PendingCopy, RemoteDevice,
-    SCHEMA_VERSION, Segment, Shared, SyncTarget, Task, TaskState, Theme,
+    AuditEntry, DeviceFile, GapDecision, GapKind, LocalFile, PauseReason, PendingCopy,
+    RemoteDevice, SCHEMA_VERSION, Segment, Shared, SyncTarget, Task, TaskState, Theme,
 };
 use crate::persist::{self, Paths};
 use crate::pieces;
@@ -59,6 +59,8 @@ pub struct Service {
     reminder_quiet_until: Option<Ts>,
     /// The reminder last shown as a system notification, so it isn't repeated each minute.
     reminder_told: Option<Reminder>,
+    /// Time away found but not yet saved, with the segment it belongs to. Kept until a save works.
+    unsaved_gaps: Vec<(String, NewGap)>,
 }
 
 /// The setting's value in minutes, or the default when it was never set. `null` or 0 is off.
@@ -95,8 +97,10 @@ impl Service {
             idle: IdleTracker::default(),
             reminder_quiet_until: None,
             reminder_told: None,
+            unsaved_gaps: Vec::new(),
         };
         svc.file.data.seed_tags();
+        svc.file.data.normalize();
         for n in outcome.notices {
             svc.notify("warning", n);
         }
@@ -108,9 +112,10 @@ impl Service {
 
     fn recover_crash(&mut self) -> Result<(), CoreError> {
         let device = self.file.device_id.clone();
-        if self.file.data.own_open_segments(&device).is_empty() {
+        let away = self.file.prefs.away_since.take();
+        let Some(segment) = self.file.data.own_open_segments(&device).into_iter().next() else {
             return Ok(());
-        }
+        };
         let now = self.now();
         let ctx = Ctx {
             now,
@@ -118,6 +123,12 @@ impl Service {
         };
         // The last heartbeat is the last moment the app is known to have been alive.
         let at = self.file.last_heartbeat.unwrap_or(Ts(i64::MIN / 2));
+        // The app was alive but nobody was there, so that time stays unconfirmed.
+        if let Some(away) = away {
+            self.file
+                .data
+                .add_gap(&ctx, &segment, away, at, GapKind::Idle);
+        }
         let names = self
             .file
             .data
@@ -264,6 +275,7 @@ impl Service {
 
     pub fn start_task(&mut self, id: &str) -> Result<Transition, CoreError> {
         self.check_cold_fields(id)?;
+        self.settle_away()?;
         let out = self.mutate(|f, c| {
             let out = f.data.start(c, id)?;
             Ok(Self::with_beat(f, c, out))
@@ -278,6 +290,7 @@ impl Service {
         if !self.warm {
             return Err(CoreError::ColdStartRequired);
         }
+        self.settle_away()?;
         let out = self.mutate(|f, c| {
             let out = f.data.resume(c, id)?;
             Ok(Self::with_beat(f, c, out))
@@ -287,6 +300,7 @@ impl Service {
     }
 
     pub fn pause_task(&mut self, id: &str) -> Result<(), CoreError> {
+        self.settle_away()?;
         self.mutate(|f, c| {
             f.data
                 .pause(c, id)
@@ -295,6 +309,7 @@ impl Service {
     }
 
     pub fn stop_task(&mut self, id: &str) -> Result<(), CoreError> {
+        self.settle_away()?;
         self.mutate(|f, c| f.data.stop(c, id))
     }
 
@@ -363,6 +378,7 @@ impl Service {
         task: &str,
         subtask: Option<&str>,
     ) -> Result<(), CoreError> {
+        self.settle_away()?;
         self.mutate(|f, c| f.data.set_active_subtask(c, task, subtask))
     }
     pub fn save_tag(&mut self, input: &TagInput) -> Result<String, CoreError> {
@@ -423,19 +439,42 @@ impl Service {
             idle_secs,
             u64::try_from(threshold).unwrap_or(0) * 60,
         );
-        let Some(segment) = running else {
-            return Ok(false);
-        };
-        if gaps.is_empty() {
+        if let Some(segment) = running {
+            self.unsaved_gaps
+                .extend(gaps.into_iter().map(|g| (segment.clone(), g)));
+        }
+        self.save_away()
+    }
+
+    /// Writes found time away and the absence in progress. True when time away was recorded.
+    fn save_away(&mut self) -> Result<bool, CoreError> {
+        let away = self.idle.away_since();
+        if self.unsaved_gaps.is_empty() && self.file.prefs.away_since == away {
             return Ok(false);
         }
+        let gaps = self.unsaved_gaps.clone();
         self.mutate(|f, c| {
-            for g in &gaps {
-                f.data.add_gap(c, &segment, g.start, g.end, g.kind);
+            for (segment, g) in &gaps {
+                f.data.add_gap(c, segment, g.start, g.end, g.kind);
             }
+            f.prefs.away_since = away;
             Ok(())
         })?;
-        Ok(true)
+        self.unsaved_gaps.clear();
+        Ok(!gaps.is_empty())
+    }
+
+    /// Every path that closes the running segment comes through here first, so time away already
+    /// under way is recorded and never silently counts as work.
+    fn settle_away(&mut self) -> Result<(), CoreError> {
+        let device = self.file.device_id.clone();
+        let running = self.file.data.own_open_segments(&device).into_iter().next();
+        let gaps = self.idle.settle(self.now());
+        if let Some(segment) = running {
+            self.unsaved_gaps
+                .extend(gaps.into_iter().map(|g| (segment.clone(), g)));
+        }
+        self.save_away().map(|_| ())
     }
 
     #[must_use]
@@ -561,6 +600,7 @@ impl Service {
         persist::save(&self.paths, &restored, self.now())?;
         self.file = restored;
         self.file.data.seed_tags();
+        self.file.data.normalize();
         self.recover_crash()?;
         persist::save(&self.paths, &self.file, self.now())?;
         self.revision += 1;
@@ -675,6 +715,7 @@ impl Service {
 
     /// The real exit: closes this device's open segments now and marks their tasks paused.
     pub fn on_exit(&mut self) -> Result<(), CoreError> {
+        self.settle_away()?;
         if self
             .file
             .data
@@ -705,6 +746,7 @@ impl Service {
             last_beat = last_beat.max(own.last_heartbeat);
             merged = merge(&merged, &own.data);
         }
+        merged.normalize();
         // An open segment of this device that the store doesn't hold belongs to a past run, whichever
         // file brought it back. Nothing is timing it now, so it closes at the last known heartbeat.
         for seg in merged.segments.values_mut() {
@@ -1012,6 +1054,13 @@ impl Service {
         }
 
         warnings.extend(self.local_error.clone());
+        let repeated = data.reference_clashes();
+        if !repeated.is_empty() {
+            warnings.push(format!(
+                "More than one billing summary uses the same reference: {}. Change a device's prefix and void and reissue one of them.",
+                repeated.join(", ")
+            ));
+        }
         let clashes: Vec<String> = data
             .prefix_clashes(own)
             .iter()
@@ -1683,5 +1732,138 @@ mod tests {
             });
             assert!(matches!(refused, Err(CoreError::Validation(_))), "{bad}");
         }
+    }
+
+    fn gap_total(s: &Service) -> i64 {
+        s.file()
+            .data
+            .gaps
+            .values()
+            .map(|g| g.end.secs() - g.start.secs())
+            .sum()
+    }
+
+    #[test]
+    fn leaving_while_away_records_the_time_on_every_path_that_closes_the_segment() {
+        for path in ["exit", "pause", "stop"] {
+            let dir = tempfile::tempdir().unwrap();
+            let clock = ManualClock::at(T0);
+            let (mut s, t) = running(dir.path(), &clock);
+            s.observe_activity(Some(0)).unwrap();
+            for _ in 0..3 {
+                clock.advance(5);
+                s.observe_activity(Some(3 * 3600)).unwrap();
+            }
+            assert_eq!(gap_total(&s), 0, "still away, nothing decided yet");
+            match path {
+                "exit" => s.on_exit().unwrap(),
+                "pause" => s.pause_task(&t).unwrap(),
+                _ => s.stop_task(&t).unwrap(),
+            }
+            assert!(gap_total(&s) > 0, "{path}");
+            assert_eq!(pending_gaps(&s).len(), 1, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_crash_while_away_still_leaves_the_time_unconfirmed() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        for _ in 0..3 {
+            clock.advance(5);
+            s.heartbeat().unwrap();
+            s.observe_activity(Some(1800)).unwrap();
+        }
+        assert!(s.file().prefs.away_since.is_some());
+        drop(s); // No exit: the process died.
+        clock.advance(600);
+        let s = open(dir.path(), &clock);
+        assert_eq!(pending_gaps(&s).len(), 1);
+        assert!(s.file().prefs.away_since.is_none());
+    }
+
+    #[test]
+    fn found_time_away_survives_a_save_that_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        clock.advance(3600);
+        let store = dir.path().join("z-work-data.json");
+        let keep = std::fs::read(&store).unwrap();
+        // A directory in the way of the temp file makes the write fail on every platform.
+        let tmp = dir.path().join("z-work-data.json.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(s.observe_activity(Some(0)).is_err());
+        assert!(pending_gaps(&s).is_empty());
+        std::fs::remove_dir_all(&tmp).unwrap();
+        std::fs::write(&store, keep).unwrap();
+        clock.advance(5);
+        assert!(s.observe_activity(Some(0)).unwrap());
+        assert_eq!(pending_gaps(&s).len(), 1);
+    }
+
+    #[test]
+    fn a_phase_1_task_list_gets_stable_ids_when_it_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        s.mutate(|f, _| {
+            f.data.tasks.get_mut(&t).unwrap().description = serde_json::json!({"type":"doc","content":[
+                {"type":"taskList","content":[
+                    {"type":"taskItem","attrs":{"checked":false},"content":[{"type":"paragraph","content":[{"type":"text","text":"One"}]}]},
+                    {"type":"taskItem","attrs":{"checked":false},"content":[{"type":"paragraph","content":[{"type":"text","text":"Two"}]}]}]}]});
+            Ok(())
+        })
+        .unwrap();
+        drop(s);
+        let mut s = open(dir.path(), &clock);
+        let ids: Vec<String> = crate::subtasks::items(&s.file().data.tasks[&t].description)
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(ids, vec![format!("{t}-0"), format!("{t}-1")]);
+        assert!(s.set_active_subtask(&t, Some("")).is_err());
+        assert!(s.set_active_subtask(&t, Some(&ids[1])).is_ok());
+    }
+
+    #[test]
+    fn removing_the_active_subtask_clears_it_and_new_segments_do_not_use_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let listed = serde_json::json!({"type":"doc","content":[{"type":"taskList","content":[
+            {"type":"taskItem","attrs":{"checked":false},"content":[{"type":"paragraph","content":[{"type":"text","text":"One"}]}]}]}]});
+        let input = TaskInput {
+            description: listed,
+            ..tinput("T", &p)
+        };
+        let t = s.create_task(&input).unwrap();
+        let id = crate::subtasks::items(&s.file().data.tasks[&t].description)[0]
+            .id
+            .clone();
+        s.set_active_subtask(&t, Some(&id)).unwrap();
+        s.update_task(
+            &t,
+            &TaskInput {
+                description: doc("No list now"),
+                ..input.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(s.file().data.tasks[&t].active_subtask, None);
+        s.start_task(&t).unwrap();
+        assert!(
+            s.file()
+                .data
+                .segments
+                .values()
+                .all(|x| x.subtask_id.is_none())
+        );
     }
 }

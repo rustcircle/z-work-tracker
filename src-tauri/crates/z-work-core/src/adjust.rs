@@ -421,6 +421,9 @@ impl Shared {
         subtask_id: Option<&str>,
     ) -> Result<(), CoreError> {
         let task = self.live_task(task_id)?;
+        if subtask_id.is_some_and(str::is_empty) {
+            return Err(CoreError::NotFound("subtask"));
+        }
         if let Some(id) = subtask_id
             && !crate::subtasks::items(&task.description)
                 .iter()

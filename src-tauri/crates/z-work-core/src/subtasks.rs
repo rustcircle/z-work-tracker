@@ -187,11 +187,13 @@ pub fn assign_ids(doc: &Value, previous: Option<&Value>) -> Value {
         .collect();
     let mut out = doc.clone();
     let mut position = 0usize;
+    let mut seen: Vec<String> = Vec::new();
     map_items(&mut out, &mut |attrs, text| {
         let here = position;
         position += 1;
         let current = attrs.get("subtaskId").and_then(Value::as_str);
-        if current.is_some_and(|c| !c.is_empty()) {
+        if let Some(c) = current.filter(|c| !c.is_empty() && !seen.iter().any(|s| s == c)) {
+            seen.push(c.to_owned());
             return;
         }
         let by_text = old
@@ -204,9 +206,35 @@ pub fn assign_ids(doc: &Value, previous: Option<&Value>) -> Value {
             .or(by_place)
             .map_or_else(|| uuid::Uuid::new_v4().to_string(), |o| o.id.clone());
         used.push(id.clone());
+        seen.push(id.clone());
         attrs.insert("subtaskId".to_owned(), Value::String(id));
     });
     out
+}
+
+/// Fills in missing or repeated ids from the task id and position, so every device derives the same
+/// ones for a list written before subtasks had ids. `None` when nothing needs changing.
+#[must_use]
+pub fn stable_ids(task_id: &str, doc: &Value) -> Option<Value> {
+    let prefix: String = task_id.chars().take(40).collect();
+    let mut out = doc.clone();
+    let mut position = 0usize;
+    let mut seen: Vec<String> = Vec::new();
+    let mut changed = false;
+    map_items(&mut out, &mut |attrs, _| {
+        let here = position;
+        position += 1;
+        let current = attrs.get("subtaskId").and_then(Value::as_str);
+        if let Some(c) = current.filter(|c| !c.is_empty() && !seen.iter().any(|s| s == c)) {
+            seen.push(c.to_owned());
+            return;
+        }
+        let id = format!("{prefix}-{here}");
+        seen.push(id.clone());
+        attrs.insert("subtaskId".to_owned(), Value::String(id));
+        changed = true;
+    });
+    changed.then_some(out)
 }
 
 #[cfg(test)]
@@ -226,6 +254,25 @@ mod tests {
             })
             .collect();
         json!({"type":"doc","content":[{"type":"taskList","content":list}]})
+    }
+
+    #[test]
+    fn stable_ids_fill_gaps_the_same_way_on_every_device_and_repeats_are_fixed() {
+        let old = tasks_doc(&[("a", false, None), ("b", true, None)]);
+        let once = stable_ids("task-1", &old).unwrap();
+        assert_eq!(once, stable_ids("task-1", &old).unwrap());
+        let ids: Vec<String> = items(&once).into_iter().map(|i| i.id).collect();
+        assert_eq!(ids, vec!["task-1-0".to_owned(), "task-1-1".to_owned()]);
+        assert!(
+            stable_ids("task-1", &once).is_none(),
+            "settles after one pass"
+        );
+        let repeated = tasks_doc(&[("a", false, Some("x")), ("b", false, Some("x"))]);
+        let fixed = assign_ids(&repeated, None);
+        let ids: Vec<String> = items(&fixed).into_iter().map(|i| i.id).collect();
+        assert_eq!(ids[0], "x");
+        assert_ne!(ids[1], "x");
+        assert!(!ids[1].is_empty());
     }
 
     #[test]

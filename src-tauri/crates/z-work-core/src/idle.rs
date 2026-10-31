@@ -11,6 +11,8 @@ pub const JUMP_SECS: i64 = 120;
 pub struct IdleTracker {
     last_tick: Option<Ts>,
     away_since: Option<Ts>,
+    /// Time up to here is already on a gap. The OS's idle count can span a sleep, so it is clamped.
+    settled_until: Option<Ts>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,13 +41,14 @@ impl IdleTracker {
         if let Some(last) = last
             && now.secs() - last.secs() > JUMP_SECS
         {
+            // Idle time running into the sleep belongs to the same absence.
+            let start = self.away_since.take().map_or(last, |a| a.min(last));
             out.push(NewGap {
-                start: last,
+                start,
                 end: now,
                 kind: GapKind::Sleep,
             });
-            // The step already covers this time, so an idle span must not count it twice.
-            self.away_since = None;
+            self.settled_until = Some(now);
             return out;
         }
         let Some(idle) = idle_secs else {
@@ -54,7 +57,8 @@ impl IdleTracker {
         let idle = i64::try_from(idle).unwrap_or(i64::MAX);
         let threshold = i64::try_from(threshold_secs).unwrap_or(i64::MAX);
         if threshold > 0 && idle >= threshold {
-            let since = Ts(now.secs().saturating_sub(idle));
+            let since =
+                Ts(now.secs().saturating_sub(idle)).max(self.settled_until.unwrap_or(Ts(i64::MIN)));
             self.away_since = Some(self.away_since.map_or(since, |a| a.min(since)));
         } else if let Some(since) = self.away_since.take() {
             let end = Ts(now.secs().saturating_sub(idle));
@@ -69,9 +73,38 @@ impl IdleTracker {
         out
     }
 
-    /// The running task changed, or the app paused it: time before now is settled.
-    pub fn reset(&mut self) {
-        self.away_since = None;
+    /// When the current absence began, for a crash to recover from.
+    #[must_use]
+    pub fn away_since(&self) -> Option<Ts> {
+        self.away_since
+    }
+
+    /// The running segment is about to close, so an absence in progress has to be recorded now. The
+    /// user is back or the app is going away; the last tick is the last moment known to be away.
+    pub fn settle(&mut self, now: Ts) -> Vec<NewGap> {
+        let last = self.last_tick;
+        let away = self.away_since.take();
+        let mut out = Vec::new();
+        if let Some(l) = last
+            && now.secs() - l.secs() > JUMP_SECS
+        {
+            out.push(NewGap {
+                start: away.map_or(l, |a| a.min(l)),
+                end: now,
+                kind: GapKind::Sleep,
+            });
+            self.settled_until = Some(now);
+        } else if let (Some(a), Some(l)) = (away, last)
+            && l > a
+        {
+            out.push(NewGap {
+                start: a,
+                end: l,
+                kind: GapKind::Idle,
+            });
+            self.settled_until = Some(l);
+        }
+        out
     }
 }
 
@@ -124,6 +157,67 @@ mod tests {
         assert!(t.tick(Ts(T + 9000), false, Some(9000), 600).is_empty());
         assert!(t.tick(Ts(T + 9005), true, Some(9000), 0).is_empty());
         assert!(t.tick(Ts(T + 9010), true, Some(0), 0).is_empty());
+    }
+
+    #[test]
+    fn idle_before_a_sleep_is_part_of_the_same_gap() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(1200), 600);
+        t.tick(Ts(T + 5), true, Some(1205), 600);
+        let gaps = t.tick(Ts(T + 8 * 3600), true, Some(0), 600);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(
+            gaps[0].start,
+            Ts(T - 1200),
+            "starts when the user left, not at the sleep"
+        );
+        assert_eq!(gaps[0].end, Ts(T + 8 * 3600));
+    }
+
+    #[test]
+    fn an_idle_count_spanning_a_sleep_does_not_make_a_second_overlapping_gap() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 600);
+        let wake = T + 8 * 3600;
+        assert_eq!(t.tick(Ts(wake), true, Some(8 * 3600), 600).len(), 1);
+        t.tick(Ts(wake + 5), true, Some(8 * 3600 + 5), 600);
+        let later = t.tick(Ts(wake + 10), true, Some(0), 600);
+        for g in &later {
+            assert!(g.start >= Ts(wake), "{g:?}");
+        }
+    }
+
+    #[test]
+    fn settling_records_the_absence_in_progress_and_only_once() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(900), 600);
+        t.tick(Ts(T + 5), true, Some(905), 600);
+        let g = t.settle(Ts(T + 7));
+        assert_eq!(
+            g,
+            vec![NewGap {
+                start: Ts(T - 900),
+                end: Ts(T + 5),
+                kind: GapKind::Idle
+            }]
+        );
+        assert!(t.settle(Ts(T + 8)).is_empty());
+        assert!(t.away_since().is_none());
+    }
+
+    #[test]
+    fn settling_after_an_unnoticed_sleep_records_it() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 600);
+        let g = t.settle(Ts(T + 3600));
+        assert_eq!(
+            g,
+            vec![NewGap {
+                start: Ts(T),
+                end: Ts(T + 3600),
+                kind: GapKind::Sleep
+            }]
+        );
     }
 
     #[test]

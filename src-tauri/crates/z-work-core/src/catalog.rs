@@ -46,6 +46,22 @@ pub struct TemplateInput {
 }
 
 impl Shared {
+    /// Puts data written elsewhere into the form this version uses. Pure and deterministic, so devices
+    /// agree without a new stamp: subtask ids for lists older than them, and canonical colours.
+    pub fn normalize(&mut self) {
+        for t in self.tasks.values_mut() {
+            if let Some(d) = crate::subtasks::stable_ids(&t.id, &t.description) {
+                t.description = d;
+            }
+        }
+        for p in self.projects.values_mut() {
+            p.color.make_ascii_lowercase();
+        }
+        for t in self.tags.values_mut() {
+            t.color.make_ascii_lowercase();
+        }
+    }
+
     /// Adds the starter tags to a store that has never had any. A deleted tag stays deleted.
     pub fn seed_tags(&mut self) {
         if !self.tags.is_empty() {
@@ -95,7 +111,11 @@ impl Shared {
         }
         let (id, stamp) = match input.id.as_deref() {
             Some(id) => {
-                let old = self.tags.get(id).ok_or(CoreError::NotFound("tag"))?;
+                let old = self
+                    .tags
+                    .get(id)
+                    .filter(|t| !t.deleted)
+                    .ok_or(CoreError::NotFound("tag"))?;
                 (id.to_owned(), ctx.next(&old.stamp))
             }
             None => (Uuid::new_v4().to_string(), ctx.stamp()),
@@ -136,6 +156,7 @@ impl Shared {
                 let old = self
                     .templates
                     .get(id)
+                    .filter(|t| !t.deleted)
                     .ok_or(CoreError::NotFound("template"))?;
                 (id.to_owned(), ctx.next(&old.stamp))
             }

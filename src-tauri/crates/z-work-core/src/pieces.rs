@@ -133,7 +133,11 @@ pub fn pieces(shared: &Shared, end_of: &dyn Fn(&Segment) -> Ts) -> Vec<Piece> {
             push(&mut out, n, cursor, end, PieceKind::Work, true);
         }
     }
-    for pause in shared.pauses.values().filter(|p| !p.deleted) {
+    // Sorted by a replicated key, so every device gets the same result, and a span marked twice bills once.
+    let mut live_pauses: Vec<_> = shared.pauses.values().filter(|p| !p.deleted).collect();
+    live_pauses.sort_by(|a, b| (a.start, &a.id).cmp(&(b.start, &b.id)));
+    let mut billed_pauses: BTreeMap<&str, Vec<(Ts, Ts)>> = BTreeMap::new();
+    for pause in live_pauses {
         let Some(task) = shared.tasks.get(&pause.task_id).filter(|t| t.is_live()) else {
             continue;
         };
@@ -142,6 +146,13 @@ pub fn pieces(shared: &Shared, end_of: &dyn Fn(&Segment) -> Ts) -> Vec<Piece> {
         for span in spans.get(task.id.as_str()).into_iter().flatten() {
             subtract(&mut free, *span);
         }
+        for span in billed_pauses.get(task.id.as_str()).into_iter().flatten() {
+            subtract(&mut free, *span);
+        }
+        billed_pauses
+            .entry(pause.task_id.as_str())
+            .or_default()
+            .extend(free.iter().copied());
         for (i, (s, e)) in free.into_iter().enumerate() {
             out.push(Piece {
                 id: format!("{}:{i}", pause.id),

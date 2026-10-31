@@ -495,6 +495,9 @@ pub struct LocalPrefs {
     /// The highest budget alert already shown per project, so each threshold notifies once.
     #[serde(default)]
     pub budget_alerts_seen: BTreeMap<String, u8>,
+    /// When the current absence began, so a crash during it still records it as time away.
+    #[serde(default)]
+    pub away_since: Option<Ts>,
     /// A sync folder move whose previous folder couldn't be read, to retry later.
     #[serde(default)]
     pub pending_copy: Option<PendingCopy>,
