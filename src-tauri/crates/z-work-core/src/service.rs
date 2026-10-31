@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::adjust::{CorrectionInput, ManualEntryInput, PauseInput};
 use crate::backup::{self, BackupInfo};
 use crate::catalog::{TagInput, TemplateInput};
+use crate::colors;
 use crate::detect::Detected;
 use crate::error::CoreError;
 use crate::idle::{IdleTracker, NewGap};
@@ -33,7 +34,8 @@ use crate::sync::{APP_FOLDER, HungTargets, TargetStatus};
 use crate::time::{Clock, Ts};
 use crate::view::{
     BillingView, CopySource, LaunchView, Notice, PrefsView, ProjectView, RawSegmentView,
-    ReminderSettings, SegmentView, Snapshot, SubtaskView, SyncView, TargetView, TaskView,
+    ReminderSettings, SegmentView, SetupView, Snapshot, SubtaskView, SyncView, TargetView,
+    TaskView,
 };
 
 pub struct Service {
@@ -61,6 +63,23 @@ pub struct Service {
     reminder_told: Option<Reminder>,
     /// Time away found but not yet saved, with the segment it belongs to. Kept until a save works.
     unsaved_gaps: Vec<(String, NewGap)>,
+    /// Where a replacement colour's randomness comes from. Injected in tests.
+    random: Box<dyn FnMut() -> u64 + Send>,
+    color_replaced: Option<String>,
+    mica_available: bool,
+}
+
+/// Saved colours and what happened to them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ColorOutcome {
+    pub color: String,
+    /// What was asked for, when it matched another's exactly and so was replaced.
+    pub replaced: Option<String>,
+}
+
+fn default_random() -> u64 {
+    let (hi, _) = uuid::Uuid::new_v4().as_u64_pair();
+    hi
 }
 
 /// The setting's value in minutes, or the default when it was never set. `null` or 0 is off.
@@ -98,9 +117,13 @@ impl Service {
             reminder_quiet_until: None,
             reminder_told: None,
             unsaved_gaps: Vec::new(),
+            random: Box::new(default_random),
+            color_replaced: None,
+            mica_available: false,
         };
         svc.file.data.seed_tags();
         svc.file.data.normalize();
+        svc.replay_drafts();
         svc.file
             .data
             .raise_reference_marks(&mut svc.file.prefs.reference_marks);
@@ -210,11 +233,55 @@ impl Service {
         Ok(out)
     }
 
+    /// Replaces a colour that exactly matches another active project's. A saved colour left unchanged
+    /// stays, so two devices that picked the same one offline don't fight over it.
+    fn project_with_unique_color(
+        &mut self,
+        id: Option<&str>,
+        input: &ProjectInput,
+    ) -> Result<ProjectInput, CoreError> {
+        let taken: Vec<String> = self
+            .file
+            .data
+            .projects
+            .values()
+            .filter(|p| !p.deleted && !p.archived && Some(p.id.as_str()) != id)
+            .map(|p| p.color.clone())
+            .collect();
+        let unchanged = id
+            .and_then(|i| self.file.data.projects.get(i))
+            .is_some_and(|p| p.color.eq_ignore_ascii_case(&input.color));
+        self.color_replaced = None;
+        if unchanged {
+            return Ok(input.clone());
+        }
+        let (color, replaced) = colors::resolve(&input.color, &taken, &mut *self.random)?;
+        if replaced {
+            self.color_replaced = Some(input.color.clone());
+        }
+        Ok(ProjectInput {
+            color,
+            ..input.clone()
+        })
+    }
+
+    /// The colour just saved, and what was asked for if it had to be replaced.
+    pub fn take_color_replaced(&mut self) -> Option<String> {
+        self.color_replaced.take()
+    }
+
+    #[cfg(test)]
+    pub fn set_random(&mut self, random: Box<dyn FnMut() -> u64 + Send>) {
+        self.random = random;
+    }
+
     pub fn create_project(&mut self, input: &ProjectInput) -> Result<String, CoreError> {
-        self.mutate(|f, c| f.data.create_project(c, input))
+        let input = self.project_with_unique_color(None, input)?;
+        self.mutate(|f, c| f.data.create_project(c, &input))
     }
     pub fn update_project(&mut self, id: &str, input: &ProjectInput) -> Result<(), CoreError> {
-        self.mutate(|f, c| f.data.update_project(c, id, input))
+        let input = self.project_with_unique_color(Some(id), input)?;
+        self.mutate(|f, c| f.data.update_project(c, id, &input))
     }
     pub fn set_project_archived(&mut self, id: &str, archived: bool) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.set_project_archived(c, id, archived))
@@ -386,7 +453,134 @@ impl Service {
         self.mutate(|f, c| f.data.set_active_subtask(c, task, subtask))
     }
     pub fn save_tag(&mut self, input: &TagInput) -> Result<String, CoreError> {
-        self.mutate(|f, c| f.data.save_tag(c, input))
+        let own = input.id.as_deref();
+        let taken: Vec<String> = self
+            .file
+            .data
+            .tags
+            .values()
+            .filter(|t| !t.deleted && Some(t.id.as_str()) != own)
+            .map(|t| t.color.clone())
+            .collect();
+        let unchanged = own
+            .and_then(|i| self.file.data.tags.get(i))
+            .is_some_and(|t| t.color.eq_ignore_ascii_case(&input.color));
+        self.color_replaced = None;
+        let mut input = input.clone();
+        if !unchanged {
+            let (color, replaced) = colors::resolve(&input.color, &taken, &mut *self.random)?;
+            if replaced {
+                self.color_replaced = Some(input.color.clone());
+            }
+            input.color = color;
+        }
+        self.mutate(|f, c| f.data.save_tag(c, &input))
+    }
+
+    pub fn revert_shift_version(&mut self, version_id: &str) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.revert_shift_version(c, version_id))
+    }
+
+    pub fn request_remote_pause(&mut self, task_id: &str) -> Result<String, CoreError> {
+        self.mutate(|f, c| f.data.request_remote_pause(c, task_id))
+    }
+
+    /// Stores what is being typed, so a shutdown can't lose it. Validated like a real edit.
+    pub fn stash_draft(&self, task_id: &str, description: &Value) -> Result<(), CoreError> {
+        crate::validate::check_description(description)?;
+        let dir = &self.paths.dir;
+        let mut all = crate::drafts::read(dir);
+        all.insert(
+            task_id.to_owned(),
+            crate::drafts::Draft {
+                description: description.clone(),
+                at: self.now(),
+            },
+        );
+        crate::drafts::write(dir, &all)
+    }
+
+    pub fn clear_draft(&self, task_id: &str) -> Result<(), CoreError> {
+        let dir = &self.paths.dir;
+        let mut all = crate::drafts::read(dir);
+        if all.remove(task_id).is_some() {
+            crate::drafts::write(dir, &all)?;
+        }
+        Ok(())
+    }
+
+    /// Applies drafts newer than what was saved. A damaged or stale one is dropped.
+    fn replay_drafts(&mut self) {
+        let dir = self.paths.dir.clone();
+        let all = crate::drafts::read(&dir);
+        if all.is_empty() {
+            return;
+        }
+        let device = self.file.device_id.clone();
+        let mut restored = Vec::new();
+        for (task_id, draft) in all {
+            let Some(task) = self
+                .file
+                .data
+                .tasks
+                .get_mut(&task_id)
+                .filter(|t| t.is_live())
+            else {
+                continue;
+            };
+            let newer = draft.at > task.description_stamp.at;
+            if newer
+                && task.description != draft.description
+                && crate::validate::check_description(&draft.description).is_ok()
+            {
+                let ctx = Ctx {
+                    now: draft.at,
+                    device: &device,
+                };
+                task.description =
+                    crate::subtasks::assign_ids(&draft.description, Some(&task.description));
+                task.description_stamp = ctx.next(&task.description_stamp);
+                restored.push(task.name.clone());
+            }
+        }
+        if !restored.is_empty() {
+            self.notify(
+                "info",
+                format!(
+                    "Recovered an edit to {} that was typed just before the app closed.",
+                    restored.join(", ")
+                ),
+            );
+        }
+        let _ = crate::drafts::write(&dir, &BTreeMap::new());
+    }
+
+    pub fn set_setup_step(&mut self, step: u32) -> Result<(), CoreError> {
+        self.mutate(|f, _| {
+            f.prefs.setup_step = step;
+            Ok(())
+        })
+    }
+
+    /// Ends the first-run setup, which also answers the prompts it replaced.
+    pub fn finish_setup(&mut self) -> Result<(), CoreError> {
+        self.mutate(|f, _| {
+            f.prefs.setup_done = true;
+            f.prefs.sync_prompt_done = true;
+            f.prefs.client_zone_prompt_done = true;
+            Ok(())
+        })
+    }
+
+    pub fn set_mica(&mut self, on: bool) -> Result<(), CoreError> {
+        self.mutate(|f, _| {
+            f.prefs.mica = on;
+            Ok(())
+        })
+    }
+
+    pub fn set_mica_available(&mut self, available: bool) {
+        self.mica_available = available;
     }
     pub fn delete_tag(&mut self, id: &str) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.delete_tag(c, id))
@@ -945,6 +1139,7 @@ impl Service {
     #[must_use]
     pub fn export_source(&self) -> ExportSource {
         ExportSource {
+            only: None,
             data: self.file.data.clone(),
             device_id: self.file.device_id.clone(),
             remote_devices: self.file.remote_devices.clone(),
@@ -955,6 +1150,7 @@ impl Service {
     /// What `end_of` reads, without a copy of the data it doesn't read. For reports use `export_source`.
     fn end_source(&self) -> ExportSource {
         ExportSource {
+            only: None,
             data: Shared::default(),
             device_id: self.file.device_id.clone(),
             remote_devices: self.file.remote_devices.clone(),
@@ -1144,6 +1340,38 @@ impl Service {
         }
 
         warnings.extend(self.local_error.clone());
+        for (kind, colors) in [
+            (
+                "projects",
+                data.projects
+                    .values()
+                    .filter(|p| !p.deleted && !p.archived)
+                    .map(|p| (p.name.as_str(), p.color.as_str()))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "tags",
+                data.tags
+                    .values()
+                    .filter(|t| !t.deleted)
+                    .map(|t| (t.name.as_str(), t.color.as_str()))
+                    .collect::<Vec<_>>(),
+            ),
+        ] {
+            let mut by_color: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+            for (name, color) in colors {
+                by_color
+                    .entry(color.to_ascii_lowercase())
+                    .or_default()
+                    .push(name);
+            }
+            for names in by_color.values().filter(|n| n.len() > 1) {
+                warnings.push(format!(
+                    "These {kind} have the same colour, probably from two devices: {}. Change one if that is confusing.",
+                    names.join(", ")
+                ));
+            }
+        }
         let repeated = data.reference_clashes();
         if !repeated.is_empty() {
             warnings.push(format!(
@@ -1216,7 +1444,14 @@ impl Service {
                 hide_earnings: self.file.prefs.hide_earnings,
                 last_currency: self.file.prefs.last_currency.clone(),
                 client_zone_prompt_done: self.file.prefs.client_zone_prompt_done,
+                mica: self.file.prefs.mica,
+                mica_available: self.mica_available,
             },
+            setup: SetupView {
+                pending: !self.file.prefs.setup_done && !self.file.prefs.sync_prompt_done,
+                step: self.file.prefs.setup_step,
+            },
+            pause_requests: self.file.data.pause_requests.values().cloned().collect(),
             notices: self.notices.clone(),
             warnings,
             sync: SyncView {
@@ -2383,5 +2618,357 @@ mod tests {
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].kind, GapKind::Lock);
         assert_eq!(s.file().prefs.away_kind, None);
+    }
+
+    // ---- Gap-fill round
+
+    fn fixed_random() -> Box<dyn FnMut() -> u64 + Send> {
+        let mut n = 11u64;
+        Box::new(move || {
+            n = n.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            n >> 16
+        })
+    }
+
+    #[test]
+    fn an_exact_colour_clash_is_replaced_and_reported_and_a_similar_one_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.set_random(fixed_random());
+        let a = s
+            .create_project(&ProjectInput {
+                color: "#2563eb".into(),
+                ..pinput("A")
+            })
+            .unwrap();
+        assert_eq!(s.take_color_replaced(), None);
+        let b = s
+            .create_project(&ProjectInput {
+                color: "#2563EB".into(),
+                ..pinput("B")
+            })
+            .unwrap();
+        assert_eq!(s.take_color_replaced().as_deref(), Some("#2563EB"));
+        assert_ne!(s.file().data.projects[&b].color, "#2563eb");
+        let c = s
+            .create_project(&ProjectInput {
+                color: "#2563ec".into(),
+                ..pinput("C")
+            })
+            .unwrap();
+        assert_eq!(s.take_color_replaced(), None);
+        assert_eq!(s.file().data.projects[&c].color, "#2563ec");
+        // Archived projects don't count.
+        s.set_project_archived(&a, true).unwrap();
+        let d = s
+            .create_project(&ProjectInput {
+                color: "#2563eb".into(),
+                ..pinput("D")
+            })
+            .unwrap();
+        assert_eq!(s.take_color_replaced(), None);
+        assert_eq!(s.file().data.projects[&d].color, "#2563eb");
+        // Saving a colour left unchanged never replaces it.
+        s.mutate(|f, _| {
+            f.data.projects.get_mut(&c).unwrap().color = "#2563eb".into();
+            Ok(())
+        })
+        .unwrap();
+        s.update_project(
+            &c,
+            &ProjectInput {
+                color: "#2563eb".into(),
+                ..pinput("C renamed")
+            },
+        )
+        .unwrap();
+        assert_eq!(s.take_color_replaced(), None);
+        assert_eq!(s.file().data.projects[&c].color, "#2563eb");
+        assert!(
+            s.snapshot()
+                .warnings
+                .iter()
+                .any(|w| w.contains("same colour"))
+        );
+    }
+
+    #[test]
+    fn tags_follow_the_same_rule_within_their_own_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.set_random(fixed_random());
+        s.create_project(&ProjectInput {
+            color: "#123456".into(),
+            ..pinput("A")
+        })
+        .unwrap();
+        let tag = TagInput {
+            id: None,
+            name: "New".into(),
+            color: "#123456".into(),
+        };
+        let id = s.save_tag(&tag).unwrap();
+        assert_eq!(
+            s.take_color_replaced(),
+            None,
+            "a project's colour doesn't count"
+        );
+        let again = s
+            .save_tag(&TagInput {
+                name: "Again".into(),
+                ..tag
+            })
+            .unwrap();
+        assert_eq!(s.take_color_replaced().as_deref(), Some("#123456"));
+        assert_ne!(
+            s.file().data.tags[&again].color,
+            s.file().data.tags[&id].color
+        );
+    }
+
+    #[test]
+    fn colours_two_devices_picked_offline_stay_as_saved_after_a_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let a = s.create_project(&pinput("A")).unwrap();
+        let mut other = s.file().data.clone();
+        let mut twin = other.projects[&a].clone();
+        twin.id = "twin".into();
+        twin.name = "Twin".into();
+        other.projects.insert("twin".into(), twin);
+        s.absorb_remote(&other, BTreeMap::new(), Vec::new());
+        assert_eq!(
+            s.file().data.projects["twin"].color,
+            s.file().data.projects[&a].color
+        );
+        assert!(
+            s.snapshot()
+                .warnings
+                .iter()
+                .any(|w| w.contains("same colour"))
+        );
+    }
+
+    #[test]
+    fn setup_is_pending_only_on_a_fresh_store_resumes_and_answers_the_old_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        assert!(s.snapshot().setup.pending);
+        s.set_setup_step(3).unwrap();
+        drop(s);
+        let mut s = open(dir.path(), &clock);
+        assert!(s.snapshot().setup.pending);
+        assert_eq!(s.snapshot().setup.step, 3, "resumes");
+        s.finish_setup().unwrap();
+        let snap = s.snapshot();
+        assert!(!snap.setup.pending);
+        assert!(!snap.sync.prompt_pending);
+        assert!(snap.prefs.client_zone_prompt_done);
+        drop(s);
+        assert!(
+            !open(dir.path(), &clock).snapshot().setup.pending,
+            "shown once"
+        );
+    }
+
+    #[test]
+    fn an_existing_user_is_not_shown_setup() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.mark_sync_prompt_done().unwrap();
+        assert!(!s.snapshot().setup.pending);
+    }
+
+    #[test]
+    fn a_draft_typed_before_a_shutdown_is_recovered_once_and_a_stale_one_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        let stale = s.create_task(&tinput("Stale", &p)).unwrap();
+        clock.advance(5);
+        s.stash_draft(&t, &doc("Typed at the last moment")).unwrap();
+        s.stash_draft(&stale, &doc("Older than the save")).unwrap();
+        assert!(s.stash_draft(&t, &serde_json::json!("<b>no</b>")).is_err());
+        clock.advance(5);
+        s.update_task(
+            &stale,
+            &TaskInput {
+                description: doc("Saved later"),
+                ..tinput("Stale", &p)
+            },
+        )
+        .unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let mut s = open(dir.path(), &clock);
+        assert_eq!(
+            s.file().data.tasks[&t].description,
+            doc("Typed at the last moment")
+        );
+        assert_eq!(s.file().data.tasks[&stale].description, doc("Saved later"));
+        assert!(
+            s.snapshot()
+                .notices
+                .iter()
+                .any(|n| n.message.contains("Recovered"))
+        );
+        s.on_exit().unwrap();
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert!(s.snapshot().notices.is_empty(), "replayed once");
+    }
+
+    #[test]
+    fn a_saved_edit_clears_its_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        clock.advance(5);
+        s.stash_draft(&t, &doc("Draft")).unwrap();
+        s.clear_draft(&t).unwrap();
+        drop(s);
+        clock.advance(5);
+        let s = open(dir.path(), &clock);
+        assert_ne!(s.file().data.tasks[&t].description, doc("Draft"));
+    }
+
+    #[test]
+    fn a_pause_request_reaches_the_owner_who_closes_its_own_segment() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut owner, t) = running(dir_a.path(), &clock);
+        let mut asker = open(dir_b.path(), &clock);
+        clock.advance(600);
+        asker.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+        let seg_before = asker.file().data.segments.values().next().unwrap().clone();
+        let id = asker.request_remote_pause(&t).unwrap();
+        assert_eq!(
+            asker.request_remote_pause(&t).unwrap(),
+            id,
+            "asking twice is one request"
+        );
+        assert_eq!(
+            asker.file().data.segments.values().next().unwrap(),
+            &seg_before,
+            "the asker never rewrites the owner's segment"
+        );
+        assert!(
+            asker
+                .file()
+                .data
+                .audit_log
+                .values()
+                .any(|a| a.action == "requestPause")
+        );
+        let at = asker.file().data.pause_requests[&id].at;
+        clock.advance(600);
+        owner.absorb_remote(&asker.file().data.clone(), BTreeMap::new(), Vec::new());
+        let task = &owner.file().data.tasks[&t];
+        assert_eq!(task.state, TaskState::Paused);
+        assert_eq!(task.pause_reason, Some(PauseReason::RemoteRequest));
+        assert_eq!(
+            owner.file().data.segments.values().next().unwrap().end,
+            Some(at)
+        );
+        assert!(
+            owner
+                .file()
+                .data
+                .audit_log
+                .values()
+                .any(|a| a.action == "pausedByRequest")
+        );
+        // A request can't be made for a task running here.
+        owner.resume_task(&t).unwrap();
+        assert!(matches!(
+            owner.request_remote_pause(&t),
+            Err(CoreError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn one_shift_version_can_be_reverted_and_the_last_one_cannot() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let input = |from: &str, id: Option<String>| ShiftInput {
+            shift_id: id,
+            name: "Day".into(),
+            color: "#336699".into(),
+            start: "09:00".into(),
+            end: "17:00".into(),
+            weekdays: vec![1],
+            zone: "UTC".into(),
+            break_minutes: 0,
+            effective_from: from.into(),
+            retired: false,
+        };
+        let id = s.save_shift(&input("2026-01-01", None)).unwrap();
+        s.save_shift(&input("2026-02-01", Some(id.clone())))
+            .unwrap();
+        let later = s
+            .file()
+            .data
+            .shifts
+            .values()
+            .find(|v| v.effective_from == "2026-02-01")
+            .unwrap()
+            .id
+            .clone();
+        s.revert_shift_version(&later).unwrap();
+        assert!(s.file().data.shifts[&later].deleted);
+        let first = s
+            .file()
+            .data
+            .shifts
+            .values()
+            .find(|v| v.effective_from == "2026-01-01")
+            .unwrap()
+            .id
+            .clone();
+        assert!(matches!(
+            s.revert_shift_version(&first),
+            Err(CoreError::Conflict(_))
+        ));
+        assert!(matches!(
+            s.revert_shift_version(&later),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn billable_pause_audit_entries_name_the_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        clock.advance(7200);
+        let id = s
+            .mark_billable_pause(&crate::adjust::PauseInput {
+                task_id: t.clone(),
+                start: Ts::parse(T0).unwrap(),
+                end: Ts::parse("2026-03-01T09:30:00Z").unwrap(),
+                note: String::new(),
+            })
+            .unwrap();
+        s.unmark_billable_pause(&id).unwrap();
+        let entries = s.audit_entries(Some(&id));
+        assert_eq!(entries.len(), 2);
+        for e in entries {
+            let named = [&e.before, &e.after]
+                .iter()
+                .any(|v| v["taskId"] == t.as_str());
+            assert!(named, "{e:?}");
+        }
     }
 }

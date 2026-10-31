@@ -61,6 +61,14 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<String, C
     let day_zone: Tz = parse_zone(&request.day_zone)?;
     let my_zone: Tz = parse_zone(&request.my_zone)?;
     let client_zone: Option<Tz> = request.client_zone.as_deref().map(parse_zone).transpose()?;
+    let narrowed;
+    let source = match &request.selection {
+        Some(entries) => {
+            narrowed = source.narrowed(day_zone, entries)?;
+            &narrowed
+        }
+        None => source,
+    };
 
     let mut header = vec![
         "record_type".to_owned(),
@@ -194,6 +202,14 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<String, C
         let _ = write!(line, "{}\r\n", row.join(","));
         out.push_str(&line);
     }
+    if let Some(count) = source.selected_count() {
+        out.push_str(&quote("selection"));
+        out.push(',');
+        out.push_str(&quote(&format!(
+            "This export holds a selection of {count} task-day entries. Totals cover those only."
+        )));
+        out.push_str("\r\n");
+    }
     Ok(out)
 }
 
@@ -214,6 +230,7 @@ mod tests {
             include_earnings: earn,
             segment_shifts: Default::default(),
             analytics: vec![],
+            selection: None,
         }
     }
 

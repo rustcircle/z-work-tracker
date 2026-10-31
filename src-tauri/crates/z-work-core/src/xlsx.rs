@@ -647,6 +647,14 @@ fn write_adjustments_sheet(
 /// Builds the workbook bytes.
 pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<Vec<u8>, CoreError> {
     let tz: Tz = parse_zone(&request.day_zone)?;
+    let narrowed;
+    let source = match &request.selection {
+        Some(entries) => {
+            narrowed = source.narrowed(tz, entries)?;
+            &narrowed
+        }
+        None => source,
+    };
     let st = Styles::new();
     let mut wb = Workbook::new();
     write_labor_sheet(wb.add_worksheet(), source, &request.day_zone, tz, &st)?;
@@ -661,13 +669,25 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<Vec<u8>, 
         used.push("Earnings".to_owned());
         write_earnings_sheet(wb.add_worksheet(), source, &request.day_zone, tz, &st)?;
     }
-    for a in request
-        .analytics
-        .iter()
-        .filter(|a| request.include_earnings || !a.contains_prices)
-    {
-        let name = clean_sheet_name(&a.name, &mut used);
-        write_analytics_sheet(wb.add_worksheet(), a, &name, &st)?;
+    // The UI's analytics sheets describe everything logged, so a selection leaves them out and says so.
+    if let Some(count) = source.selected_count() {
+        let sheet = wb.add_worksheet();
+        sheet.set_name("About this selection").map_err(err)?;
+        sheet
+            .write_string(0, 0, format!("This export holds a selection of {count} task-day entries from the Timeline. Every sheet and total covers those only."))
+            .map_err(err)?;
+        sheet
+            .write_string(1, 0, "Analytics sheets are left out of a selection.")
+            .map_err(err)?;
+    } else {
+        for a in request
+            .analytics
+            .iter()
+            .filter(|a| request.include_earnings || !a.contains_prices)
+        {
+            let name = clean_sheet_name(&a.name, &mut used);
+            write_analytics_sheet(wb.add_worksheet(), a, &name, &st)?;
+        }
     }
     wb.save_to_buffer().map_err(err)
 }
@@ -811,6 +831,7 @@ pub(crate) mod tests {
                     contains_prices: true,
                 },
             ],
+            selection: None,
         };
         (src, req)
     }
@@ -872,6 +893,7 @@ pub(crate) mod tests {
         let (src, mut req) = sample();
         req.analytics.clear();
         let empty = ExportSource {
+            only: None,
             data: crate::model::Shared::default(),
             ..src
         };

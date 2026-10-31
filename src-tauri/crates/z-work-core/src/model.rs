@@ -106,6 +106,8 @@ pub enum PauseReason {
     SyncReconciled,
     /// A restored backup held this task running.
     BackupRestored,
+    /// Another device asked this one to pause it.
+    RemoteRequest,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -246,6 +248,18 @@ pub struct BillablePause {
     pub note: String,
     #[serde(default)]
     pub deleted: bool,
+    pub stamp: Stamp,
+}
+
+/// A request from another device to pause a task that seems to have been left running.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PauseRequest {
+    pub id: String,
+    pub task_id: String,
+    pub segment_id: String,
+    pub requested_by: String,
+    pub at: Ts,
     pub stamp: Stamp,
 }
 
@@ -446,6 +460,9 @@ pub struct Shared {
     pub prefixes: BTreeMap<String, DevicePrefix>,
     #[serde(default)]
     pub audit_log: BTreeMap<String, AuditEntry>,
+    /// Asks made from other devices to pause a running task. Only the owner closes its segment.
+    #[serde(default)]
+    pub pause_requests: BTreeMap<String, PauseRequest>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -509,6 +526,15 @@ pub struct LocalPrefs {
     /// has been handed out is never handed out again.
     #[serde(default)]
     pub reference_marks: BTreeMap<String, u32>,
+    /// The first-run setup was finished or skipped.
+    #[serde(default)]
+    pub setup_done: bool,
+    /// The step to resume the first-run setup at.
+    #[serde(default)]
+    pub setup_step: u32,
+    /// Windows 11's Mica backdrop, in the Light and Dark themes.
+    #[serde(default)]
+    pub mica: bool,
     /// A sync folder move whose previous folder couldn't be read, to retry later.
     #[serde(default)]
     pub pending_copy: Option<PendingCopy>,

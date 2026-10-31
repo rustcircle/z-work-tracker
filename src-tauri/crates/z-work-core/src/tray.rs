@@ -119,6 +119,7 @@ fn earnings_text(file: &LocalFile, task_id: &str, now: Ts, tz: Tz) -> Option<Str
     };
     data.tasks.insert(task.id.clone(), task);
     let source = ExportSource {
+        only: None,
         data,
         device_id: file.device_id.clone(),
         remote_devices: file.remote_devices.clone(),

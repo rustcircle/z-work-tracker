@@ -167,6 +167,17 @@ pub struct PrefsView {
     pub hide_earnings: bool,
     pub last_currency: Option<String>,
     pub client_zone_prompt_done: bool,
+    pub mica: bool,
+    /// This system can show Mica. False everywhere except Windows 11.
+    pub mica_available: bool,
+}
+
+/// The first-run setup.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupView {
+    pub pending: bool,
+    pub step: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -196,6 +207,8 @@ pub struct Snapshot {
     pub tags: Vec<Tag>,
     pub templates: Vec<Template>,
     pub billing: BillingView,
+    pub setup: SetupView,
+    pub pause_requests: Vec<crate::model::PauseRequest>,
     pub reminder: Option<Reminder>,
     pub reminder_settings: ReminderSettings,
     pub backup_keep: u32,

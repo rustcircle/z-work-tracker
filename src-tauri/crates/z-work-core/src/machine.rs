@@ -7,8 +7,8 @@ use uuid::Uuid;
 
 use crate::error::CoreError;
 use crate::model::{
-    BillingType, PauseReason, Project, RateVersion, RoundMethod, RoundingVersion, Segment,
-    SettingEntry, Shared, ShiftVersion, Stamp, Task, TaskState,
+    BillingType, PauseReason, PauseRequest, Project, RateVersion, RoundMethod, RoundingVersion,
+    Segment, SettingEntry, Shared, ShiftVersion, Stamp, Task, TaskState,
 };
 use crate::subtasks;
 use crate::time::Ts;
@@ -757,6 +757,37 @@ impl Shared {
     /// Returns true when something changed.
     pub fn reconcile(&mut self, ctx: &Ctx<'_>) -> bool {
         let mut changed = false;
+        // A pause asked for from another device: this device closes its own segment, at the moment
+        // of the request or at once if that has passed the segment's own start.
+        let asked: Vec<(String, String, Ts)> = self
+            .pause_requests
+            .values()
+            .filter(|q| {
+                self.segments
+                    .get(&q.segment_id)
+                    .is_some_and(|s| s.end.is_none() && s.device_id == ctx.device)
+            })
+            .map(|q| (q.segment_id.clone(), q.task_id.clone(), q.at))
+            .collect();
+        for (seg_id, task_id, at) in asked {
+            self.close_segment(&seg_id, at.min(ctx.now));
+            self.set_state(
+                ctx,
+                &task_id,
+                TaskState::Paused,
+                Some(PauseReason::RemoteRequest),
+            );
+            self.audit(
+                ctx,
+                "task",
+                &task_id,
+                "pausedByRequest",
+                "",
+                serde_json::Value::Null,
+                serde_json::json!({"segmentId": seg_id, "at": at}),
+            );
+            changed = true;
+        }
         for seg_id in self.own_open_segments(ctx.device) {
             let Some(task_id) = self.segments.get(&seg_id).map(|s| s.task_id.clone()) else {
                 continue;
@@ -835,6 +866,83 @@ impl Shared {
         check_shift(&version)?;
         self.shifts.insert(id, version);
         Ok(shift_id)
+    }
+
+    /// Removes one version, so the version before it applies again. A shift keeps at least one.
+    pub fn revert_shift_version(
+        &mut self,
+        ctx: &Ctx<'_>,
+        version_id: &str,
+    ) -> Result<(), CoreError> {
+        let shift_id = self
+            .shifts
+            .get(version_id)
+            .filter(|v| !v.deleted)
+            .ok_or(CoreError::NotFound("shift version"))?
+            .shift_id
+            .clone();
+        let live = self
+            .shifts
+            .values()
+            .filter(|v| v.shift_id == shift_id && !v.deleted)
+            .count();
+        if live < 2 {
+            return Err(CoreError::Conflict(
+                "this is the shift's only version; delete the shift instead".into(),
+            ));
+        }
+        if let Some(v) = self.shifts.get_mut(version_id) {
+            v.deleted = true;
+            v.stamp = ctx.next(&v.stamp);
+        }
+        Ok(())
+    }
+
+    /// Asks the device that owns a running task's open segment to pause it. Nothing of that device's
+    /// is changed here: it closes its own segment when the request reaches it.
+    pub fn request_remote_pause(
+        &mut self,
+        ctx: &Ctx<'_>,
+        task_id: &str,
+    ) -> Result<String, CoreError> {
+        self.live_task(task_id)?;
+        let segment_id = self
+            .segments
+            .values()
+            .find(|s| s.task_id == task_id && s.end.is_none() && s.device_id != ctx.device)
+            .map(|s| s.id.clone())
+            .ok_or_else(|| {
+                CoreError::Conflict("this task isn't running on another device".into())
+            })?;
+        if let Some(open) = self
+            .pause_requests
+            .values()
+            .find(|q| q.segment_id == segment_id)
+        {
+            return Ok(open.id.clone());
+        }
+        let id = new_id();
+        self.pause_requests.insert(
+            id.clone(),
+            PauseRequest {
+                id: id.clone(),
+                task_id: task_id.to_owned(),
+                segment_id: segment_id.clone(),
+                requested_by: ctx.device.to_owned(),
+                at: ctx.now,
+                stamp: ctx.stamp(),
+            },
+        );
+        self.audit(
+            ctx,
+            "task",
+            task_id,
+            "requestPause",
+            "",
+            Value::Null,
+            serde_json::json!({"segmentId": segment_id, "at": ctx.now}),
+        );
+        Ok(id)
     }
 
     /// Removes every version of a shift (a tombstone on each, so sync does not resurrect them).

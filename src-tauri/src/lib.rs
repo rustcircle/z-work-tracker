@@ -351,10 +351,41 @@ fn get_snapshot(core: CoreState<'_>) -> CmdResult<Snapshot> {
     Ok(guard(&*core.svc()?).snapshot())
 }
 
+/// A saved project or tag, with the colour it got and what was asked for if that had to change.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedColor {
+    id: String,
+    snapshot: Snapshot,
+    color: String,
+    replaced_from: Option<String>,
+}
+
 #[tauri::command(async)]
-fn create_project(app: AppHandle, core: CoreState<'_>, input: ProjectInput) -> CmdResult<WithId> {
-    let (id, snapshot) = core.change(&app, |s| s.create_project(&input))?;
-    Ok(WithId { id, snapshot })
+fn create_project(
+    app: AppHandle,
+    core: CoreState<'_>,
+    input: ProjectInput,
+) -> CmdResult<SavedColor> {
+    let ((id, replaced_from), snapshot) = core.change(&app, |s| {
+        let id = s.create_project(&input)?;
+        Ok((id, s.take_color_replaced()))
+    })?;
+    let color = project_color(&snapshot, &id);
+    Ok(SavedColor {
+        id,
+        snapshot,
+        color,
+        replaced_from,
+    })
+}
+
+fn project_color(snapshot: &Snapshot, id: &str) -> String {
+    snapshot
+        .projects
+        .iter()
+        .find(|p| p.id == id)
+        .map_or_else(String::new, |p| p.color.clone())
 }
 
 #[tauri::command(async)]
@@ -363,8 +394,18 @@ fn update_project(
     core: CoreState<'_>,
     id: String,
     input: ProjectInput,
-) -> CmdResult<Snapshot> {
-    Ok(core.change(&app, |s| s.update_project(&id, &input))?.1)
+) -> CmdResult<SavedColor> {
+    let (replaced_from, snapshot) = core.change(&app, |s| {
+        s.update_project(&id, &input)?;
+        Ok(s.take_color_replaced())
+    })?;
+    let color = project_color(&snapshot, &id);
+    Ok(SavedColor {
+        id,
+        snapshot,
+        color,
+        replaced_from,
+    })
 }
 
 #[tauri::command(async)]
@@ -739,9 +780,109 @@ fn set_active_subtask(
 }
 
 #[tauri::command(async)]
-fn save_tag(app: AppHandle, core: CoreState<'_>, input: TagInput) -> CmdResult<WithId> {
-    let (id, snapshot) = core.change(&app, |s| s.save_tag(&input))?;
-    Ok(WithId { id, snapshot })
+fn save_tag(app: AppHandle, core: CoreState<'_>, input: TagInput) -> CmdResult<SavedColor> {
+    let ((id, replaced_from), snapshot) = core.change(&app, |s| {
+        let id = s.save_tag(&input)?;
+        Ok((id, s.take_color_replaced()))
+    })?;
+    let color = snapshot
+        .tags
+        .iter()
+        .find(|t| t.id == id)
+        .map_or_else(String::new, |t| t.color.clone());
+    Ok(SavedColor {
+        id,
+        snapshot,
+        color,
+        replaced_from,
+    })
+}
+
+#[tauri::command(async)]
+fn revert_shift_version(
+    app: AppHandle,
+    core: CoreState<'_>,
+    version_id: String,
+) -> CmdResult<Snapshot> {
+    Ok(core
+        .change(&app, |s| s.revert_shift_version(&version_id))?
+        .1)
+}
+
+#[tauri::command(async)]
+fn request_remote_pause(
+    app: AppHandle,
+    core: CoreState<'_>,
+    task_id: String,
+) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.request_remote_pause(&task_id))?.1)
+}
+
+/// What is being typed, kept where a shutdown can't lose it. Doesn't trigger a sync.
+#[tauri::command(async)]
+fn stash_draft(
+    core: CoreState<'_>,
+    task_id: String,
+    description: serde_json::Value,
+) -> CmdResult<()> {
+    Ok(guard(&*core.svc()?).stash_draft(&task_id, &description)?)
+}
+
+#[tauri::command(async)]
+fn clear_draft(core: CoreState<'_>, task_id: String) -> CmdResult<()> {
+    Ok(guard(&*core.svc()?).clear_draft(&task_id)?)
+}
+
+#[tauri::command(async)]
+fn set_setup_step(app: AppHandle, core: CoreState<'_>, step: u32) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.set_setup_step(step))?.1)
+}
+
+#[tauri::command(async)]
+fn finish_setup(app: AppHandle, core: CoreState<'_>) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.finish_setup())?.1)
+}
+
+#[tauri::command(async)]
+fn set_mica(app: AppHandle, core: CoreState<'_>, on: bool) -> CmdResult<Snapshot> {
+    let snapshot = core.change(&app, |s| s.set_mica(on))?.1;
+    apply_mica(&app, on && snapshot.prefs.mica_available);
+    Ok(snapshot)
+}
+
+/// Windows 11's backdrop. The page turns transparent only for the themes it suits.
+#[cfg(windows)]
+fn apply_mica(app: &AppHandle, on: bool) {
+    use tauri::utils::config::WindowEffectsConfig;
+    use tauri::window::Effect;
+    if let Some(w) = app.get_webview_window("main") {
+        let effects = on.then(|| WindowEffectsConfig {
+            effects: vec![Effect::Mica],
+            ..WindowEffectsConfig::default()
+        });
+        if let Err(e) = w.set_effects(effects) {
+            eprintln!("Mica could not be applied: {e}");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_mica(_: &AppHandle, _: bool) {}
+
+/// Mica needs Windows 11, build 22000 or later.
+#[cfg(windows)]
+fn mica_available() -> bool {
+    winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+        .open_subkey("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion")
+        .ok()
+        .and_then(|k| k.get_value::<String, _>("CurrentBuildNumber").ok())
+        .and_then(|b| b.parse::<u32>().ok())
+        .is_some_and(|b| b >= 22_000)
+}
+
+#[cfg(not(windows))]
+const fn mica_available() -> bool {
+    false
 }
 
 #[tauri::command(async)]
@@ -1367,6 +1508,7 @@ pub fn run() {
                         iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_owned()),
                     );
                     s.set_detected(detect(&RealEnv, host_os()));
+                    s.set_mica_available(mica_available());
                     Arc::new(Mutex::new(s))
                 }),
                 sync: Mutex::new(None),
@@ -1384,6 +1526,8 @@ pub fn run() {
                 spawn_sync(handle.clone(), Arc::clone(&core), Arc::clone(svc));
                 let theme = guard(svc).file().prefs.theme;
                 apply_native_theme(&handle, theme);
+                let mica = guard(svc).file().prefs.mica;
+                apply_mica(&handle, mica && mica_available());
             }
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.show();
@@ -1448,6 +1592,13 @@ pub fn run() {
         preview_sync_folder,
         preview_sync_move,
         move_sync_target,
+        revert_shift_version,
+        request_remote_pause,
+        stash_draft,
+        clear_draft,
+        set_setup_step,
+        finish_setup,
+        set_mica,
         add_manual_entry,
         correct_segment,
         void_segment,
@@ -1514,6 +1665,13 @@ pub fn run() {
         preview_sync_folder,
         preview_sync_move,
         move_sync_target,
+        revert_shift_version,
+        request_remote_pause,
+        stash_draft,
+        clear_draft,
+        set_setup_step,
+        finish_setup,
+        set_mica,
         add_manual_entry,
         correct_segment,
         void_segment,

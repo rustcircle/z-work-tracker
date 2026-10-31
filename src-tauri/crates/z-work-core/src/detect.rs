@@ -9,6 +9,10 @@ pub trait DetectEnv {
     fn var(&self, name: &str) -> Option<String>;
     fn is_dir(&self, path: &str) -> bool;
     fn list_dir(&self, path: &str) -> Vec<String>;
+    /// Where Google Drive's own settings say it mounts, on Windows. A drive letter or a path.
+    fn drive_mount_points(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -62,6 +66,32 @@ pub fn detect(env: &dyn DetectEnv, os: HostOs) -> Vec<Detected> {
                     );
                 }
             }
+            // Google Drive's own settings first, then the scan as a fallback.
+            for mount in env.drive_mount_points() {
+                let mount = mount.trim().trim_end_matches(['\\', '/']);
+                if mount.is_empty() {
+                    continue;
+                }
+                let base = if mount.len() == 1 {
+                    format!("{mount}:")
+                } else {
+                    mount.to_owned()
+                };
+                add(
+                    SyncProvider::GoogleDrive,
+                    base.clone(),
+                    "Google Drive settings".to_owned(),
+                    env,
+                );
+                for name in MY_DRIVE_NAMES {
+                    add(
+                        SyncProvider::GoogleDrive,
+                        format!("{base}\\{name}"),
+                        "Google Drive settings".to_owned(),
+                        env,
+                    );
+                }
+            }
             for letter in b'D'..=b'Z' {
                 let letter = char::from(letter);
                 for name in MY_DRIVE_NAMES {
@@ -104,6 +134,35 @@ pub fn detect(env: &dyn DetectEnv, os: HostOs) -> Vec<Detected> {
 pub struct RealEnv;
 
 impl DetectEnv for RealEnv {
+    #[cfg(windows)]
+    fn drive_mount_points(&self) -> Vec<String> {
+        use winreg::RegKey;
+        use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        let mut out = Vec::new();
+        let read = |root, path: &str, value: &str| -> Option<String> {
+            RegKey::predef(root)
+                .open_subkey(path)
+                .ok()?
+                .get_value(value)
+                .ok()
+        };
+        out.extend(read(
+            HKEY_CURRENT_USER,
+            "Software\\Google\\DriveFS\\Share",
+            "MountPointPath",
+        ));
+        out.extend(read(
+            HKEY_CURRENT_USER,
+            "Software\\Google\\DriveFS",
+            "DefaultMountPoint",
+        ));
+        out.extend(read(
+            HKEY_LOCAL_MACHINE,
+            "SOFTWARE\\Google\\DriveFS",
+            "DefaultMountPoint",
+        ));
+        out
+    }
     fn var(&self, name: &str) -> Option<String> {
         std::env::var(name).ok()
     }
@@ -218,6 +277,33 @@ mod tests {
         assert_eq!(
             d[1].root,
             "/Users/someone/Library/CloudStorage/GoogleDrive-x@y.z/My Drive"
+        );
+    }
+
+    #[test]
+    fn google_drives_own_settings_come_before_the_scan() {
+        struct Mounted;
+        impl DetectEnv for Mounted {
+            fn var(&self, _: &str) -> Option<String> {
+                None
+            }
+            fn is_dir(&self, path: &str) -> bool {
+                path == "G:\\My Drive" || path == "C:\\Drive" || path == "D:\\My Drive"
+            }
+            fn list_dir(&self, _: &str) -> Vec<String> {
+                Vec::new()
+            }
+            fn drive_mount_points(&self) -> Vec<String> {
+                vec!["G".into(), "C:\\Drive\\".into(), "  ".into()]
+            }
+        }
+        let found = detect(&Mounted, HostOs::Windows);
+        let roots: Vec<&str> = found.iter().map(|d| d.root.as_str()).collect();
+        assert_eq!(roots, ["G:\\My Drive", "C:\\Drive", "D:\\My Drive"]);
+        assert_eq!(found[0].source, "Google Drive settings");
+        assert_eq!(
+            found[2].source, "drive D:",
+            "the scan is still the fallback"
         );
     }
 }

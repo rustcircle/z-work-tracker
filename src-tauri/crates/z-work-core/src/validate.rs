@@ -473,6 +473,14 @@ fn check_phase2(s: &Shared, now: Ts) -> Result<(), CoreError> {
         check_time(b.created_at, now, "a summary date")?;
         check_stamp(&b.stamp, now)?;
     }
+    for (id, q) in &s.pause_requests {
+        check_key(id, &q.id)?;
+        check_id(&q.task_id)?;
+        check_id(&q.segment_id)?;
+        check_id(&q.requested_by)?;
+        check_time(q.at, now, "a pause request")?;
+        check_stamp(&q.stamp, now)?;
+    }
     for (device, p) in &s.prefixes {
         check_id(device)?;
         check_plain(&p.prefix, 16, "a reference prefix")?;

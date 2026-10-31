@@ -386,7 +386,7 @@ impl Shared {
             "markBillable",
             &note,
             Value::Null,
-            json!({"start": input.start, "end": input.end}),
+            json!({"taskId": input.task_id, "start": input.start, "end": input.end}),
         );
         Ok(id)
     }
@@ -407,7 +407,7 @@ impl Shared {
             .ok_or(CoreError::NotFound("billable pause"))?;
         pause.deleted = true;
         pause.stamp = ctx.next(&pause.stamp);
-        let after = json!({"start": pause.start, "end": pause.end});
+        let after = json!({"taskId": pause.task_id, "start": pause.start, "end": pause.end});
         self.audit(ctx, "pause", id, "unmarkBillable", "", after, Value::Null);
         Ok(())
     }

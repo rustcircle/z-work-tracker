@@ -34,6 +34,9 @@ pub struct PdfRequest {
     pub include_prices: bool,
     #[serde(default)]
     pub use_logo: bool,
+    /// Only these Timeline entries. Their days are in `zone`.
+    #[serde(default)]
+    pub selection: Option<Vec<crate::report::SelectedEntry>>,
 }
 
 /// A decoded logo ready for embedding.
@@ -181,6 +184,14 @@ pub fn build(
     logo: Option<&Logo>,
 ) -> Result<Vec<u8>, CoreError> {
     let tz: Tz = parse_zone(&request.zone)?;
+    let narrowed;
+    let source = match &request.selection {
+        Some(entries) => {
+            narrowed = source.narrowed(tz, entries)?;
+            &narrowed
+        }
+        None => source,
+    };
     crate::validate::check_date(&request.from, "the start date")?;
     crate::validate::check_date(&request.to, "the end date")?;
     let mut totals: BTreeMap<String, i64> = BTreeMap::new();
@@ -243,7 +254,16 @@ pub fn build(
             request.from, request.to, request.zone
         ),
     );
-    w.y = top - 60.0;
+    if let Some(count) = source.selected_count() {
+        w.text(
+            MARGIN,
+            top - 50.0,
+            b"Reg",
+            10.0,
+            &format!("Selection of {count} entries. Totals cover those only."),
+        );
+    }
+    w.y = top - 66.0;
 
     let (col_day, col_project, col_task, col_hours, col_amount) = (
         MARGIN,
@@ -434,6 +454,7 @@ mod tests {
             title: "March".into(),
             include_prices: prices,
             use_logo: false,
+            selection: None,
         }
     }
 
@@ -500,5 +521,52 @@ mod tests {
         .unwrap();
         assert!(contains(&b, b"/Logo"));
         assert!(decode_logo(b"not a png").is_err());
+    }
+
+    #[test]
+    fn a_selection_prints_only_its_own_task_day_and_says_so() {
+        let (mut s, p, t) = fixture(None);
+        let c = crate::machine::tests::ctx("2026-01-01T00:00:00Z");
+        let other = s
+            .create_task(&c, &crate::machine::tests::task_input("Secret", &p))
+            .unwrap();
+        seg(
+            &mut s,
+            &t,
+            "a",
+            "2026-03-01T09:00:00Z",
+            "2026-03-01T10:00:00Z",
+        );
+        seg(
+            &mut s,
+            &t,
+            "b",
+            "2026-03-02T09:00:00Z",
+            "2026-03-02T10:00:00Z",
+        );
+        seg(
+            &mut s,
+            &other,
+            "z",
+            "2026-03-01T11:00:00Z",
+            "2026-03-01T12:00:00Z",
+        );
+        let src = source(s, "2026-04-01T00:00:00Z");
+        let request = PdfRequest {
+            selection: Some(vec![crate::report::SelectedEntry {
+                task_id: t.clone(),
+                day: "2026-03-01".to_owned(),
+            }]),
+            ..req(true)
+        };
+        let bytes = build(&src, &request, None).unwrap();
+        assert!(contains(&bytes, b"Selection of 1 entries"));
+        assert!(!contains(&bytes, b"Secret"));
+        assert!(!contains(&bytes, b"2026-03-02"));
+        let empty = PdfRequest {
+            selection: Some(Vec::new()),
+            ..req(true)
+        };
+        assert!(build(&src, &empty, None).is_err());
     }
 }

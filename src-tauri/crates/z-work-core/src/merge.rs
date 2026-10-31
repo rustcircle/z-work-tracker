@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::model::{
-    AuditEntry, BillablePause, BillingSummary, DevicePrefix, IdleGap, Project, RateVersion,
-    RoundingVersion, Segment, SettingEntry, Shared, ShiftVersion, Stamp, Tag, Task, Template,
+    AuditEntry, BillablePause, BillingSummary, DevicePrefix, IdleGap, PauseRequest, Project,
+    RateVersion, RoundingVersion, Segment, SettingEntry, Shared, ShiftVersion, Stamp, Tag, Task,
+    Template,
 };
 
 fn canonical<T: Serialize>(v: &T) -> String {
@@ -200,6 +201,10 @@ fn merge_summary(a: &BillingSummary, b: &BillingSummary) -> BillingSummary {
     lww_tombstone(a, a.voided, &a.stamp, b, b.voided, &b.stamp).clone()
 }
 
+fn merge_pause_request(a: &PauseRequest, b: &PauseRequest) -> PauseRequest {
+    lww(a, &a.stamp, b, &b.stamp).clone()
+}
+
 fn merge_prefix(a: &DevicePrefix, b: &DevicePrefix) -> DevicePrefix {
     lww(a, &a.stamp, b, &b.stamp).clone()
 }
@@ -248,6 +253,7 @@ pub fn merge(a: &Shared, b: &Shared) -> Shared {
         templates: merge_map(&a.templates, &b.templates, merge_template),
         summaries: merge_map(&a.summaries, &b.summaries, merge_summary),
         prefixes: merge_map(&a.prefixes, &b.prefixes, merge_prefix),
+        pause_requests: merge_map(&a.pause_requests, &b.pause_requests, merge_pause_request),
         audit_log: merge_map(&a.audit_log, &b.audit_log, merge_audit),
     }
 }
@@ -457,6 +463,17 @@ mod tests {
         })
     }
 
+    fn pause_request() -> impl Strategy<Value = PauseRequest> {
+        (0u8..3, 0u8..3, 0i64..4, stamp()).prop_map(|(id, n, at, stamp)| PauseRequest {
+            id: format!("q{id}"),
+            task_id: format!("t{n}"),
+            segment_id: format!("s{n}"),
+            requested_by: "b".into(),
+            at: Ts(at),
+            stamp,
+        })
+    }
+
     #[allow(clippy::type_complexity)]
     fn phase2() -> impl Strategy<
         Value = (
@@ -467,6 +484,7 @@ mod tests {
             Vec<BillingSummary>,
             Vec<AuditEntry>,
             Vec<(String, DevicePrefix)>,
+            Vec<PauseRequest>,
         ),
     > {
         (
@@ -477,6 +495,7 @@ mod tests {
             prop::collection::vec(summary(), 0..3),
             prop::collection::vec(audit(), 0..3),
             prop::collection::vec(prefix(), 0..2),
+            prop::collection::vec(pause_request(), 0..3),
         )
     }
 
@@ -554,7 +573,7 @@ mod tests {
             phase2(),
         )
             .prop_map(
-                |(ps, ts, ss, st, sh, ra, ro, (gs, bs, ta, te, su, au, pr))| Shared {
+                |(ps, ts, ss, st, sh, ra, ro, (gs, bs, ta, te, su, au, pr, pq))| Shared {
                     projects: ps.into_iter().map(|p| (p.id.clone(), p)).collect(),
                     tasks: ts.into_iter().map(|t| (t.id.clone(), t)).collect(),
                     segments: ss.into_iter().map(|s| (s.id.clone(), s)).collect(),
@@ -569,6 +588,7 @@ mod tests {
                     summaries: su.into_iter().map(|x| (x.id.clone(), x)).collect(),
                     audit_log: au.into_iter().map(|x| (x.id.clone(), x)).collect(),
                     prefixes: pr.into_iter().collect(),
+                    pause_requests: pq.into_iter().map(|x| (x.id.clone(), x)).collect(),
                 },
             )
     }
