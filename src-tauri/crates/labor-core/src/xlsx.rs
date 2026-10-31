@@ -643,6 +643,7 @@ pub(crate) mod tests {
                 name: "Write report".into(),
                 project_id: p.clone(),
                 description: list,
+                continued_from: None,
             },
         )
         .unwrap();

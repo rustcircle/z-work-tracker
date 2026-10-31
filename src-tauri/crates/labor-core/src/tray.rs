@@ -28,6 +28,25 @@ pub fn close_decision(quit_requested: bool, notice_already_shown: bool) -> Close
     }
 }
 
+/// What the tray's toggle does. A cold launch never resumes directly: it opens the form instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToggleRoute {
+    Pause,
+    Resume,
+    OpenColdForm,
+    Nothing,
+}
+
+#[must_use]
+pub fn toggle_route(action: Option<TrayAction>, warm: bool) -> ToggleRoute {
+    match action {
+        Some(TrayAction::Pause) => ToggleRoute::Pause,
+        Some(TrayAction::Resume) if warm => ToggleRoute::Resume,
+        Some(TrayAction::Resume) => ToggleRoute::OpenColdForm,
+        None => ToggleRoute::Nothing,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrayAction {
     Pause,
@@ -52,7 +71,7 @@ fn own_running(file: &LocalFile) -> Option<&Segment> {
                 .data
                 .tasks
                 .get(&s.task_id)
-                .is_some_and(|t| !t.deleted && t.state == TaskState::Running)
+                .is_some_and(|t| t.is_live() && t.state == TaskState::Running)
     })
 }
 
@@ -132,7 +151,7 @@ pub fn tray_state(file: &LocalFile, now: Ts, zone: Tz) -> TrayState {
         .data
         .tasks
         .values()
-        .filter(|t| !t.deleted && t.state == TaskState::Paused)
+        .filter(|t| t.is_live() && t.state == TaskState::Paused)
         .filter(|t| {
             file.data
                 .projects
@@ -192,6 +211,23 @@ mod tests {
             .unwrap();
         let t = f.data.create_task(&c, &task_input("Write", &p)).unwrap();
         (f, t)
+    }
+
+    #[test]
+    fn cold_tray_resume_opens_the_form_and_starts_nothing() {
+        assert_eq!(
+            toggle_route(Some(TrayAction::Resume), false),
+            ToggleRoute::OpenColdForm
+        );
+        assert_eq!(
+            toggle_route(Some(TrayAction::Resume), true),
+            ToggleRoute::Resume
+        );
+        assert_eq!(
+            toggle_route(Some(TrayAction::Pause), false),
+            ToggleRoute::Pause
+        );
+        assert_eq!(toggle_route(None, true), ToggleRoute::Nothing);
     }
 
     #[test]

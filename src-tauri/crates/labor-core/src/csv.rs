@@ -37,7 +37,8 @@ pub fn neutralize(cell: &str) -> String {
 
 #[must_use]
 pub fn quote(cell: &str) -> String {
-    if cell.contains(['"', ',', '\n', '\r']) {
+    // Semicolon and tab too: Excel in some locales splits on them, which could expose a formula.
+    if cell.contains(['"', ',', ';', '\t', '\n', '\r']) {
         format!("\"{}\"", cell.replace('"', "\"\""))
     } else {
         cell.to_owned()
@@ -226,6 +227,8 @@ mod tests {
         assert_eq!(quote("a\"b"), "\"a\"\"b\"");
         assert_eq!(quote("a\nb"), "\"a\nb\"");
         assert_eq!(quote("ab"), "ab");
+        assert_eq!(quote("x;=1+1;y"), "\"x;=1+1;y\"");
+        assert_eq!(quote("x\t=1"), "\"x\t=1\"");
     }
 
     #[test]

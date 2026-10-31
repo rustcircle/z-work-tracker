@@ -13,7 +13,9 @@ use labor_core::model::{SyncProvider, SyncTarget, Theme};
 use labor_core::report::ExportRequest;
 use labor_core::service::Service;
 use labor_core::sync::{FolderPreview, RealIo, preview_folder, run_cycle};
-use labor_core::tray::{CloseDecision, TrayAction, close_decision, tray_state};
+use labor_core::tray::{
+    CloseDecision, ToggleRoute, TrayAction, close_decision, toggle_route, tray_state,
+};
 use labor_core::validate::parse_zone;
 use labor_core::view::Snapshot;
 use labor_core::{CoreError, SystemClock, csv, xlsx};
@@ -31,6 +33,8 @@ const SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
 const SYNC_PERIOD: Duration = Duration::from_secs(180);
 const EXIT_SYNC_LIMIT: Duration = Duration::from_secs(5);
 const QUIT_ARG: &str = "--quit";
+/// Lets the page save an edit in progress before the process ends.
+const EDIT_FLUSH_WAIT: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,9 +73,11 @@ struct TrayHandles {
 struct Core {
     service: Result<Arc<Mutex<Service>>, String>,
     sync: Mutex<Option<Sender<SyncMsg>>>,
-    tray: Mutex<Option<TrayHandles>>,
+    tray: Mutex<Option<Arc<TrayHandles>>>,
     quitting: AtomicBool,
     exit_done: AtomicBool,
+    /// The first-hide fallback timer still applies. Reading the notice cancels it.
+    hide_pending: AtomicBool,
     /// One sync cycle at a time: cycles write the same temporary file.
     cycle_lock: Arc<Mutex<()>>,
 }
@@ -129,13 +135,16 @@ fn refresh_tray(_app: &AppHandle, core: &Core) {
         let settings = &s.file().data.settings;
         let chosen = settings
             .get("activeZone")
+            .filter(|e| e.value.is_string())
             .or_else(|| settings.get("myZone"))
             .map(|e| &e.value);
         let zone = zone_for_tray(chosen, &s.snapshot_system_zone());
         tray_state(s.file(), s.now(), zone)
     };
-    let handles = guard(&core.tray);
-    let Some(h) = handles.as_ref() else { return };
+    // Tray calls can wait on the UI thread. Holding the lock across them could deadlock with it.
+    let Some(h) = guard(&core.tray).as_ref().map(Arc::clone) else {
+        return;
+    };
     let _ = h.icon.set_tooltip(Some(&state.tooltip));
     let _ = h.status.set_text(&state.status_line);
     match state.action {
@@ -211,7 +220,12 @@ fn request_quit(app: &AppHandle) {
     if let Some(core) = app.try_state::<Arc<Core>>() {
         core.quitting.store(true, Ordering::SeqCst);
     }
-    app.exit(0);
+    let _ = app.emit("flush-edits", ());
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(EDIT_FLUSH_WAIT);
+        handle.exit(0);
+    });
 }
 
 #[derive(Serialize, Clone)]
@@ -222,6 +236,7 @@ struct HideNotice {
 }
 
 fn handle_close(app: &AppHandle, core: &Core) -> bool {
+    let _ = app.emit("flush-edits", ());
     let shown = core
         .service
         .as_ref()
@@ -259,10 +274,14 @@ fn handle_close(app: &AppHandle, core: &Core) -> bool {
             );
             let _ = app.emit("first-hide-notice", payload);
             // If the page cannot show the notice, the window still goes to the tray.
+            core.hide_pending.store(true, Ordering::SeqCst);
             let handle = app.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(30));
-                if let Some(w) = handle.get_webview_window("main") {
+                let still_due = handle
+                    .try_state::<Arc<Core>>()
+                    .is_some_and(|c| c.hide_pending.swap(false, Ordering::SeqCst));
+                if still_due && let Some(w) = handle.get_webview_window("main") {
                     let _ = w.hide();
                 }
             });
@@ -489,8 +508,12 @@ fn pick_sync_folder(app: AppHandle) -> Option<String> {
 #[tauri::command(async)]
 fn preview_sync_folder(core: CoreState<'_>, root: String) -> CmdResult<FolderPreview> {
     usable_folder(&root)?;
-    let own = guard(&*core.svc()?).file().device_id.clone();
-    Ok(preview_folder(&RealIo, Path::new(&root), &own))
+    let (own, now) = {
+        let svc = core.svc()?;
+        let s = guard(&svc);
+        (s.file().device_id.clone(), s.now())
+    };
+    Ok(preview_folder(&RealIo, Path::new(&root), &own, now))
 }
 
 #[tauri::command(async)]
@@ -583,7 +606,8 @@ fn set_autostart(app: AppHandle, enabled: bool) -> CmdResult<bool> {
 
 /// The first-hide notice was read: hide now.
 #[tauri::command(async)]
-fn ack_hide_notice(app: AppHandle) {
+fn ack_hide_notice(app: AppHandle, core: CoreState<'_>) {
+    core.hide_pending.store(false, Ordering::SeqCst);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
@@ -640,26 +664,36 @@ fn tray_toggle(app: &AppHandle) {
     let Ok(svc) = core.service.as_ref() else {
         return;
     };
-    let state = {
+    let (state, warm) = {
         let s = guard(svc);
-        tray_state(s.file(), s.now(), chrono_tz::UTC)
+        (tray_state(s.file(), s.now(), chrono_tz::UTC), s.is_warm())
     };
-    if let Some(task) = state.task_id {
-        let result = {
-            let mut s = guard(svc);
-            match state.action {
-                Some(TrayAction::Pause) => s.pause_task(&task),
-                Some(TrayAction::Resume) => s.resume_task(&task).map(|_| ()),
-                None => Ok(()),
-            }
-        };
-        if let Err(e) = result {
-            eprintln!("tray action failed: {e}");
+    let Some(task) = state.task_id else {
+        return;
+    };
+    let result = match toggle_route(state.action, warm) {
+        ToggleRoute::Pause => guard(svc).pause_task(&task),
+        ToggleRoute::Resume => guard(svc).resume_task(&task).map(|_| ()),
+        ToggleRoute::OpenColdForm => {
+            // Nothing starts here: the form decides, and Cancel leaves everything as it was.
+            show_main(app);
+            let _ = app.emit("cold-resume", ColdResume { task_id: task });
+            return;
         }
-        core.tell_sync(SyncMsg::Changed);
-        refresh_tray(app, &core);
-        let _ = app.emit("state-changed", ());
+        ToggleRoute::Nothing => return,
+    };
+    if let Err(e) = result {
+        eprintln!("tray action failed: {e}");
     }
+    core.tell_sync(SyncMsg::Changed);
+    refresh_tray(app, &core);
+    let _ = app.emit("state-changed", ());
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct ColdResume {
+    task_id: String,
 }
 
 fn build_tray(app: &AppHandle, core: &Core) -> tauri::Result<()> {
@@ -693,32 +727,35 @@ fn build_tray(app: &AppHandle, core: &Core) -> tauri::Result<()> {
             }
         })
         .build(app)?;
-    *guard(&core.tray) = Some(TrayHandles {
+    *guard(&core.tray) = Some(Arc::new(TrayHandles {
         icon,
         status,
         toggle,
         idle,
         running,
         last_running: AtomicBool::new(false),
-    });
+    }));
     Ok(())
 }
 
-/// Heartbeat and tray refresh. Independent of the webview, so they run while it is hidden.
+/// Heartbeat and tray refresh, independent of the webview so they run while it is hidden. Separate
+/// threads, because a tray call stuck on the UI thread must never delay the heartbeat.
 fn spawn_ticker(app: AppHandle, core: Arc<Core>) {
+    let beat = Arc::clone(&core);
     std::thread::spawn(move || {
-        let mut last_beat = Instant::now();
+        while !beat.exit_done.load(Ordering::SeqCst) {
+            std::thread::sleep(HEARTBEAT);
+            if let Ok(svc) = beat.service.as_ref()
+                && let Err(e) = guard(svc).heartbeat()
+            {
+                eprintln!("heartbeat could not be saved: {e}");
+            }
+        }
+    });
+    std::thread::spawn(move || {
         while !core.exit_done.load(Ordering::SeqCst) {
             std::thread::sleep(TRAY_TICK);
             refresh_tray(&app, &core);
-            if last_beat.elapsed() >= HEARTBEAT {
-                last_beat = Instant::now();
-                if let Ok(svc) = core.service.as_ref()
-                    && let Err(e) = guard(svc).heartbeat()
-                {
-                    eprintln!("heartbeat could not be saved: {e}");
-                }
-            }
         }
     });
 }
@@ -839,6 +876,7 @@ pub fn run() {
                 tray: Mutex::new(None),
                 quitting: AtomicBool::new(false),
                 exit_done: AtomicBool::new(false),
+                hide_pending: AtomicBool::new(false),
                 cycle_lock: Arc::new(Mutex::new(())),
             });
             app.manage(Arc::clone(&core));

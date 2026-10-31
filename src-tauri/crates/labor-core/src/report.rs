@@ -74,7 +74,7 @@ impl ExportSource {
             .segments
             .values()
             .filter_map(|s| {
-                let task = self.data.tasks.get(&s.task_id).filter(|t| !t.deleted)?;
+                let task = self.data.tasks.get(&s.task_id).filter(|t| t.is_live())?;
                 let project = self.data.projects.get(&task.project_id);
                 Some(SegmentRow {
                     segment_id: s.id.clone(),

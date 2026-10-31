@@ -92,6 +92,38 @@ pub struct TaskInput {
     pub project_id: String,
     #[serde(default)]
     pub description: Value,
+    /// Only read when creating a task: the task this one continues.
+    #[serde(default)]
+    pub continued_from: Option<String>,
+}
+
+/// Fields that must be filled before the first start of a launch. Add tags here when they exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RequiredField {
+    Name,
+    Project,
+    Description,
+}
+
+pub const COLD_REQUIRED: &[RequiredField] = &[
+    RequiredField::Name,
+    RequiredField::Project,
+    RequiredField::Description,
+];
+
+/// True when a rich-text document holds real text, not just empty markup.
+#[must_use]
+pub fn doc_has_text(doc: &Value) -> bool {
+    if doc.get("type").and_then(Value::as_str) == Some("text") {
+        return doc
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|t| !t.trim().is_empty());
+    }
+    doc.get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|c| c.iter().any(doc_has_text))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -121,6 +153,15 @@ pub struct Transition {
     pub auto_paused_task_name: Option<String>,
 }
 
+/// Two devices can add a version for the same date offline. The newest edit is the one in force.
+#[must_use]
+pub fn stamp_order(sa: &Stamp, ia: &str, sb: &Stamp, ib: &str) -> std::cmp::Ordering {
+    sa.at
+        .cmp(&sb.at)
+        .then_with(|| sa.by.cmp(&sb.by))
+        .then_with(|| ia.cmp(ib))
+}
+
 fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -136,7 +177,7 @@ impl Shared {
     fn live_task(&self, id: &str) -> Result<&Task, CoreError> {
         self.tasks
             .get(id)
-            .filter(|t| !t.deleted)
+            .filter(|t| t.is_live())
             .ok_or(CoreError::NotFound("task"))
     }
 
@@ -226,7 +267,7 @@ impl Shared {
     pub fn project_has_tasks(&self, id: &str) -> bool {
         self.tasks
             .values()
-            .any(|t| !t.deleted && t.project_id == id)
+            .any(|t| t.is_live() && t.project_id == id)
     }
 
     pub fn set_project_archived(
@@ -240,7 +281,7 @@ impl Shared {
             let running = self
                 .tasks
                 .values()
-                .any(|t| !t.deleted && t.project_id == id && t.state == TaskState::Running);
+                .any(|t| t.is_live() && t.project_id == id && t.state == TaskState::Running);
             if running {
                 return Err(CoreError::Conflict(
                     "pause or stop this project's running task before archiving it".into(),
@@ -294,17 +335,24 @@ impl Shared {
 
     pub fn create_task(&mut self, ctx: &Ctx<'_>, input: &TaskInput) -> Result<String, CoreError> {
         let (name, project_id) = self.clean_task(input, None)?;
+        if let Some(source) = &input.continued_from {
+            self.live_task(source)?;
+        }
         let id = new_id();
         self.tasks.insert(
             id.clone(),
             Task {
                 id: id.clone(),
                 name,
+                name_stamp: ctx.stamp(),
                 project_id,
+                project_stamp: ctx.stamp(),
                 description: input.description.clone(),
+                description_stamp: ctx.stamp(),
                 deleted: false,
+                deleted_stamp: ctx.stamp(),
+                continued_from: input.continued_from.clone(),
                 created_at: ctx.now,
-                meta_stamp: ctx.stamp(),
                 state: TaskState::Draft,
                 pause_reason: None,
                 state_stamp: ctx.stamp(),
@@ -324,10 +372,19 @@ impl Shared {
         let previous = self.live_task(id)?.project_id.clone();
         let (name, project_id) = self.clean_task(input, Some(&previous))?;
         let t = self.tasks.get_mut(id).ok_or(CoreError::NotFound("task"))?;
-        t.name = name;
-        t.project_id = project_id;
-        t.description = input.description.clone();
-        t.meta_stamp = ctx.next(&t.meta_stamp);
+        // Each field has its own clock, so edits to different fields on two devices both survive.
+        if t.name != name {
+            t.name = name;
+            t.name_stamp = ctx.next(&t.name_stamp);
+        }
+        if t.project_id != project_id {
+            t.project_id = project_id;
+            t.project_stamp = ctx.next(&t.project_stamp);
+        }
+        if t.description != input.description {
+            t.description = input.description.clone();
+            t.description_stamp = ctx.next(&t.description_stamp);
+        }
         Ok(())
     }
 
@@ -338,7 +395,7 @@ impl Shared {
         }
         let t = self.tasks.get_mut(id).ok_or(CoreError::NotFound("task"))?;
         t.deleted = true;
-        t.meta_stamp = ctx.next(&t.meta_stamp);
+        t.deleted_stamp = ctx.next(&t.deleted_stamp);
         Ok(())
     }
 
@@ -400,9 +457,9 @@ impl Shared {
         let last_end = self
             .segments
             .values()
-            .filter(|s| s.task_id == task_id)
+            .filter(|s| s.task_id == task_id && s.device_id == ctx.device)
             .filter_map(|s| s.end)
-            .max();
+            .max(); // own device only: another's clock may run ahead
         let start = last_end.map_or(ctx.now, |e| e.max(ctx.now));
         let id = new_id();
         self.segments.insert(
@@ -561,7 +618,7 @@ impl Shared {
             let keep = self
                 .tasks
                 .get(&task_id)
-                .is_some_and(|t| !t.deleted && t.state == TaskState::Running);
+                .is_some_and(|t| t.is_live() && t.state == TaskState::Running);
             if !keep {
                 self.close_segment(&seg_id, ctx.now);
                 changed = true;
@@ -602,9 +659,10 @@ impl Shared {
         let existing = self
             .shifts
             .values()
-            .find(|v| {
+            .filter(|v| {
                 !v.deleted && v.shift_id == shift_id && v.effective_from == input.effective_from
             })
+            .max_by(|a, b| stamp_order(&a.stamp, &a.id, &b.stamp, &b.id))
             .cloned();
         let id = existing.as_ref().map_or_else(new_id, |v| v.id.clone());
         let stamp = existing
@@ -668,7 +726,8 @@ impl Shared {
         let existing = self
             .rates
             .values()
-            .find(|r| !r.deleted && r.project_id == input.project_id && r.effective_from == from)
+            .filter(|r| !r.deleted && r.project_id == input.project_id && r.effective_from == from)
+            .max_by(|a, b| stamp_order(&a.stamp, &a.id, &b.stamp, &b.id))
             .cloned();
         let id = existing.as_ref().map_or_else(new_id, |r| r.id.clone());
         let stamp = existing
@@ -709,9 +768,10 @@ impl Shared {
         let existing = self
             .rounding
             .values()
-            .find(|r| {
+            .filter(|r| {
                 !r.deleted && r.project_id == project_id && r.effective_from == input.effective_from
             })
+            .max_by(|a, b| stamp_order(&a.stamp, &a.id, &b.stamp, &b.id))
             .cloned();
         let id = existing.as_ref().map_or_else(new_id, |r| r.id.clone());
         let stamp = existing
@@ -811,6 +871,7 @@ pub(crate) mod tests {
             name: name.into(),
             project_id: project.into(),
             description: Value::Null,
+            continued_from: None,
         }
     }
 
@@ -1036,6 +1097,87 @@ pub(crate) mod tests {
         s.stop(&c, &t).unwrap();
         assert!(s.segments.values().next().unwrap().end.is_none());
         assert_eq!(state(&s, &t), TaskState::Stopped);
+    }
+
+    #[test]
+    fn editing_leaves_segments_and_state_alone_in_every_state() {
+        let (mut s, p, t) = base();
+        let c = ctx("2026-01-01T09:00:00Z");
+        s.update_task(&c, &t, &task_input("Draft edit", &p))
+            .unwrap();
+        s.start(&c, &t).unwrap();
+        let open = s.segments.clone();
+        s.update_task(
+            &ctx("2026-01-01T09:30:00Z"),
+            &t,
+            &task_input("Running edit", &p),
+        )
+        .unwrap();
+        assert_eq!(s.segments, open);
+        assert_eq!(state(&s, &t), TaskState::Running);
+        s.pause(&c, &t).unwrap();
+        s.update_task(&c, &t, &task_input("Paused edit", &p))
+            .unwrap();
+        assert_eq!(state(&s, &t), TaskState::Paused);
+        s.stop(&c, &t).unwrap();
+        let closed = s.segments.clone();
+        let mut described = task_input("Stopped edit", &p);
+        described.description = json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"x"}]}]});
+        s.update_task(&c, &t, &described).unwrap();
+        assert_eq!(s.segments, closed);
+        assert_eq!(state(&s, &t), TaskState::Stopped);
+        assert_eq!(s.tasks[&t].name, "Stopped edit");
+        // The description can be cleared after start, and a blank name is refused.
+        s.update_task(&c, &t, &task_input("Stopped edit", &p))
+            .unwrap();
+        assert!(s.tasks[&t].description.is_null());
+        assert!(s.update_task(&c, &t, &task_input("  ", &p)).is_err());
+        assert_eq!(s.tasks[&t].name, "Stopped edit");
+    }
+
+    #[test]
+    fn only_changed_fields_get_a_new_clock() {
+        let (mut s, p, t) = base();
+        let before = s.tasks[&t].clone();
+        let mut edit = task_input("Write", &p);
+        edit.description = json!({"type":"doc","content":[]});
+        s.update_task(&ctx("2026-01-01T10:00:00Z"), &t, &edit)
+            .unwrap();
+        let after = &s.tasks[&t];
+        assert_eq!(after.name_stamp, before.name_stamp);
+        assert_eq!(after.project_stamp, before.project_stamp);
+        assert_ne!(after.description_stamp, before.description_stamp);
+    }
+
+    #[test]
+    fn real_text_is_needed_for_a_description_to_count() {
+        assert!(!doc_has_text(&Value::Null));
+        assert!(!doc_has_text(
+            &json!({"type":"doc","content":[{"type":"paragraph"}]})
+        ));
+        assert!(!doc_has_text(
+            &json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"  \n "}]}]})
+        ));
+        assert!(!doc_has_text(
+            &json!({"type":"doc","content":[{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph"}]}]}]})
+        ));
+        assert!(doc_has_text(
+            &json!({"type":"doc","content":[{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"a"}]}]}]}]})
+        ));
+    }
+
+    #[test]
+    fn a_clock_ahead_on_another_device_does_not_swallow_work_here() {
+        let (mut s, _, t) = base();
+        let b = |iso: &str| Ctx {
+            now: Ts::parse(iso).unwrap(),
+            device: "device-b",
+        };
+        s.start(&b("2026-01-01T09:00:00Z"), &t).unwrap();
+        s.pause(&b("2026-01-01T09:10:00Z"), &t).unwrap();
+        s.resume(&ctx("2026-01-01T09:01:00Z"), &t).unwrap();
+        let mine = s.segments.values().find(|x| x.device_id == DEV).unwrap();
+        assert_eq!(mine.start.iso(), "2026-01-01T09:01:00Z");
     }
 
     #[test]

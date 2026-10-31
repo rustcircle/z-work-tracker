@@ -41,13 +41,40 @@ impl Paths {
     }
 }
 
+/// Creates `tmp` afresh and fills it. A leftover file or planted link is removed, never followed.
+fn write_new(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+    match fs::symlink_metadata(tmp) {
+        Ok(meta) if meta.is_dir() => return Err(io::Error::other("temporary path is a directory")),
+        Ok(_) => fs::remove_file(tmp)?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tmp)?;
+    f.write_all(bytes)?;
+    f.sync_all()
+}
+
+/// Antivirus or backup tools can hold a file for a moment. Retried for about half a second.
+fn with_local_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    let mut wait = 50;
+    for _ in 0..3 {
+        match op() {
+            Err(e) if crate::sync::is_transient(&e) => {
+                std::thread::sleep(std::time::Duration::from_millis(wait))
+            }
+            other => return other,
+        }
+        wait *= 2;
+    }
+    op()
+}
+
 /// Writes `bytes` to `tmp`, flushes it to disk and renames it over `dest`.
 pub fn write_atomic(dest: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
-    {
-        let mut f = File::create(tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-    }
+    write_new(tmp, bytes)?;
     fs::rename(tmp, dest)?;
     #[cfg(unix)]
     if let Some(parent) = dest.parent()
@@ -200,20 +227,25 @@ pub fn load(
 /// main file damaged while running can never replace a good backup.
 pub fn save(paths: &Paths, file: &LocalFile, now: Ts) -> Result<(), CoreError> {
     let bytes = serde_json::to_vec(file)?;
-    let tmp = paths.tmp();
-    {
-        let mut f = File::create(&tmp)?;
-        f.write_all(&bytes)?;
-        f.sync_all()?;
+    // What cannot be read back must never replace the file that can.
+    if let Parsed::Corrupt(why) = parse_local(&bytes) {
+        return Err(CoreError::Validation(format!(
+            "refusing to save data that cannot be read back: {why}"
+        )));
     }
+    let tmp = paths.tmp();
+    with_local_retry(|| write_new(&tmp, &bytes))?;
     if let Some(current) = read_opt(&paths.main())? {
         if matches!(parse_local(&current), Parsed::Corrupt(_)) {
             quarantine(paths, &paths.main(), now)?;
-        } else {
-            write_atomic(&paths.bak(), &paths.bak_tmp(), &current)?;
+        } else if let Err(e) =
+            with_local_retry(|| write_atomic(&paths.bak(), &paths.bak_tmp(), &current))
+        {
+            // A locked backup must not stop time logging; the next save rotates it again.
+            eprintln!("could not refresh the backup: {e}");
         }
     }
-    fs::rename(&tmp, paths.main())?;
+    with_local_retry(|| fs::rename(&tmp, paths.main()))?;
     Ok(())
 }
 
@@ -328,6 +360,52 @@ mod tests {
             Err(CoreError::FutureVersion { found: 99, .. })
         ));
         assert_eq!(fs::read(p.main()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_blocked_backup_does_not_stop_the_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        save(&p, &with_project("One"), NOW).unwrap();
+        fs::create_dir(p.bak()).unwrap();
+        let two = with_project("Two");
+        save(&p, &two, NOW).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<LocalFile>(&fs::read(p.main()).unwrap()).unwrap(),
+            two
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_link_at_the_temporary_path_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim.txt");
+        fs::write(&victim, b"precious").unwrap();
+        let p = Paths::new(dir.path());
+        std::os::unix::fs::symlink(&victim, p.tmp()).unwrap();
+        save(&p, &with_project("One"), NOW).unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"precious");
+        let dest = dir.path().join("d");
+        let tmp = dir.path().join("t");
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+        write_atomic(&dest, &tmp, b"data").unwrap();
+        assert_eq!(fs::read(&victim).unwrap(), b"precious");
+        assert_eq!(fs::read(&dest).unwrap(), b"data");
+    }
+
+    #[test]
+    fn data_that_cannot_be_read_back_is_refused_and_the_store_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let good = with_project("One");
+        save(&p, &good, NOW).unwrap();
+        let mut bad = with_project("Two");
+        bad.last_heartbeat = Some(Ts(Ts::MAX.0 + 86_400));
+        assert!(save(&p, &bad, NOW).is_err());
+        assert_eq!(load(&p, "pc", NOW).unwrap().0, good);
+        assert_eq!(corrupt_files(dir.path()), 0);
     }
 
     #[test]

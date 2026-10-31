@@ -9,19 +9,21 @@ use serde_json::Value;
 use crate::detect::Detected;
 use crate::error::CoreError;
 use crate::machine::{
-    Ctx, ProjectInput, RateInput, RoundingInput, ShiftInput, TaskInput, Transition,
+    COLD_REQUIRED, Ctx, ProjectInput, RateInput, RequiredField, RoundingInput, ShiftInput,
+    TaskInput, Transition, doc_has_text,
 };
 use crate::merge::merge;
 use crate::model::{
-    DeviceFile, LocalFile, PauseReason, RemoteDevice, SCHEMA_VERSION, Shared, SyncTarget,
+    DeviceFile, LocalFile, PauseReason, RemoteDevice, SCHEMA_VERSION, Shared, SyncTarget, Task,
     TaskState, Theme,
 };
 use crate::persist::{self, Paths};
 use crate::report::ExportSource;
-use crate::sync::{APP_FOLDER, TargetStatus};
+use crate::sync::{APP_FOLDER, HungTargets, TargetStatus};
 use crate::time::{Clock, Ts};
 use crate::view::{
-    Notice, PrefsView, ProjectView, SegmentView, Snapshot, SyncView, TargetView, TaskView,
+    CopySource, LaunchView, Notice, PrefsView, ProjectView, SegmentView, Snapshot, SyncView,
+    TargetView, TaskView,
 };
 
 pub struct Service {
@@ -35,6 +37,13 @@ pub struct Service {
     system_zone: String,
     /// Bumped on every committed change, so the app knows when to schedule a sync.
     revision: u64,
+    /// False on every real launch, until the first task of this launch has started. Never saved.
+    warm: bool,
+    /// The task most recently worked in this launch: what a warm start copies.
+    last_worked: Option<String>,
+    /// A failure to save merged data. Folder writes must not clear it.
+    local_error: Option<String>,
+    hung: HungTargets,
 }
 
 impl Service {
@@ -53,6 +62,10 @@ impl Service {
             detected: Vec::new(),
             system_zone: "UTC".to_owned(),
             revision: 0,
+            warm: false,
+            last_worked: None,
+            local_error: None,
+            hung: HungTargets::default(),
         };
         for n in outcome.notices {
             svc.notify("warning", n);
@@ -82,7 +95,7 @@ impl Service {
         self.notify(
             "warning",
             format!(
-                "The app did not shut down cleanly. {} was paused at its last recorded moment ({}). Time after that was not logged.",
+                "The app did not shut down cleanly. {} was paused at its last recorded moment ({}). Time after that was not logged. The next start asks for every field.",
                 names.join(", "),
                 self.file.last_heartbeat.map_or_else(|| "its start".to_owned(), |h| h.iso()),
             ),
@@ -148,6 +161,7 @@ impl Service {
         persist::save(&self.paths, &next, now)?;
         self.file = next;
         self.revision += 1;
+        self.local_error = None;
         Ok(out)
     }
 
@@ -178,27 +192,108 @@ impl Service {
         r
     }
 
+    /// A cold launch: every required field must be filled before the first start, enforced here.
+    fn check_cold_fields(&self, id: &str) -> Result<(), CoreError> {
+        if self.warm {
+            return Ok(());
+        }
+        let task = self
+            .file
+            .data
+            .tasks
+            .get(id)
+            .filter(|t| t.is_live())
+            .ok_or(CoreError::NotFound("task"))?;
+        for field in COLD_REQUIRED {
+            let missing = match field {
+                RequiredField::Name => task.name.trim().is_empty(),
+                RequiredField::Project => task.project_id.is_empty(),
+                RequiredField::Description => !doc_has_text(&task.description),
+            };
+            if missing {
+                let label = match field {
+                    RequiredField::Name => "Task name",
+                    RequiredField::Project => "Project",
+                    RequiredField::Description => "Description",
+                };
+                return Err(CoreError::Validation(format!(
+                    "{label} is required for the first start after launch"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn start_task(&mut self, id: &str) -> Result<Transition, CoreError> {
-        self.mutate(|f, c| {
+        self.check_cold_fields(id)?;
+        let out = self.mutate(|f, c| {
             let out = f.data.start(c, id)?;
             Ok(Self::with_beat(f, c, out))
-        })
+        })?;
+        self.warm = true;
+        self.last_worked = Some(id.to_owned());
+        Ok(out)
     }
+
+    /// Refused on a cold launch: continuing then means a new linked task with every field filled in.
     pub fn resume_task(&mut self, id: &str) -> Result<Transition, CoreError> {
-        self.mutate(|f, c| {
+        if !self.warm {
+            return Err(CoreError::ColdStartRequired);
+        }
+        let out = self.mutate(|f, c| {
             let out = f.data.resume(c, id)?;
             Ok(Self::with_beat(f, c, out))
-        })
+        })?;
+        self.last_worked = Some(id.to_owned());
+        Ok(out)
     }
+
     pub fn pause_task(&mut self, id: &str) -> Result<(), CoreError> {
         self.mutate(|f, c| {
             f.data
                 .pause(c, id)
                 .map_err(|e| name_device(e, f.remote_devices.clone()))
-        })
+        })?;
+        self.last_worked = Some(id.to_owned());
+        Ok(())
     }
+
     pub fn stop_task(&mut self, id: &str) -> Result<(), CoreError> {
-        self.mutate(|f, c| f.data.stop(c, id))
+        self.mutate(|f, c| f.data.stop(c, id))?;
+        self.last_worked = Some(id.to_owned());
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn is_warm(&self) -> bool {
+        self.warm
+    }
+
+    #[must_use]
+    pub fn hung_targets(&self) -> HungTargets {
+        Arc::clone(&self.hung)
+    }
+
+    fn copy_source(&self) -> Option<CopySource> {
+        let data = &self.file.data;
+        let task = data
+            .tasks
+            .get(self.last_worked.as_ref()?)
+            .filter(|t| t.is_live())?;
+        let project = data.projects.get(&task.project_id);
+        Some(CopySource {
+            task_id: task.id.clone(),
+            name: task.name.clone(),
+            project_id: task.project_id.clone(),
+            project_archived: project.is_none_or(|p| p.archived || p.deleted),
+            description: task.description.clone(),
+            last_worked_at: data
+                .segments
+                .values()
+                .filter(|s| s.task_id == task.id)
+                .map(|s| s.end.unwrap_or(s.start))
+                .max(),
+        })
     }
 
     pub fn save_shift(&mut self, input: &ShiftInput) -> Result<String, CoreError> {
@@ -318,8 +413,20 @@ impl Service {
         &mut self,
         incoming: &Shared,
         seen: BTreeMap<String, RemoteDevice>,
+        own_files: Vec<DeviceFile>,
     ) -> bool {
-        let merged = merge(&self.file.data, incoming);
+        let mut merged = merge(&self.file.data, incoming);
+        // This device's own file can hold what a restored store lost. An open segment that comes
+        // back this way belongs to a past run, so it closes at that file's last heartbeat.
+        for mut own in own_files {
+            for seg in own.data.segments.values_mut() {
+                let open_here = seg.end.is_none() && seg.device_id == self.file.device_id;
+                if open_here && !self.file.data.segments.contains_key(&seg.id) {
+                    seg.end = Some(own.last_heartbeat.unwrap_or(seg.start).max(seg.start));
+                }
+            }
+            merged = merge(&merged, &own.data);
+        }
         let mut known = self.file.remote_devices.clone();
         for (id, device) in seen {
             match known.get(&id) {
@@ -350,7 +457,9 @@ impl Service {
         match outcome {
             Ok(()) => data_changed,
             Err(e) => {
-                self.record_sync_failure(&format!("Could not save merged data: {e}"));
+                self.local_error = Some(format!(
+                    "Could not save data merged from the sync folder: {e}"
+                ));
                 false
             }
         }
@@ -414,7 +523,7 @@ impl Service {
         let with_tasks: BTreeSet<&str> = data
             .tasks
             .values()
-            .filter(|t| !t.deleted)
+            .filter(|t| t.is_live())
             .map(|t| t.project_id.as_str())
             .collect();
         let open_devices: BTreeSet<&str> = data
@@ -454,7 +563,7 @@ impl Service {
         let tasks = data
             .tasks
             .values()
-            .filter(|t| !t.deleted)
+            .filter(|t| t.is_live())
             .map(|t| TaskView {
                 id: t.id.clone(),
                 name: t.name.clone(),
@@ -464,6 +573,7 @@ impl Service {
                 pause_reason: t.pause_reason.clone(),
                 created_at: t.created_at,
                 stopped_at: t.stopped_at,
+                continued_from: t.continued_from.clone(),
                 running_elsewhere: if t.state == TaskState::Running
                     && !open_here.contains(t.id.as_str())
                 {
@@ -480,7 +590,7 @@ impl Service {
         let segments = data
             .segments
             .values()
-            .filter(|s| data.tasks.get(&s.task_id).is_some_and(|t| !t.deleted))
+            .filter(|s| data.tasks.get(&s.task_id).is_some_and(Task::is_live))
             .map(|s| SegmentView {
                 id: s.id.clone(),
                 task_id: s.task_id.clone(),
@@ -508,6 +618,8 @@ impl Service {
                 names.join(", ")
             ));
         }
+
+        warnings.extend(self.local_error.clone());
 
         let targets = self
             .file
@@ -571,6 +683,11 @@ impl Service {
                 prompt_pending: !self.file.prefs.sync_prompt_done
                     && self.file.prefs.sync_targets.is_empty(),
             },
+            launch: LaunchView {
+                warm: self.warm,
+                cold_required: COLD_REQUIRED,
+                copy_source: if self.warm { self.copy_source() } else { None },
+            },
         }
     }
 }
@@ -607,8 +724,12 @@ mod tests {
         TaskInput {
             name: name.into(),
             project_id: p.into(),
-            description: Value::Null,
+            description: doc("Details"),
+            continued_from: None,
         }
+    }
+    fn doc(text: &str) -> Value {
+        serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]})
     }
     fn open(dir: &Path, clock: &ManualClock) -> Service {
         Service::open(dir, Arc::new(clock.clone()), "pc").unwrap()
@@ -620,6 +741,140 @@ mod tests {
         let t = s.create_task(&tinput("T", &p)).unwrap();
         s.start_task(&t).unwrap();
         (s, t)
+    }
+
+    #[test]
+    fn cold_launch_needs_every_field_and_the_flag_is_launch_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        assert!(!s.snapshot().launch.warm);
+        assert_eq!(s.snapshot().launch.cold_required, COLD_REQUIRED);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let blank = TaskInput {
+            name: "T".into(),
+            project_id: p.clone(),
+            description: Value::Null,
+            continued_from: None,
+        };
+        let t = s.create_task(&blank).unwrap();
+        assert!(matches!(s.start_task(&t), Err(CoreError::Validation(_))));
+        let spaces = TaskInput {
+            description: doc("   "),
+            ..blank.clone()
+        };
+        s.update_task(&t, &spaces).unwrap();
+        assert!(matches!(s.start_task(&t), Err(CoreError::Validation(_))));
+        assert!(!s.is_warm());
+        assert!(s.file().data.segments.is_empty());
+        let filled = TaskInput {
+            description: doc("Real"),
+            ..blank.clone()
+        };
+        s.update_task(&t, &filled).unwrap();
+        s.start_task(&t).unwrap();
+        assert!(s.is_warm());
+        // Warm: a blank description is allowed, name and project are still mandatory.
+        let other = s.create_task(&blank).unwrap();
+        s.start_task(&other).unwrap();
+        assert!(
+            s.create_task(&TaskInput {
+                name: " ".into(),
+                ..blank.clone()
+            })
+            .is_err()
+        );
+        // A real relaunch is cold again.
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert!(!s.is_warm());
+        assert!(s.snapshot().launch.copy_source.is_none());
+    }
+
+    #[test]
+    fn resume_is_refused_while_cold_and_accepted_once_warm() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        s.pause_task(&t).unwrap();
+        assert!(
+            s.resume_task(&t).is_ok(),
+            "warm: resume continues the same task"
+        );
+        s.on_exit().unwrap();
+        drop(s);
+        let mut s = open(dir.path(), &clock);
+        let before = s.file().data.tasks[&t].clone();
+        let segs = s.file().data.segments.len();
+        assert!(matches!(
+            s.resume_task(&t),
+            Err(CoreError::ColdStartRequired)
+        ));
+        assert_eq!(
+            s.file().data.segments.len(),
+            segs,
+            "a refused resume logs nothing"
+        );
+        // The continuation is a new task linked to the old, which stays as it was.
+        let p = before.project_id.clone();
+        let next = s
+            .create_task(&TaskInput {
+                name: "Next".into(),
+                project_id: p,
+                description: doc("More"),
+                continued_from: Some(t.clone()),
+            })
+            .unwrap();
+        s.start_task(&next).unwrap();
+        assert_eq!(
+            s.file().data.tasks[&next].continued_from.as_deref(),
+            Some(t.as_str())
+        );
+        let old = &s.file().data.tasks[&t];
+        assert_eq!(
+            (&old.name, &old.description, old.state),
+            (&before.name, &before.description, TaskState::Paused)
+        );
+        // Now warm, the old task can be stopped or resumed directly.
+        assert!(s.resume_task(&t).is_ok());
+    }
+
+    #[test]
+    fn crash_recovery_leaves_the_launch_cold_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (s, t) = running(dir.path(), &clock);
+        drop(s);
+        let mut s = open(dir.path(), &clock);
+        assert!(
+            s.snapshot().notices[0]
+                .message
+                .contains("next start asks for every field")
+        );
+        assert!(matches!(
+            s.resume_task(&t),
+            Err(CoreError::ColdStartRequired)
+        ));
+    }
+
+    #[test]
+    fn warm_copy_source_is_the_most_recently_worked_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, a) = running(dir.path(), &clock);
+        let src = s.snapshot().launch.copy_source.unwrap();
+        assert_eq!(src.task_id, a);
+        assert!(!src.project_archived);
+        clock.advance(60);
+        s.stop_task(&a).unwrap();
+        assert_eq!(
+            s.snapshot().launch.copy_source.unwrap().task_id,
+            a,
+            "a stopped task can still be the source"
+        );
+        let p = s.file().data.tasks[&a].project_id.clone();
+        s.set_project_archived(&p, true).unwrap();
+        assert!(s.snapshot().launch.copy_source.unwrap().project_archived);
     }
 
     #[test]

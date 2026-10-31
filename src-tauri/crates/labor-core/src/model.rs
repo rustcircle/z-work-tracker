@@ -86,15 +86,20 @@ pub enum PauseReason {
 pub struct Task {
     pub id: String,
     pub name: String,
+    pub name_stamp: Stamp,
     pub project_id: String,
+    pub project_stamp: Stamp,
     /// TipTap document JSON or null. Rendered only through the editor.
     #[serde(default)]
     pub description: Value,
+    pub description_stamp: Stamp,
     #[serde(default)]
     pub deleted: bool,
+    pub deleted_stamp: Stamp,
+    /// The task this one continues. Set once at creation, for traceability.
+    #[serde(default)]
+    pub continued_from: Option<String>,
     pub created_at: Ts,
-    /// Clock for name, project, description and tombstone.
-    pub meta_stamp: Stamp,
     pub state: TaskState,
     #[serde(default)]
     pub pause_reason: Option<PauseReason>,
@@ -102,6 +107,14 @@ pub struct Task {
     pub state_stamp: Stamp,
     #[serde(default)]
     pub stopped_at: Option<Ts>,
+}
+
+impl Task {
+    /// A deleted draft is gone. If another device logged time on it meanwhile, the time wins.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        !self.deleted || self.state != TaskState::Draft
+    }
 }
 
 /// One unit of work. Only the owning device ever closes its own segment.

@@ -12,6 +12,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct Ts(pub i64);
 
 impl Ts {
+    /// 0000-01-01T00:00:00Z and 9999-12-31T23:59:59Z: the range `iso` can print and `parse` can read.
+    pub const MIN: Self = Self(-62_167_219_200);
+    pub const MAX: Self = Self(253_402_300_799);
+
     #[must_use]
     pub fn secs(self) -> i64 {
         self.0
@@ -29,10 +33,11 @@ impl Ts {
         DateTime::parse_from_rfc3339(s)
             .ok()
             .map(|d| Self(d.timestamp()))
+            .filter(|t| (Self::MIN.0..=Self::MAX.0).contains(&t.0))
     }
     #[must_use]
     pub fn later(self, secs: i64) -> Self {
-        Self(self.0.saturating_add(secs))
+        Self(self.0.saturating_add(secs).min(Self::MAX.0))
     }
 }
 
@@ -110,5 +115,14 @@ mod tests {
     fn rejects_garbage() {
         assert!(serde_json::from_str::<Ts>("\"yesterday\"").is_err());
         assert!(Ts::parse("2026-13-01T00:00:00Z").is_none());
+    }
+
+    #[test]
+    fn rejects_values_that_would_print_as_year_10000() {
+        assert!(Ts::parse("9999-12-31T23:59:59-01:00").is_none());
+        let max = Ts::parse("9999-12-31T23:59:59Z").unwrap();
+        assert_eq!(max, Ts::MAX);
+        assert_eq!(max.later(5), max);
+        assert_eq!(Ts::parse(&max.iso()), Some(max));
     }
 }

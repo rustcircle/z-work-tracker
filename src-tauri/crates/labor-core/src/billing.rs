@@ -18,6 +18,7 @@ use chrono::{Datelike, Days, NaiveDate, NaiveTime, TimeZone};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
+use crate::machine::stamp_order;
 use crate::model::{RateVersion, RoundMethod, Segment, Shared};
 use crate::time::Ts;
 use crate::validate::is_currency;
@@ -117,7 +118,7 @@ pub fn rounding_rule(shared: &Shared, project_id: &str, day: NaiveDate) -> Round
             .max_by(|a, b| {
                 a.effective_from
                     .cmp(&b.effective_from)
-                    .then_with(|| a.id.cmp(&b.id))
+                    .then_with(|| stamp_order(&a.stamp, &a.id, &b.stamp, &b.id))
             })
     };
     let chosen = pick(Some(project_id)).or_else(|| pick(None));
@@ -146,7 +147,7 @@ fn rates_for<'a>(shared: &'a Shared, project_id: &str) -> Vec<&'a RateVersion> {
     rates.sort_by(|a, b| {
         a.effective_from
             .cmp(&b.effective_from)
-            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| stamp_order(&a.stamp, &a.id, &b.stamp, &b.id))
     });
     rates
 }
@@ -223,7 +224,8 @@ impl TaskDay {
         let mut out = BTreeMap::new();
         for b in &self.buckets {
             if let (Some(rate), Some(cur)) = (b.rate_cents, &b.currency) {
-                *out.entry(cur.clone()).or_insert(0) += rate * b.billable_secs;
+                let total = out.entry(cur.clone()).or_insert(0i64);
+                *total = total.saturating_add(rate.saturating_mul(b.billable_secs));
             }
         }
         out
@@ -252,7 +254,7 @@ pub fn task_days(shared: &Shared, tz: Tz, end_of: &dyn Fn(&Segment) -> Ts) -> Ve
     }
     let mut acc: BTreeMap<(String, NaiveDate), Acc> = BTreeMap::new();
     let mut project_of: BTreeMap<&str, &str> = BTreeMap::new();
-    for t in shared.tasks.values().filter(|t| !t.deleted) {
+    for t in shared.tasks.values().filter(|t| t.is_live()) {
         project_of.insert(t.id.as_str(), t.project_id.as_str());
     }
     for seg in shared.segments.values() {
@@ -677,6 +679,65 @@ pub(crate) mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn same_date_versions_from_two_devices_resolve_to_the_newest_edit() {
+        let (mut s, p, t) = fixture(Some((0, RoundMethod::Nearest)));
+        seg(
+            &mut s,
+            &t,
+            "a",
+            "2026-02-02T10:00:00Z",
+            "2026-02-02T11:00:00Z",
+        );
+        for (id, cents, at) in [
+            ("zzz", 5000, "2026-01-02T00:00:00Z"),
+            ("aaa", 7000, "2026-01-03T00:00:00Z"),
+        ] {
+            s.rates.insert(
+                id.into(),
+                RateVersion {
+                    id: id.into(),
+                    project_id: p.clone(),
+                    effective_from: Ts::parse("2026-01-01T00:00:00Z").unwrap(),
+                    rate_cents: Some(cents),
+                    currency: "EUR".into(),
+                    deleted: false,
+                    stamp: crate::model::Stamp {
+                        at: Ts::parse(at).unwrap(),
+                        by: "x".into(),
+                    },
+                },
+            );
+        }
+        assert_eq!(
+            cents_from_numerator(rows(&s, "UTC")[0].numerators()["EUR"]),
+            7000
+        );
+        // An edit updates the winner, and takes effect.
+        rate(&mut s, &p, Some(9000), "EUR", "2026-01-01T00:00:00Z");
+        assert_eq!(s.rates.len(), 2);
+        assert_eq!(
+            cents_from_numerator(rows(&s, "UTC")[0].numerators()["EUR"]),
+            9000
+        );
+    }
+
+    #[test]
+    fn time_logged_on_a_draft_deleted_elsewhere_is_not_lost() {
+        let (mut s, _, t) = fixture(Some((0, RoundMethod::Nearest)));
+        seg(
+            &mut s,
+            &t,
+            "a",
+            "2026-02-02T10:00:00Z",
+            "2026-02-02T11:00:00Z",
+        );
+        let task = s.tasks.get_mut(&t).unwrap();
+        task.deleted = true;
+        task.state = crate::model::TaskState::Paused;
+        assert_eq!(rows(&s, "UTC")[0].exact_secs, 3600);
     }
 
     #[test]

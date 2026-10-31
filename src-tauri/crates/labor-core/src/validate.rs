@@ -6,7 +6,10 @@ use chrono_tz::Tz;
 use serde_json::Value;
 
 use crate::error::CoreError;
-use crate::model::{Project, RateVersion, RoundingVersion, Shared, ShiftVersion, Task};
+use crate::model::{
+    DeviceFile, Project, RateVersion, RoundingVersion, Shared, ShiftVersion, Stamp, Task,
+};
+use crate::time::Ts;
 
 pub const MAX_NAME: usize = 200;
 pub const MAX_PROJECT_NAME: usize = 80;
@@ -207,9 +210,123 @@ fn check_task(t: &Task) -> Result<(), CoreError> {
     check_description(&t.description)
 }
 
-/// A remote device file that fails this is skipped as a whole.
-pub fn check_shared(s: &Shared) -> Result<(), CoreError> {
+/// The oldest date a synced record may carry, and how far ahead of this clock it may be.
+const EARLIEST: Ts = Ts(946_684_800); // 2000-01-01
+const MAX_SKEW_SECS: i64 = 2 * 86_400;
+const FAR_FUTURE: Ts = Ts(4_102_444_800); // 2100-01-01, for chosen effective dates
+const MAX_SEGMENT_SECS: i64 = 366 * 86_400;
+const MAX_RECORDS: usize = 1_000_000;
+const MAX_ID_LEN: usize = 64;
+
+fn check_time(t: Ts, now: Ts, what: &str) -> Result<(), CoreError> {
+    if t < EARLIEST || t > now.later(MAX_SKEW_SECS) {
+        return Err(bad(format!("{what} is outside the plausible time range")));
+    }
+    Ok(())
+}
+
+fn check_stamp(s: &Stamp, now: Ts) -> Result<(), CoreError> {
+    check_time(s.at, now, "a change stamp")?;
+    if s.by.len() > MAX_ID_LEN {
+        Err(bad("a device id is too long"))
+    } else {
+        Ok(())
+    }
+}
+
+fn check_id(id: &str) -> Result<(), CoreError> {
+    if id.is_empty() || id.len() > MAX_ID_LEN {
+        Err(bad("an id has an invalid length"))
+    } else {
+        Ok(())
+    }
+}
+
+fn check_plain(text: &str, max: usize, what: &str) -> Result<(), CoreError> {
+    if text.chars().count() > max || text.chars().any(char::is_control) {
+        return Err(bad(format!("{what} is too long or has control characters")));
+    }
+    Ok(())
+}
+
+/// Device-level checks on a file from a sync folder, on top of `check_shared`.
+pub fn check_device_file(f: &DeviceFile, now: Ts) -> Result<(), CoreError> {
+    check_plain(&f.device_name, MAX_NAME, "the device name")?;
+    check_time(f.written_at, now, "the file's write time")?;
+    if let Some(h) = f.last_heartbeat {
+        check_time(h, now, "the heartbeat")?;
+    }
+    check_shared(&f.data, now)
+}
+
+/// A file from a sync folder that fails this is skipped as a whole, so nothing implausible enters
+/// the store. Timestamps must stay in a sane window: a far-future stamp would otherwise win every
+/// merge and could not be saved.
+pub fn check_shared(s: &Shared, now: Ts) -> Result<(), CoreError> {
     check_core(s)?;
+    let total = s.projects.len()
+        + s.tasks.len()
+        + s.segments.len()
+        + s.settings.len()
+        + s.shifts.len()
+        + s.rates.len()
+        + s.rounding.len();
+    if total > MAX_RECORDS {
+        return Err(bad("too many records"));
+    }
+    for p in s.projects.values() {
+        check_id(&p.id)?;
+        check_plain(&p.name, MAX_PROJECT_NAME * 4, "a project name")?;
+        check_time(p.created_at, now, "a project date")?;
+        check_stamp(&p.stamp, now)?;
+    }
+    for t in s.tasks.values() {
+        check_id(&t.id)?;
+        check_plain(&t.name, MAX_NAME * 4, "a task name")?;
+        check_time(t.created_at, now, "a task date")?;
+        for stamp in [
+            &t.name_stamp,
+            &t.project_stamp,
+            &t.description_stamp,
+            &t.deleted_stamp,
+            &t.state_stamp,
+        ] {
+            check_stamp(stamp, now)?;
+        }
+        if let Some(at) = t.stopped_at {
+            check_time(at, now, "a stop time")?;
+        }
+    }
+    for seg in s.segments.values() {
+        check_id(&seg.id)?;
+        check_time(seg.start, now, "a segment start")?;
+        if let Some(end) = seg.end {
+            check_time(end, now, "a segment end")?;
+            if end < seg.start || end.secs() - seg.start.secs() > MAX_SEGMENT_SECS {
+                return Err(bad("a segment has an impossible duration"));
+            }
+        }
+    }
+    for (key, entry) in &s.settings {
+        crate::machine::check_setting(key, &entry.value)?;
+        check_stamp(&entry.stamp, now)?;
+    }
+    for v in s.shifts.values() {
+        check_id(&v.id)?;
+        check_stamp(&v.stamp, now)?;
+    }
+    for v in s.rates.values() {
+        check_id(&v.id)?;
+        check_stamp(&v.stamp, now)?;
+        if v.effective_from < EARLIEST || v.effective_from > FAR_FUTURE {
+            return Err(bad("a price date is outside the plausible range"));
+        }
+    }
+    for v in s.rounding.values() {
+        check_id(&v.id)?;
+        check_stamp(&v.stamp, now)?;
+    }
+
     for (id, v) in &s.rates {
         if *id != v.id {
             return Err(bad("rate id mismatch"));

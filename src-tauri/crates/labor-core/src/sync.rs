@@ -3,10 +3,10 @@
 //! Google Drive) does the upload; this code never touches the network. Nothing here can block time
 //! logging or damage the local store: every failure only ends up in the status.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -16,11 +16,14 @@ use crate::model::{DeviceFile, RemoteDevice, SCHEMA_VERSION, Shared, SyncTarget}
 use crate::persist;
 use crate::service::Service;
 use crate::time::Ts;
-use crate::validate::check_shared;
+use crate::validate::check_device_file;
 
 pub const APP_FOLDER: &str = "LaborTracker";
 pub const DEVICES_FOLDER: &str = "devices";
-pub const MAX_REMOTE_FILE_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_REMOTE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_DEVICE_FILES: usize = 64;
+pub const TARGET_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_BASE_MS: u64 = 100;
 const RETRY_ATTEMPTS: u32 = 5;
 
@@ -35,7 +38,32 @@ pub trait SyncIo: Send + Sync {
     fn sleep(&self, d: Duration);
 }
 
+#[derive(Clone, Copy)]
 pub struct RealIo;
+
+impl<T: SyncIo + ?Sized> SyncIo for Arc<T> {
+    fn is_dir(&self, path: &Path) -> bool {
+        (**self).is_dir(path)
+    }
+    fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        (**self).create_dir_all(path)
+    }
+    fn list(&self, path: &Path) -> io::Result<Vec<String>> {
+        (**self).list(path)
+    }
+    fn file_size(&self, path: &Path) -> io::Result<u64> {
+        (**self).file_size(path)
+    }
+    fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+        (**self).read(path)
+    }
+    fn write_atomic(&self, dest: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+        (**self).write_atomic(dest, tmp, bytes)
+    }
+    fn sleep(&self, d: Duration) {
+        (**self).sleep(d);
+    }
+}
 
 impl SyncIo for RealIo {
     fn is_dir(&self, path: &Path) -> bool {
@@ -134,44 +162,65 @@ pub struct TargetStatus {
 #[derive(Debug, Default)]
 pub struct TargetRead {
     pub files: Vec<DeviceFile>,
+    /// This device's own file from this folder. A restored store may be older than it.
+    pub own: Option<DeviceFile>,
+    /// This device's own file was written by a newer app version, so it must not be overwritten.
+    pub own_newer: bool,
     pub warnings: Vec<String>,
     pub ignored: usize,
     pub error: Option<String>,
 }
 
-/// Reads every other device's file. Damaged, newer or unreadable files are skipped with a warning.
-pub fn read_target(io_impl: &dyn SyncIo, root: &Path, own_id: &str) -> TargetRead {
+const FOLDER_NOT_FOUND: &str =
+    "Folder not found. Is the drive connected and the desktop client running?";
+const DAMAGED: &str = "the file is incomplete or damaged. Keeping the last good data.";
+
+/// Reads every device's file. Damaged, newer, oversized or unreadable files are skipped with a warning.
+pub fn read_target(io_impl: &dyn SyncIo, root: &Path, own_id: &str, now: Ts) -> TargetRead {
     let mut out = TargetRead::default();
     let dir = devices_dir(root);
     if !io_impl.is_dir(root) {
-        out.error = Some(
-            "Folder not found. Is the drive connected and the desktop client running?".to_owned(),
-        );
+        out.error = Some(FOLDER_NOT_FOUND.to_owned());
         return out;
     }
     if !io_impl.is_dir(&dir) {
         return out;
     }
-    let names = match with_retry(io_impl, || io_impl.list(&dir)) {
+    let mut names = match with_retry(io_impl, || io_impl.list(&dir)) {
         Ok(n) => n,
         Err(e) => {
             out.error = Some(format!("Could not list the folder: {e}"));
             return out;
         }
     };
+    names.sort();
+    let mut seen_files = 0usize;
+    let mut total_bytes = 0u64;
     for name in names {
         let Some(id) = device_id_from_name(&name) else {
             out.ignored += 1;
             continue;
         };
-        if id == own_id {
+        let is_own = id == own_id;
+        seen_files += 1;
+        if seen_files > MAX_DEVICE_FILES {
+            out.warnings.push(format!(
+                "Skipped {name}: the folder holds too many device files."
+            ));
             continue;
         }
         let path = dir.join(&name);
-        let too_big = io_impl
-            .file_size(&path)
-            .is_ok_and(|s| s > MAX_REMOTE_FILE_BYTES);
-        if too_big {
+        // Fail closed: a size that cannot be read is treated like a file that cannot be read.
+        let size = match io_impl.file_size(&path) {
+            Ok(size) => size,
+            Err(e) => {
+                out.warnings
+                    .push(format!("Could not read {name} right now, will retry: {e}"));
+                continue;
+            }
+        };
+        total_bytes = total_bytes.saturating_add(size);
+        if size > MAX_REMOTE_FILE_BYTES || total_bytes > MAX_TOTAL_BYTES {
             out.warnings
                 .push(format!("Skipped {name}: the file is unreasonably large."));
             continue;
@@ -190,58 +239,55 @@ pub fn read_target(io_impl: &dyn SyncIo, root: &Path, own_id: &str) -> TargetRea
             .and_then(|p| p.schema_version);
         match version {
             Some(v) if v > SCHEMA_VERSION => {
-                out.warnings.push(format!("Skipped {name}: it was written by a newer version of the app. Update this device to read it."));
+                if is_own {
+                    out.own_newer = true;
+                } else {
+                    out.warnings.push(format!("Skipped {name}: it was written by a newer version of the app. Update this device to read it."));
+                }
                 continue;
             }
             Some(v) if v > 0 => {}
             _ => {
-                out.warnings.push(format!(
-                    "Skipped {name}: the file is incomplete or damaged. Keeping the last good data."
-                ));
+                if !is_own {
+                    out.warnings.push(format!("Skipped {name}: {DAMAGED}"));
+                }
                 continue;
             }
         }
         match serde_json::from_slice::<DeviceFile>(&bytes) {
-            Ok(file) if file.device_id == id && check_shared(&file.data).is_ok() => {
-                out.files.push(file)
+            Ok(file) if file.device_id == id && check_device_file(&file, now).is_ok() => {
+                if is_own {
+                    out.own = Some(file);
+                } else {
+                    out.files.push(file);
+                }
             }
             Ok(_) | Err(_) => {
-                out.warnings.push(format!(
-                    "Skipped {name}: the file is incomplete or damaged. Keeping the last good data."
-                ));
+                if !is_own {
+                    out.warnings.push(format!("Skipped {name}: {DAMAGED}"));
+                }
             }
         }
     }
     out
 }
 
-/// Writes this device's own file. Refuses to replace a file from a newer app version.
+/// Writes this device's own file.
 pub fn write_target(
     io_impl: &dyn SyncIo,
     root: &Path,
-    file: &DeviceFile,
+    device_id: &str,
     bytes: &[u8],
 ) -> Result<(), String> {
     if !io_impl.is_dir(root) {
-        return Err(
-            "Folder not found. Is the drive connected and the desktop client running?".to_owned(),
-        );
+        return Err(FOLDER_NOT_FOUND.to_owned());
     }
     let dir = devices_dir(root);
     with_retry(io_impl, || io_impl.create_dir_all(&dir))
         .map_err(|e| format!("Could not create the folder: {e}"))?;
-    let dest = dir.join(format!("{}.json", file.device_id));
-    if let Ok(existing) = io_impl.read(&dest)
-        && let Ok(probe) = serde_json::from_slice::<VersionProbe>(&existing)
-        && probe.schema_version.is_some_and(|v| v > SCHEMA_VERSION)
-    {
-        return Err(
-            "This device's file was written by a newer app version; it was not overwritten."
-                .to_owned(),
-        );
-    }
+    let dest = dir.join(format!("{device_id}.json"));
     // A dot-prefixed temporary never matches a device file name, so readers ignore it.
-    let tmp = dir.join(format!(".{}.tmp", file.device_id));
+    let tmp = dir.join(format!(".{device_id}.tmp"));
     with_retry(io_impl, || io_impl.write_atomic(&dest, &tmp, bytes))
         .map_err(|e| format!("Could not write the file: {e}"))
 }
@@ -259,8 +305,8 @@ pub struct FolderPreview {
 }
 
 #[must_use]
-pub fn preview_folder(io_impl: &dyn SyncIo, root: &Path, own_id: &str) -> FolderPreview {
-    let read = read_target(io_impl, root, own_id);
+pub fn preview_folder(io_impl: &dyn SyncIo, root: &Path, own_id: &str, now: Ts) -> FolderPreview {
+    let read = read_target(io_impl, root, own_id, now);
     let mut merged = Shared::default();
     let mut devices = Vec::new();
     for f in &read.files {
@@ -279,19 +325,56 @@ pub fn preview_folder(io_impl: &dyn SyncIo, root: &Path, own_id: &str) -> Folder
     }
 }
 
-/// One full sync over every enabled folder. The lock is never held during file I/O, and a failing
-/// target never affects another. Returns true when the merge changed local data.
-pub fn run_cycle(service: &Mutex<Service>, io_impl: &dyn SyncIo) -> bool {
-    let lock = || {
-        service
+/// Roots whose worker is still stuck, so a hung folder never collects more threads.
+pub type HungTargets = Arc<Mutex<BTreeSet<String>>>;
+
+/// Runs folder work on its own thread with a time limit, so a hung network folder cannot hold up
+/// other folders. A worker that overran stays registered until it returns.
+fn bounded<T: Send + 'static>(
+    hung: &HungTargets,
+    root: &str,
+    limit: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    const NOT_RESPONDING: &str = "The folder is not responding. Will try again later.";
+    let lock = || hung.lock().unwrap_or_else(PoisonError::into_inner);
+    if !lock().insert(root.to_owned()) {
+        return Err(NOT_RESPONDING.to_owned());
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let registry = Arc::clone(hung);
+    let key = root.to_owned();
+    std::thread::spawn(move || {
+        let out = work();
+        registry
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    };
-    let (targets, own_id): (Vec<SyncTarget>, String) = {
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        let _ = tx.send(out);
+    });
+    rx.recv_timeout(limit)
+        .map_err(|_| NOT_RESPONDING.to_owned())
+}
+
+/// One full sync over every enabled folder. The lock is never held during file I/O, and a failing
+/// or hung target never affects another. Returns true when the merge changed local data.
+pub fn run_cycle<I: SyncIo + Clone + 'static>(service: &Mutex<Service>, io_impl: &I) -> bool {
+    run_cycle_within(service, io_impl, TARGET_TIMEOUT)
+}
+
+pub fn run_cycle_within<I: SyncIo + Clone + 'static>(
+    service: &Mutex<Service>,
+    io_impl: &I,
+    limit: Duration,
+) -> bool {
+    let lock = || service.lock().unwrap_or_else(PoisonError::into_inner);
+    let (targets, own_id, now, hung): (Vec<SyncTarget>, String, Ts, HungTargets) = {
         let s = lock();
         (
             s.file().prefs.sync_targets.clone(),
             s.file().device_id.clone(),
+            s.now(),
+            s.hung_targets(),
         )
     };
     if targets.is_empty() {
@@ -300,7 +383,14 @@ pub fn run_cycle(service: &Mutex<Service>, io_impl: &dyn SyncIo) -> bool {
 
     let mut reads: Vec<(SyncTarget, TargetRead)> = Vec::with_capacity(targets.len());
     for t in targets {
-        let read = read_target(io_impl, Path::new(&t.root), &own_id);
+        let (io, root, own) = (io_impl.clone(), t.root.clone(), own_id.clone());
+        let read = bounded(&hung, &t.root, limit, move || {
+            read_target(&io, Path::new(&root), &own, now)
+        })
+        .unwrap_or_else(|e| TargetRead {
+            error: Some(e),
+            ..TargetRead::default()
+        });
         reads.push((t, read));
     }
 
@@ -308,7 +398,9 @@ pub fn run_cycle(service: &Mutex<Service>, io_impl: &dyn SyncIo) -> bool {
         let mut s = lock();
         let mut incoming = Shared::default();
         let mut seen: BTreeMap<String, RemoteDevice> = BTreeMap::new();
-        for (_, read) in &reads {
+        let mut own_files = Vec::new();
+        for (_, read) in &mut reads {
+            own_files.extend(read.own.take());
             for f in &read.files {
                 incoming = merge(&incoming, &f.data);
                 let entry = RemoteDevice {
@@ -325,17 +417,15 @@ pub fn run_cycle(service: &Mutex<Service>, io_impl: &dyn SyncIo) -> bool {
                 }
             }
         }
-        s.absorb_remote(&incoming, seen)
+        s.absorb_remote(&incoming, seen, own_files)
     };
 
-    let (device_file, bytes) = {
+    let bytes = {
         let s = lock();
-        let f = s.device_file();
-        let b = serde_json::to_vec(&f);
-        (f, b)
+        serde_json::to_vec(&s.device_file())
     };
     let bytes = match bytes {
-        Ok(b) => b,
+        Ok(b) => Arc::new(b),
         Err(e) => {
             lock().record_sync_failure(&format!("Could not prepare the sync file: {e}"));
             return changed;
@@ -343,11 +433,24 @@ pub fn run_cycle(service: &Mutex<Service>, io_impl: &dyn SyncIo) -> bool {
     };
 
     for (target, read) in reads {
-        let root = Path::new(&target.root);
-        let written = if read.error.is_none() {
-            write_target(io_impl, root, &device_file, &bytes)
+        let written = if let Some(e) = read.error.clone() {
+            Err(e)
+        } else if read.own_newer {
+            Err(
+                "This device's file was written by a newer app version; it was not overwritten."
+                    .to_owned(),
+            )
         } else {
-            Err(read.error.clone().unwrap_or_default())
+            let (io, root, id, data) = (
+                io_impl.clone(),
+                target.root.clone(),
+                own_id.clone(),
+                Arc::clone(&bytes),
+            );
+            bounded(&hung, &target.root, limit, move || {
+                write_target(&io, Path::new(&root), &id, &data)
+            })
+            .and_then(|r| r)
         };
         let mut s = lock();
         let now = s.now();
@@ -417,7 +520,8 @@ mod tests {
         TaskInput {
             name: name.into(),
             project_id: p.into(),
-            description: serde_json::Value::Null,
+            description: serde_json::json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Details"}]}]}),
+            continued_from: None,
         }
     }
 
@@ -665,7 +769,7 @@ mod tests {
             }
             fn sleep(&self, _: Duration) {}
         }
-        run_cycle(&a.svc, &Fast);
+        run_cycle(&a.svc, &Arc::new(Fast));
         let status = a
             .s()
             .target_status_mut(&root.path().to_string_lossy())
@@ -724,10 +828,10 @@ mod tests {
         let clock = ManualClock::at(T0);
         let root = tempfile::tempdir().unwrap();
         let a = device(&clock, &[root.path()]);
-        let flaky = Flaky {
+        let flaky = Arc::new(Flaky {
             fails: AtomicU32::new(2),
             sleeps: AtomicU32::new(0),
-        };
+        });
         run_cycle(&a.svc, &flaky);
         assert_eq!(flaky.sleeps.load(Ordering::SeqCst), 2);
         assert!(own_file(&a, root.path()).exists());
@@ -771,7 +875,7 @@ mod tests {
             }
             fn sleep(&self, _: Duration) {}
         }
-        run_cycle(&a.svc, &Offline);
+        run_cycle(&a.svc, &Arc::new(Offline));
         assert!(a.data().projects.is_empty());
         let status = a
             .s()
@@ -920,6 +1024,234 @@ mod tests {
     }
 
     #[test]
+    fn a_hung_folder_does_not_hold_up_the_others_and_is_not_piled_on() {
+        #[derive(Clone)]
+        struct Hangs(PathBuf, Arc<AtomicU32>);
+        impl SyncIo for Hangs {
+            fn is_dir(&self, p: &Path) -> bool {
+                if p.starts_with(&self.0) {
+                    self.1.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(3000));
+                }
+                RealIo.is_dir(p)
+            }
+            fn create_dir_all(&self, p: &Path) -> io::Result<()> {
+                RealIo.create_dir_all(p)
+            }
+            fn list(&self, p: &Path) -> io::Result<Vec<String>> {
+                RealIo.list(p)
+            }
+            fn file_size(&self, p: &Path) -> io::Result<u64> {
+                RealIo.file_size(p)
+            }
+            fn read(&self, p: &Path) -> io::Result<Vec<u8>> {
+                RealIo.read(p)
+            }
+            fn write_atomic(&self, d: &Path, t: &Path, b: &[u8]) -> io::Result<()> {
+                RealIo.write_atomic(d, t, b)
+            }
+            fn sleep(&self, _: Duration) {}
+        }
+        let clock = ManualClock::at(T0);
+        let stuck = tempfile::tempdir().unwrap();
+        let good = tempfile::tempdir().unwrap();
+        let a = device(&clock, &[stuck.path(), good.path()]);
+        let calls = Arc::new(AtomicU32::new(0));
+        let io = Hangs(stuck.path().to_path_buf(), Arc::clone(&calls));
+        run_cycle_within(&a.svc, &io, Duration::from_millis(500));
+        run_cycle_within(&a.svc, &io, Duration::from_millis(500));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "no second worker while the first is stuck"
+        );
+        assert!(own_file(&a, good.path()).exists());
+        let ok = a
+            .s()
+            .target_status_mut(&good.path().to_string_lossy())
+            .clone();
+        let ko = a
+            .s()
+            .target_status_mut(&stuck.path().to_string_lossy())
+            .clone();
+        assert!(ok.last_error.is_none());
+        assert!(ko.last_error.unwrap().contains("not responding"));
+    }
+
+    #[test]
+    fn a_restored_store_recovers_what_only_its_own_sync_file_still_holds() {
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let a = device(&clock, &[root.path()]);
+        let id = a.s().create_project(&pinput("Only in sync file")).unwrap();
+        a.cycle();
+        // Simulates a restore from an older backup: the local store has lost the project.
+        a.s()
+            .mutate(|f, _| {
+                f.data.projects.clear();
+                Ok(())
+            })
+            .unwrap();
+        a.cycle();
+        assert!(a.data().projects.contains_key(&id));
+    }
+
+    #[test]
+    fn an_open_segment_recovered_from_its_own_file_closes_at_that_files_heartbeat() {
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let a = device(&clock, &[root.path()]);
+        let p = a.s().create_project(&pinput("P")).unwrap();
+        let t = a.s().create_task(&tinput("T", &p)).unwrap();
+        a.s().start_task(&t).unwrap();
+        clock.advance(120);
+        a.s().heartbeat().unwrap();
+        a.cycle();
+        clock.advance(600);
+        a.s()
+            .mutate(|f, _| {
+                f.data.segments.clear();
+                f.data.tasks.get_mut(&t).unwrap().state = TaskState::Paused;
+                f.last_heartbeat = None;
+                Ok(())
+            })
+            .unwrap();
+        a.cycle();
+        let d = a.data();
+        let seg = d.segments.values().next().unwrap();
+        assert_eq!(seg.end.unwrap().iso(), "2026-03-01T09:02:00Z");
+    }
+
+    fn poison(d: &Device, root: &Path, from: &str, to: &str) {
+        let path = own_file(d, root);
+        let text = std::fs::read_to_string(&path).unwrap().replace(from, to);
+        std::fs::write(&path, text).unwrap();
+    }
+
+    #[test]
+    fn implausible_remote_data_is_skipped_and_leaves_the_store_loadable() {
+        let t0 = "2026-03-01T09:00:00Z";
+        for bad in [
+            "9999-12-31T23:59:59-01:00",
+            "9999-12-31T23:59:59Z",
+            "2031-01-01T00:00:00Z",
+            "1970-01-01T00:00:00Z",
+        ] {
+            let clock = ManualClock::at(T0);
+            let root = tempfile::tempdir().unwrap();
+            let a = device(&clock, &[root.path()]);
+            let b = device(&clock, &[root.path()]);
+            b.s().create_project(&pinput("Poison")).unwrap();
+            b.cycle();
+            poison(&b, root.path(), t0, bad);
+            a.cycle();
+            assert!(a.data().projects.is_empty(), "{bad}");
+            let status = a
+                .s()
+                .target_status_mut(&root.path().to_string_lossy())
+                .clone();
+            assert!(
+                status.warnings.iter().any(|w| w.contains("damaged")),
+                "{bad}"
+            );
+            let dir = a.s().data_dir().to_path_buf();
+            let names: Vec<String> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert!(!names.iter().any(|n| n.contains("corrupt")), "{names:?}");
+        }
+    }
+
+    #[test]
+    fn an_impossible_segment_and_a_bad_setting_are_rejected() {
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let a = device(&clock, &[root.path()]);
+        let b = device(&clock, &[root.path()]);
+        let p = b.s().create_project(&pinput("P")).unwrap();
+        let t = b.s().create_task(&tinput("T", &p)).unwrap();
+        b.s().start_task(&t).unwrap();
+        b.s().pause_task(&t).unwrap();
+        b.cycle();
+        let path = own_file(&b, root.path());
+        let good = std::fs::read_to_string(&path).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&good).unwrap();
+        let seg = v["data"]["segments"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap();
+        seg["start"] = serde_json::json!("2001-01-01T00:00:00Z");
+        std::fs::write(&path, v.to_string()).unwrap();
+        a.cycle();
+        assert!(
+            a.data().segments.is_empty(),
+            "a span of many years is refused"
+        );
+        let mut v: serde_json::Value = serde_json::from_str(&good).unwrap();
+        v["data"]["settings"] =
+            serde_json::json!({"clientWorkStart":{"value":5,"stamp":{"at":T0,"by":"x"}}});
+        std::fs::write(&path, v.to_string()).unwrap();
+        a.cycle();
+        assert!(
+            a.data().settings.is_empty(),
+            "a mistyped setting is refused"
+        );
+        let mut v: serde_json::Value = serde_json::from_str(&good).unwrap();
+        v["data"]["settings"] = serde_json::json!({"junk":{"value":1,"stamp":{"at":T0,"by":"x"}}});
+        std::fs::write(&path, v.to_string()).unwrap();
+        a.cycle();
+        assert!(
+            a.data().settings.is_empty(),
+            "an unknown setting is refused"
+        );
+    }
+
+    #[test]
+    fn too_many_or_oversized_files_are_skipped_without_reading_them() {
+        #[derive(Clone)]
+        struct Huge(Arc<AtomicU32>);
+        impl SyncIo for Huge {
+            fn is_dir(&self, p: &Path) -> bool {
+                RealIo.is_dir(p)
+            }
+            fn create_dir_all(&self, p: &Path) -> io::Result<()> {
+                RealIo.create_dir_all(p)
+            }
+            fn list(&self, _: &Path) -> io::Result<Vec<String>> {
+                Ok((0..MAX_DEVICE_FILES + 3)
+                    .map(|i| format!("{}.json", uuid::Uuid::from_u128(i as u128 + 1)))
+                    .collect())
+            }
+            fn file_size(&self, _: &Path) -> io::Result<u64> {
+                Ok(MAX_REMOTE_FILE_BYTES + 1)
+            }
+            fn read(&self, _: &Path) -> io::Result<Vec<u8>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(Vec::new())
+            }
+            fn write_atomic(&self, _: &Path, _: &Path, _: &[u8]) -> io::Result<()> {
+                Ok(())
+            }
+            fn sleep(&self, _: Duration) {}
+        }
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(devices_dir(root.path())).unwrap();
+        let reads = Arc::new(AtomicU32::new(0));
+        let r = read_target(
+            &Huge(Arc::clone(&reads)),
+            root.path(),
+            "me",
+            Ts::parse(T0).unwrap(),
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert_eq!(r.warnings.len(), MAX_DEVICE_FILES + 3);
+        assert!(r.warnings.iter().any(|w| w.contains("too many")));
+    }
+
+    #[test]
     fn preview_counts_what_a_folder_holds() {
         let clock = ManualClock::at(T0);
         let root = tempfile::tempdir().unwrap();
@@ -927,12 +1259,12 @@ mod tests {
         let p = b.s().create_project(&pinput("P")).unwrap();
         b.s().create_task(&tinput("T", &p)).unwrap();
         b.cycle();
-        let pv = preview_folder(&RealIo, root.path(), "someone-else");
+        let pv = preview_folder(&RealIo, root.path(), "someone-else", Ts::parse(T0).unwrap());
         assert!(pv.has_data);
         assert_eq!((pv.projects, pv.tasks, pv.segments), (1, 1, 0));
         assert_eq!(pv.devices, ["pc"]);
         let empty = tempfile::tempdir().unwrap();
-        assert!(!preview_folder(&RealIo, empty.path(), "x").has_data);
+        assert!(!preview_folder(&RealIo, empty.path(), "x", Ts::parse(T0).unwrap()).has_data);
     }
 
     #[test]

@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::detect::Detected;
+use crate::machine::RequiredField;
 use crate::model::{
     PauseReason, RateVersion, RoundingVersion, ShiftVersion, SyncProvider, TaskState, Theme,
 };
@@ -39,8 +40,29 @@ pub struct TaskView {
     pub stopped_at: Option<Ts>,
     /// Name of the other device this task is running on, if any.
     pub running_elsewhere: Option<String>,
+    pub continued_from: Option<String>,
 }
 
+/// What a warm start copies into a new task, a snapshot of the most recently worked task.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopySource {
+    pub task_id: String,
+    pub name: String,
+    pub project_id: String,
+    pub project_archived: bool,
+    pub description: Value,
+    pub last_worked_at: Option<Ts>,
+}
+
+/// Cold until the first task of this launch has started.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchView {
+    pub warm: bool,
+    pub cold_required: &'static [RequiredField],
+    pub copy_source: Option<CopySource>,
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SegmentView {
@@ -107,4 +129,5 @@ pub struct Snapshot {
     /// Always shown while they apply, such as a task running on two devices at once.
     pub warnings: Vec<String>,
     pub sync: SyncView,
+    pub launch: LaunchView,
 }

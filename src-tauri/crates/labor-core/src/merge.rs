@@ -26,43 +26,69 @@ fn lww<'a, T: Serialize>(a: &'a T, sa: &Stamp, b: &'a T, sb: &Stamp) -> &'a T {
     }
 }
 
+/// Like `lww`, but a tombstone outranks any edit, so a deleted record never comes back.
+fn lww_tombstone<'a, T: Serialize>(
+    a: &'a T,
+    da: bool,
+    sa: &Stamp,
+    b: &'a T,
+    db: bool,
+    sb: &Stamp,
+) -> &'a T {
+    match da
+        .cmp(&db)
+        .then_with(|| stamp_cmp(sa, sb))
+        .then_with(|| canonical(a).cmp(&canonical(b)))
+    {
+        Ordering::Less => b,
+        _ => a,
+    }
+}
+
 fn merge_project(a: &Project, b: &Project) -> Project {
-    lww(a, &a.stamp, b, &b.stamp).clone()
+    lww_tombstone(a, a.deleted, &a.stamp, b, b.deleted, &b.stamp).clone()
 }
 
 fn merge_shift(a: &ShiftVersion, b: &ShiftVersion) -> ShiftVersion {
-    lww(a, &a.stamp, b, &b.stamp).clone()
+    lww_tombstone(a, a.deleted, &a.stamp, b, b.deleted, &b.stamp).clone()
 }
 
 fn merge_rate(a: &RateVersion, b: &RateVersion) -> RateVersion {
-    lww(a, &a.stamp, b, &b.stamp).clone()
+    lww_tombstone(a, a.deleted, &a.stamp, b, b.deleted, &b.stamp).clone()
 }
 
 fn merge_rounding(a: &RoundingVersion, b: &RoundingVersion) -> RoundingVersion {
-    lww(a, &a.stamp, b, &b.stamp).clone()
+    lww_tombstone(a, a.deleted, &a.stamp, b, b.deleted, &b.stamp).clone()
 }
 
 fn merge_setting(a: &SettingEntry, b: &SettingEntry) -> SettingEntry {
     lww(a, &a.stamp, b, &b.stamp).clone()
 }
 
-/// The fields that travel with `meta_stamp`.
-#[derive(Serialize)]
-struct MetaKey<'a>(&'a str, &'a str, &'a serde_json::Value, bool);
-/// The fields that travel with `state_stamp`.
+/// The fields that travel with the state clock.
 #[derive(Serialize)]
 struct StateKey<'a>(
     &'a crate::model::TaskState,
     &'a Option<crate::model::PauseReason>,
 );
 
+/// Per-field last writer wins. A name edit on one device and a description edit on another both survive.
 fn merge_task(a: &Task, b: &Task) -> Task {
-    let meta_key =
-        |t: &'_ Task| canonical(&MetaKey(&t.name, &t.project_id, &t.description, t.deleted));
-    let meta_from_a = stamp_cmp(&a.meta_stamp, &b.meta_stamp)
-        .then_with(|| meta_key(a).cmp(&meta_key(b)))
-        != Ordering::Less;
-    let meta = if meta_from_a { a } else { b };
+    let (name, name_stamp) = field(&a.name, &a.name_stamp, &b.name, &b.name_stamp);
+    let (project_id, project_stamp) = field(
+        &a.project_id,
+        &a.project_stamp,
+        &b.project_id,
+        &b.project_stamp,
+    );
+    let (description, description_stamp) = field(
+        &a.description,
+        &a.description_stamp,
+        &b.description,
+        &b.description_stamp,
+    );
+    let (deleted, deleted_stamp) =
+        field(&a.deleted, &a.deleted_stamp, &b.deleted, &b.deleted_stamp);
     // Stopped is final: it outranks any other state whatever the clocks say.
     let state_key = |t: &'_ Task| canonical(&StateKey(&t.state, &t.pause_reason));
     let state_from_a = a
@@ -75,16 +101,29 @@ fn merge_task(a: &Task, b: &Task) -> Task {
     let state = if state_from_a { a } else { b };
     Task {
         id: a.id.clone(),
-        name: meta.name.clone(),
-        project_id: meta.project_id.clone(),
-        description: meta.description.clone(),
-        deleted: meta.deleted,
+        name,
+        name_stamp,
+        project_id,
+        project_stamp,
+        description,
+        description_stamp,
+        deleted,
+        deleted_stamp,
+        continued_from: a.continued_from.clone().max(b.continued_from.clone()),
         created_at: a.created_at.min(b.created_at),
-        meta_stamp: meta.meta_stamp.clone(),
         state: state.state,
         pause_reason: state.pause_reason.clone(),
         state_stamp: state.state_stamp.clone(),
         stopped_at: a.stopped_at.max(b.stopped_at),
+    }
+}
+
+fn field<T: Serialize + Clone>(a: &T, sa: &Stamp, b: &T, sb: &Stamp) -> (T, Stamp) {
+    let from_a = stamp_cmp(sa, sb).then_with(|| canonical(a).cmp(&canonical(b))) != Ordering::Less;
+    if from_a {
+        (a.clone(), sa.clone())
+    } else {
+        (b.clone(), sb.clone())
     }
 }
 
@@ -164,27 +203,29 @@ mod tests {
 
     fn task() -> impl Strategy<Value = Task> {
         (
-            0u8..3,
-            0u8..3,
-            any::<bool>(),
-            stamp(),
-            0u8..4,
-            stamp(),
-            prop::option::of(0i64..4),
+            (0u8..3, 0u8..3, any::<bool>(), stamp(), stamp(), stamp()),
+            (stamp(), 0u8..4, stamp(), prop::option::of(0i64..4), 0u8..3),
         )
             .prop_map(
-                |(id, n, deleted, meta_stamp, st, state_stamp, stopped)| Task {
+                |(
+                    (id, n, deleted, name_stamp, project_stamp, description_stamp),
+                    (deleted_stamp, st, state_stamp, stopped, m),
+                )| Task {
                     id: format!("t{id}"),
                     name: format!("name{n}"),
-                    project_id: "p0".into(),
-                    description: if n == 1 {
+                    name_stamp,
+                    project_id: format!("p{m}"),
+                    project_stamp,
+                    description: if m == 1 {
                         json!({"type":"doc"})
                     } else {
                         Value::Null
                     },
+                    description_stamp,
                     deleted,
+                    deleted_stamp,
+                    continued_from: (m == 2).then(|| format!("t{n}")),
                     created_at: Ts(i64::from(n)),
-                    meta_stamp,
                     state: [
                         TaskState::Draft,
                         TaskState::Running,
@@ -339,14 +380,27 @@ mod tests {
         let base = Task {
             id: "t".into(),
             name: "old".into(),
-            project_id: "p".into(),
-            description: Value::Null,
-            deleted: false,
-            created_at: Ts(0),
-            meta_stamp: Stamp {
+            name_stamp: Stamp {
                 at: Ts(1),
                 by: "a".into(),
             },
+            project_id: "p".into(),
+            project_stamp: Stamp {
+                at: Ts(1),
+                by: "a".into(),
+            },
+            description: Value::Null,
+            description_stamp: Stamp {
+                at: Ts(1),
+                by: "a".into(),
+            },
+            deleted: false,
+            deleted_stamp: Stamp {
+                at: Ts(1),
+                by: "a".into(),
+            },
+            continued_from: None,
+            created_at: Ts(0),
             state: TaskState::Stopped,
             pause_reason: None,
             state_stamp: Stamp {
@@ -357,7 +411,7 @@ mod tests {
         };
         let later = Task {
             name: "new".into(),
-            meta_stamp: Stamp {
+            name_stamp: Stamp {
                 at: Ts(5),
                 by: "b".into(),
             },
@@ -373,6 +427,71 @@ mod tests {
         assert_eq!(m.state, TaskState::Stopped);
         assert_eq!(m.name, "new");
         assert_eq!(m.stopped_at, Some(Ts(1)));
+    }
+
+    #[test]
+    fn name_and_description_edits_on_two_devices_both_survive() {
+        let stamp = |at, by: &str| Stamp {
+            at: Ts(at),
+            by: by.into(),
+        };
+        let base = Task {
+            id: "t".into(),
+            name: "old".into(),
+            name_stamp: stamp(1, "a"),
+            project_id: "p".into(),
+            project_stamp: stamp(1, "a"),
+            description: Value::Null,
+            description_stamp: stamp(1, "a"),
+            deleted: false,
+            deleted_stamp: stamp(1, "a"),
+            continued_from: None,
+            created_at: Ts(0),
+            state: TaskState::Paused,
+            pause_reason: None,
+            state_stamp: stamp(1, "a"),
+            stopped_at: None,
+        };
+        let mut on_a = base.clone();
+        on_a.name = "renamed on A".into();
+        on_a.name_stamp = stamp(5, "a");
+        let mut on_b = base;
+        on_b.description = json!({"type":"doc","content":[]});
+        on_b.description_stamp = stamp(4, "b");
+        for m in [merge_task(&on_a, &on_b), merge_task(&on_b, &on_a)] {
+            assert_eq!(m.name, "renamed on A");
+            assert_eq!(m.description, json!({"type":"doc","content":[]}));
+        }
+    }
+
+    #[test]
+    fn a_later_edit_cannot_undo_a_tombstone() {
+        let a = Project {
+            id: "p".into(),
+            name: "n".into(),
+            color: "#000000".into(),
+            archived: false,
+            deleted: true,
+            billable: false,
+            budget_hours: None,
+            client_zone: None,
+            created_at: Ts(0),
+            stamp: Stamp {
+                at: Ts(1),
+                by: "a".into(),
+            },
+        };
+        let renamed = Project {
+            deleted: false,
+            name: "later".into(),
+            stamp: Stamp {
+                at: Ts(9),
+                by: "b".into(),
+            },
+            ..a.clone()
+        };
+        assert!(merge_project(&a, &renamed).deleted);
+        assert!(merge_project(&renamed, &a).deleted);
     }
 
     #[test]

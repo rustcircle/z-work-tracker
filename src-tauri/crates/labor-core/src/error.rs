@@ -17,6 +17,10 @@ pub enum CoreError {
     RunningElsewhere(String),
     #[error("{0}")]
     Conflict(String),
+    #[error(
+        "this launch has not started a task yet, so continuing needs every field filled in again"
+    )]
+    ColdStartRequired,
     #[error("could not save data: {0}")]
     Io(#[from] std::io::Error),
     #[error("could not encode data: {0}")]
@@ -40,6 +44,7 @@ impl CoreError {
             Self::IllegalTransition { .. } => "illegal_transition",
             Self::RunningElsewhere(_) => "running_elsewhere",
             Self::Conflict(_) => "conflict",
+            Self::ColdStartRequired => "cold_start_required",
             Self::Io(_) | Self::Json(_) | Self::Xlsx(_) => "io",
             Self::FutureVersion { .. } => "future_version",
             Self::StoreUnavailable(_) => "store_unavailable",
