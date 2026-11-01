@@ -124,3 +124,44 @@ test.describe('filter screenshots', () => {
     });
   }
 });
+
+test.describe('tag shortcut', () => {
+  test('New tag goes to Settings > Tags, keeps the unsaved task, ticks the new tag and comes back', async ({ page }) => {
+    const found = await open(page, 'seed=demo');
+    await page.getByRole('button', { name: 'New task' }).click();
+    const form = page.getByRole('form', { name: 'New task' });
+    await form.getByRole('textbox', { name: 'Task name' }).fill('Unsaved logo task');
+    await form.getByRole('textbox', { name: 'Description' }).pressSequentially('Typed but not saved');
+    await form.getByRole('button', { name: 'New tag' }).click();
+    await expect(page.getByRole('tab', { name: 'Settings', selected: true })).toBeVisible();
+    const editor = page.getByRole('form', { name: 'New tag' });
+    await expect(editor.getByRole('textbox', { name: 'Tag name' })).toBeFocused();
+    await expect(page.getByTestId('back-to-task-bar')).toContainText('What you typed there is kept');
+    // The unsaved task is still in the rail while Settings is open.
+    await expect(form.getByRole('textbox', { name: 'Task name' })).toHaveValue('Unsaved logo task');
+    await editor.getByRole('textbox', { name: 'Tag name' }).fill('Sketch');
+    await page.keyboard.press('Enter');
+    const back = page.getByRole('button', { name: 'Back to task' });
+    await expect(back).toBeFocused();
+    await expect(page.getByTestId('back-to-task-bar')).toContainText('Tag added and ticked');
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('tab', { name: 'Timeline', selected: true })).toBeVisible();
+    await expect(form.getByRole('checkbox', { name: 'Sketch' })).toBeChecked();
+    // The cursor is back in the task's tag picker.
+    await expect.poll(() => page.evaluate(() => document.activeElement?.closest('fieldset.tag-picker') !== null)).toBe(true);
+    await expect(form.getByRole('textbox', { name: 'Task name' })).toHaveValue('Unsaved logo task');
+    await expect(form.getByRole('textbox', { name: 'Description' })).toContainText('Typed but not saved');
+    await expect(page.getByTestId('back-to-task-bar')).toHaveCount(0);
+    await expectClean(page, found);
+  });
+
+  for (const [theme, file] of THEMES) {
+    test(`way back to the task in ${theme}`, async ({ page }) => {
+      await open(page, `seed=demo&theme=${theme}`);
+      await page.getByRole('button', { name: 'New task' }).click();
+      await page.getByRole('form', { name: 'New task' }).getByRole('button', { name: 'New tag' }).click();
+      await expect(page.getByTestId('back-to-task-bar')).toBeVisible();
+      await page.screenshot({ path: path.join(SHOTS, `gapfill-tag-shortcut-${file}.png`) });
+    });
+  }
+});

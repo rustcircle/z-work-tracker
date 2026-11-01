@@ -190,7 +190,7 @@ export function TagsSection() {
         <TagEditor
           tag={null}
           onDone={(savedId) => {
-            if (intent && savedId) {
+            if (intentOpen && savedId) {
               // Made for a task: the picker selects it on return, so the required-tag rule is met.
               nav?.tagCreated(savedId);
               setEditing(null);

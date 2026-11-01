@@ -117,6 +117,8 @@ function ShellBody() {
         if (tagIntent) {
           setTab(tagIntent.back);
           setReturnFocus(tagIntent.origin);
+          // The way back is taken: the tag is ticked already, so the errand is over.
+          setTagIntent(null);
         }
       },
       returnFocus,

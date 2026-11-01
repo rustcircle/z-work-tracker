@@ -54,16 +54,19 @@ export function TagPicker({ tags, value, onChange, error = null, hint, legend = 
   const intent = nav?.tagIntent ?? null;
   // Coming back from Settings with a tag made for this picker: tick it, so a required tag is satisfied.
   const created = intent && intent.origin === id ? intent.createdId : null;
-  const { endTagIntent, returnFocus, clearReturnFocus } = nav ?? {};
+  const { returnFocus, clearReturnFocus } = nav ?? {};
   const tickCreated = useEffectEvent((tagId: string) => {
     if (!live.some((t) => t.id === tagId)) return;
     if (!value.includes(tagId)) onChange([...live.filter((t) => value.includes(t.id)).map((t) => t.id), tagId]);
-    // Only the first render after the tag exists ticks it; the user may untick it afterwards.
-    endTagIntent?.();
   });
   const createdLive = created !== null && live.some((t) => t.id === created);
+  // Ticked once per created tag: the user may untick it afterwards and it stays unticked. The notice with the way
+  // back stays up until it is taken, so this must not end the errand.
+  const tickedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (created && createdLive) tickCreated(created);
+    if (!created || !createdLive || tickedFor.current === created) return;
+    tickedFor.current = created;
+    tickCreated(created);
   }, [created, createdLive]);
   // After "Back to task", the cursor returns to this picker.
   useEffect(() => {
