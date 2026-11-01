@@ -15,7 +15,7 @@ import { TagPicker } from './TagPicker';
 import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
-import { hasUnsaved, useEditStore, type EditField, type EditSession, type SaveStatus } from './editStore';
+import { SAVED_FIELDS, hasUnsaved, heldFields, movedOn, newSession, rebase, storedFields, useEditStore, type EditField, type EditSession, type SaveStatus, type SavedField } from './editStore';
 import { errorMessage } from '../../lib/errorMessage';
 
 export const AUTOSAVE_MS = 600;
@@ -29,6 +29,40 @@ async function storedTask(id: string): Promise<Task | undefined> {
   return (await api.getSnapshot()).tasks.find((t) => t.id === id);
 }
 
+/**
+ * Holds back every unsaved field whose stored value is no longer the one it was edited from, because it was
+ * changed elsewhere meanwhile. Gives the stored task's name and the fields newly held, or null when none was.
+ */
+async function holdNewer(s: EditSession, id: string): Promise<{ name: string; fields: SavedField[] } | null> {
+  const open = SAVED_FIELDS.filter((f) => s.dirty[f] && !s.conflict[f] && (f !== 'name' || s.name.trim() !== ''));
+  if (open.length === 0) return null;
+  let stored: Task | undefined;
+  try {
+    stored = await storedTask(id);
+  } catch {
+    stored = undefined;
+  }
+  if (!stored) return null;
+  const now = storedFields(stored);
+  const fields = open.filter((f) => movedOn(f, s.base, now));
+  for (const f of fields) s.conflict[f] = true;
+  return fields.length > 0 ? { name: stored.name, fields } : null;
+}
+
+/** "name", "name and tags", "name, project and tags". */
+function listFields(fields: readonly SavedField[]): string {
+  return fields.length < 2 ? fields.join('') : `${fields.slice(0, -1).join(', ')} and ${fields[fields.length - 1]}`;
+}
+
+/** What the status line says while unsaved values wait for the user to choose. */
+function conflictNotice(held: readonly SavedField[]): string {
+  const end = 'If the app closes first, they may be lost.';
+  if (held.length === 1 && held[0] === 'description') {
+    return `This description was changed elsewhere while your words waited to save. They are shown here and have not been sent. Edit them or press Done to save them over the newer text. ${end}`;
+  }
+  return `The ${listFields(held)} changed elsewhere while your edits waited to save. They are shown here and have not been sent. Edit them or press Done to save them over the newer ones. ${end}`;
+}
+
 export function TaskEditor({ task }: { task: Task }) {
   const { snapshot, adopt, showError } = useAppState();
   const { act } = useCommands();
@@ -37,7 +71,7 @@ export function TaskEditor({ task }: { task: Task }) {
   const statusId = useId();
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
 
-  const session = store.session(task.id, (): EditSession => ({ name: task.name, description: task.description, projectId: null, tags: null, dirty: { name: false, project: false, description: false, tags: false }, focus: null, rev: 0, queue: Promise.resolve(true), failures: 0, timer: null, draftChain: Promise.resolve(), closed: false, base: task.description, conflict: false, report: setStatus, retry: () => Promise.resolve(true) }));
+  const session = store.session(task.id, () => newSession(task, setStatus));
   const [name, setName] = useState(session.name);
   const [projectId, setProjectId] = useState(session.projectId ?? task.projectId);
   const [tags, setTags] = useState<string[]>(session.tags ?? task.tags);
@@ -86,42 +120,37 @@ export function TaskEditor({ task }: { task: Task }) {
   const doSave = useCallback(async (): Promise<boolean> => {
     const s = session;
     if (!hasUnsaved(s) && !s.dirty.name) return true;
-    // The words must not replace newer ones that arrived from elsewhere since they were started, whoever is
-    // looking: nobody looks at a closed editor or a retry, and even an open one only shows the text it began
-    // with. They stay in the draft, for the user to see and choose. The first save on closing (the blur of
-    // the click that closes) is a save like the rest.
-    if (s.dirty.description && !s.conflict) {
-      let stored: Task | undefined;
-      try {
-        stored = await storedTask(task.id);
-      } catch {
-        stored = undefined;
-      }
-      if (stored && JSON.stringify(stored.description) !== JSON.stringify(s.base)) {
-        s.conflict = true;
-        showError(`“${stored.name}” was changed elsewhere while an edit waited to save, so the edit wasn't sent. Open the task to see it.`);
-      }
+    // Nothing may replace newer values that arrived from elsewhere since the user began on them, whoever is
+    // looking: nobody looks at a closed editor or a retry, and even an open one only shows what it began with.
+    // They stay in the draft, for the user to see and choose. The first save on closing (the blur of the
+    // click that closes) is a save like the rest.
+    const newer = await holdNewer(s, task.id);
+    if (newer) {
+      showError(`“${newer.name}” was changed elsewhere while an edit waited to save, so the edit to its ${listFields(newer.fields)} wasn't sent. Open the task to choose what to keep. If the app closes first, your edit may be lost.`);
     }
     const cur = latest.current;
     const trimmed = s.name.trim();
-    const nameOk = s.dirty.name && trimmed !== '';
-    const sendDescription = s.dirty.description && !s.conflict;
-    const changes = nameOk || s.dirty.project || sendDescription || s.dirty.tags;
+    const send: Record<SavedField, boolean> = {
+      name: s.dirty.name && !s.conflict.name && trimmed !== '',
+      project: s.dirty.project && !s.conflict.project && s.projectId !== null,
+      description: s.dirty.description && !s.conflict.description,
+      tags: s.dirty.tags && !s.conflict.tags && s.tags !== null,
+    };
     if (s.dirty.name && trimmed === '') s.report({ kind: 'rejected', message: `A task needs a name, so “${cur.name}” is kept.` });
-    if (!changes) {
-      if (s.conflict) s.report({ kind: 'conflict' });
+    if (!SAVED_FIELDS.some((f) => send[f])) {
+      if (heldFields(s).length > 0) s.report({ kind: 'conflict' });
       return true;
     }
     const sentRev = s.rev;
     s.report({ kind: 'saving' });
     const patch: TaskPatch = {
-      ...(nameOk ? { name: trimmed } : {}),
-      ...(s.dirty.project && s.projectId ? { projectId: s.projectId } : {}),
-      ...(sendDescription ? { description: s.description } : {}),
+      ...(send.name ? { name: trimmed } : {}),
+      ...(send.project && s.projectId ? { projectId: s.projectId } : {}),
+      ...(send.description ? { description: s.description } : {}),
       // An empty list clears the tags: only patch_task does that, update_task ignores it.
-      ...(s.dirty.tags && s.tags ? { tags: s.tags } : {}),
+      ...(send.tags && s.tags ? { tags: s.tags } : {}),
     };
-    // The stored task as this save left it: what the next unsaved words are edited from.
+    // The stored task as this save left it: what the next unsaved values are edited from.
     const out: { snapshot?: Snapshot } = {};
     const ok = await act(async () => {
       const snapshot = await api.patchTask(task.id, patch);
@@ -147,23 +176,23 @@ export function TaskEditor({ task }: { task: Task }) {
       return false;
     }
     s.failures = 0;
-    const after = out.snapshot?.tasks.find((t) => t.id === task.id);
-    if (after) latest.current = after;
+    const after = out.snapshot?.tasks.find((t) => t.id === task.id) ?? (await storedTask(task.id).catch(() => undefined));
+    if (after) {
+      latest.current = after;
+      for (const f of SAVED_FIELDS) if (send[f]) s.base = rebase(s.base, f, storedFields(after));
+    }
     if (s.rev === sentRev) {
       // The description is saved for real, so the stashed copy is no longer needed. Anything typed since
       // (the revision moved on) keeps its draft.
-      if (sendDescription && draftDoc.current === null && draftTimer.current === null) {
+      if (send.description && draftDoc.current === null && draftTimer.current === null) {
         s.draftChain = s.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
       }
-      s.dirty = { name: s.dirty.name && !nameOk, project: false, description: s.dirty.description && !sendDescription, tags: false };
-      s.report(s.conflict ? { kind: 'conflict' } : { kind: 'saved' });
+      // What was held stays unsaved; the rest is done.
+      s.dirty = { name: s.dirty.name && !send.name, project: s.dirty.project && s.conflict.project, description: s.dirty.description && !send.description, tags: s.dirty.tags && s.conflict.tags };
+      s.report(heldFields(s).length > 0 ? { kind: 'conflict' } : { kind: 'saved' });
       savedInStore(task.id, s);
     } else {
       // Typing went on during this save, and the next one is edited from what this one stored.
-      if (sendDescription) {
-        const stored = after ?? (await storedTask(task.id).catch(() => undefined));
-        if (stored) s.base = stored.description;
-      }
       schedule();
     }
     return true;
@@ -184,13 +213,11 @@ export function TaskEditor({ task }: { task: Task }) {
     session.timer = window.setTimeout(() => void session.retry(), delay);
   }
 
-  function touch(field: keyof EditSession['dirty']): void {
-    if (field === 'description') {
-      // The first unsaved change of the description: what it is edited from. Going on editing words shown as
-      // not sent is the choice to save them, over what is stored now.
-      if (!session.dirty.description || session.conflict) session.base = latest.current.description;
-      session.conflict = false;
-    }
+  function touch(field: SavedField): void {
+    // An unsaved change is edited from what is stored when it starts. Going on editing a value shown as not
+    // sent is the choice to save it, over what is stored now.
+    if (!session.dirty[field] || session.conflict[field]) session.base = rebase(session.base, field, storedFields(latest.current));
+    session.conflict[field] = false;
     session.dirty[field] = true;
     session.rev += 1;
     session.failures = 0;
@@ -208,11 +235,11 @@ export function TaskEditor({ task }: { task: Task }) {
   );
 
   // Changes left unsaved by the editor before this one are this one's to finish, so the result shows here.
-  // A description that met newer text waits for the user instead.
+  // A value that met a newer stored one waits for the user instead.
   useEffect(() => {
     session.report = setStatus;
     session.retry = flush;
-    if (session.dirty.name || session.dirty.project || session.dirty.tags || (session.dirty.description && !session.conflict)) schedule();
+    if (SAVED_FIELDS.some((f) => session.dirty[f] && !session.conflict[f])) schedule();
     // `schedule` only reads the session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, flush]);
@@ -267,11 +294,13 @@ export function TaskEditor({ task }: { task: Task }) {
     setName(valid);
     session.name = valid;
     session.dirty.name = false;
+    session.conflict.name = false;
     setNameError(null);
   };
 
-  // Reopened on words that met newer text: nothing has happened in this editor yet, and they still need saying.
-  const shown: SaveStatus = session.conflict && status.kind === 'idle' ? { kind: 'conflict' } : status;
+  // Reopened on values that met newer ones: nothing has happened in this editor yet, and they still need saying.
+  const held = heldFields(session);
+  const shown: SaveStatus = held.length > 0 && status.kind === 'idle' ? { kind: 'conflict' } : status;
 
   return (
     <form
@@ -379,7 +408,7 @@ export function TaskEditor({ task }: { task: Task }) {
           {shown.kind === 'saving' && 'Saving…'}
           {shown.kind === 'saved' && 'Saved'}
           {shown.kind === 'rejected' && shown.message}
-          {shown.kind === 'conflict' && 'This description was changed elsewhere while your words waited to save. They are shown here and have not been sent. Edit them or press Done to save them over the newer text.'}
+          {shown.kind === 'conflict' && conflictNotice(held)}
           {shown.kind === 'failed' && (shown.willRetry ? 'Not saved. Your changes are still here and will be sent again.' : 'Not saved. Your changes are still here. Edit or press Done to try again.')}
         </span>
         <div className="editor-buttons">
@@ -393,11 +422,14 @@ export function TaskEditor({ task }: { task: Task }) {
               void (async () => {
                 // The blur of this very click may have started a save that holds the words back: it settles first.
                 await session.queue.catch(() => undefined);
-                // Done on words that met newer text is the choice to save them, over what is stored now.
-                if (session.conflict) {
+                // Done on values that met newer ones is the choice to save them, over what is stored now.
+                if (heldFields(session).length > 0) {
                   const stored = await storedTask(task.id).catch(() => undefined);
-                  session.base = (stored ?? latest.current).description;
-                  session.conflict = false;
+                  const now = storedFields(stored ?? latest.current);
+                  for (const f of heldFields(session)) {
+                    session.base = rebase(session.base, f, now);
+                    session.conflict[f] = false;
+                  }
                 }
                 // A failed save keeps the editor open, so what was typed is not lost.
                 if (await flush()) store.close(task.id);

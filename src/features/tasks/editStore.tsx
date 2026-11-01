@@ -7,9 +7,53 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { events } from '../../lib/api';
-import type { RichDoc } from '../../lib/types';
+import type { RichDoc, Task } from '../../lib/types';
 
 export type EditField = 'name' | 'project' | 'description';
+
+/** The fields a save can carry: the keys of an editor's `dirty`. */
+export const SAVED_FIELDS = ['name', 'project', 'description', 'tags'] as const;
+export type SavedField = (typeof SAVED_FIELDS)[number];
+
+/** What the stored task holds in the fields an editor can change. */
+export interface StoredFields {
+  name: string;
+  projectId: string;
+  description: RichDoc;
+  tags: string[];
+}
+
+export function storedFields(t: Task): StoredFields {
+  return { name: t.name, projectId: t.projectId, description: t.description, tags: t.tags };
+}
+
+/** Whether a field's stored value is no longer the one an unsaved edit started from. Tags are a set: order is no change. */
+export function movedOn(field: SavedField, base: StoredFields, stored: StoredFields): boolean {
+  switch (field) {
+    case 'name':
+      return base.name !== stored.name;
+    case 'project':
+      return base.projectId !== stored.projectId;
+    case 'description':
+      return JSON.stringify(base.description) !== JSON.stringify(stored.description);
+    case 'tags':
+      return base.tags.length !== stored.tags.length || base.tags.some((id) => !stored.tags.includes(id));
+  }
+}
+
+/** `base` with one field taken from `from`. */
+export function rebase(base: StoredFields, field: SavedField, from: StoredFields): StoredFields {
+  switch (field) {
+    case 'name':
+      return { ...base, name: from.name };
+    case 'project':
+      return { ...base, projectId: from.projectId };
+    case 'description':
+      return { ...base, description: from.description };
+    case 'tags':
+      return { ...base, tags: from.tags };
+  }
+}
 
 export type SaveStatus =
   | { kind: 'idle' }
@@ -41,14 +85,41 @@ export interface EditSession {
   draftChain: Promise<void>;
   /** The editor was closed with changes still unsaved. */
   closed: boolean;
-  /** The stored description the unsaved one was edited from, to notice a newer one arriving from elsewhere. */
-  base: RichDoc;
-  /** A closed editor's description met newer stored text. It stays here and isn't sent until the user chooses to. */
-  conflict: boolean;
+  /** The stored values the unsaved ones were edited from, to notice newer ones arriving from elsewhere. */
+  base: StoredFields;
+  /** Unsaved values that met a newer stored one. They stay here, shown, and aren't sent until the user chooses to. */
+  conflict: Record<SavedField, boolean>;
   /** The editor showing this draft now, for the outcome of a save that started under an earlier one. */
   report: (status: SaveStatus) => void;
   /** Saves through that editor. */
   retry: () => Promise<boolean>;
+}
+
+/** The unsaved fields that met newer stored values and wait for the user to choose. */
+export function heldFields(s: EditSession): SavedField[] {
+  return SAVED_FIELDS.filter((f) => s.dirty[f] && s.conflict[f]);
+}
+
+/** A fresh draft for a task as stored now. `report` shows the outcome of its saves. */
+export function newSession(task: Task, report: (status: SaveStatus) => void): EditSession {
+  return {
+    name: task.name,
+    description: task.description,
+    projectId: null,
+    tags: null,
+    dirty: { name: false, project: false, description: false, tags: false },
+    focus: null,
+    rev: 0,
+    queue: Promise.resolve(true),
+    failures: 0,
+    timer: null,
+    draftChain: Promise.resolve(),
+    closed: false,
+    base: storedFields(task),
+    conflict: { name: false, project: false, description: false, tags: false },
+    report,
+    retry: () => Promise.resolve(true),
+  };
 }
 
 /** Whether a save still has something to send. A blank name never does: it is refused, not sent. */
@@ -129,9 +200,9 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     } else if (s.closed) {
       // Reopened with something unsaved: that stays, and the rest catches up with the stored task.
       const fresh = init();
-      // Newer text may have arrived while nobody was looking, and the retry that would have noticed it may be
-      // used up or still waiting. Decide here too, before the reopened editor's first save can replace it.
-      if (s.dirty.description && !s.conflict && JSON.stringify(fresh.base) !== JSON.stringify(s.base)) s.conflict = true;
+      // Newer values may have arrived while nobody was looking, and the retry that would have noticed them may be
+      // used up or still waiting. Decide here too, before the reopened editor's first save can replace them.
+      for (const f of SAVED_FIELDS) if (s.dirty[f] && !s.conflict[f] && movedOn(f, s.base, fresh.base)) s.conflict[f] = true;
       if (!s.dirty.name) s.name = fresh.name;
       if (!s.dirty.description) s.description = fresh.description;
       if (!s.dirty.project) s.projectId = fresh.projectId;

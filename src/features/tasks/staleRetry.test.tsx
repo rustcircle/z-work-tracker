@@ -382,6 +382,128 @@ describe('a save that failed as the editor closed', () => {
     });
   });
 
+  describe('a name, project or tag change that meets newer values', () => {
+    type User = ReturnType<typeof userEvent.setup>;
+    const guide = (): MockState['tasks'][number] => {
+      const g = state.tasks.find((t) => t.id === 't-guide');
+      if (!g) throw new Error('the demo has no Brand guidelines');
+      return g;
+    };
+    const openForm = () => screen.getByRole('form', { name: /^Editing / });
+    const nameBox = () => within(openForm()).getByRole('textbox', { name: 'Task name' });
+    const projectBox = () => within(openForm()).getByRole('combobox', { name: 'Project' });
+    const saveState = () => within(openForm()).getByTestId('save-state');
+
+    const cases = [
+      {
+        field: 'name',
+        edit: (u: User) => u.type(nameBox(), ' v2'),
+        elsewhere: () => {
+          guide().name = 'Renamed elsewhere';
+        },
+        kept: () => guide().name,
+        wasKept: 'Renamed elsewhere',
+        shownMine: () => expect(nameBox()).toHaveValue('Brand guidelines v2'),
+        sent: 'Brand guidelines v2',
+      },
+      {
+        field: 'project',
+        edit: (u: User) => u.selectOptions(projectBox(), 'p-web'),
+        elsewhere: () => {
+          guide().projectId = 'p-pack';
+        },
+        kept: () => guide().projectId,
+        wasKept: 'p-pack',
+        shownMine: () => expect(projectBox()).toHaveValue('p-web'),
+        sent: 'p-web',
+      },
+      {
+        field: 'tags',
+        edit: (u: User) => u.click(within(openForm()).getByRole('checkbox', { name: /Admin/ })),
+        elsewhere: () => {
+          guide().tags = ['tag-concept'];
+        },
+        kept: () => (guide().tags ?? []).join(),
+        wasKept: 'tag-concept',
+        shownMine: () => expect(within(openForm()).getByRole('checkbox', { name: /Admin/ })).toBeChecked(),
+        sent: 'tag-admin',
+      },
+    ] as const;
+
+    async function closeOnAFailedEdit(edit: (u: User) => Promise<unknown>): Promise<User> {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+      state = demoState();
+      bootApp(state);
+      await user.click(await screen.findByRole('button', { name: 'Edit Brand guidelines' }));
+      storeDown = true;
+      await edit(user);
+      await toggleEditor(user);
+      await waitFor(() => expect(attempts).toBeGreaterThan(0));
+      return user;
+    }
+
+    it.each(cases)('a retried $field leaves the newer value alone and is held for the user', async (c) => {
+      const user = await closeOnAFailedEdit(c.edit);
+      c.elsewhere();
+      await act(() => emit('state-changed'));
+      await pass(100);
+      storeDown = false;
+      await pass(ALL_RETRIES_MS);
+      expect(c.kept()).toBe(c.wasKept);
+      expect(screen.getByRole('alert')).toHaveTextContent('changed elsewhere');
+      // The task is neither nameless nor unassigned for it.
+      expect(guide().name).not.toBe('');
+      expect(state.projects.map((p) => p.id)).toContain(guide().projectId);
+
+      await user.click(screen.getByRole('button', { name: `Edit ${guide().name}` }));
+      c.shownMine();
+      expect(saveState()).toHaveAttribute('data-kind', 'conflict');
+      expect(saveState()).toHaveTextContent(c.field);
+      await pass(ALL_RETRIES_MS);
+      expect(c.kept()).toBe(c.wasKept);
+
+      await user.click(screen.getByRole('button', { name: 'Done' }));
+      await waitFor(() => expect(c.kept()).toBe(c.sent));
+      await waitFor(() => expect(screen.queryByRole('form', { name: /^Editing / })).toBeNull());
+    });
+
+    it('holds only the field that met something newer, and the rest goes', async () => {
+      const user = await closeOnAFailedEdit(async (u) => {
+        await u.type(nameBox(), ' v2');
+        await u.click(within(openForm()).getByRole('checkbox', { name: /Admin/ }));
+      });
+      guide().name = 'Renamed elsewhere';
+      storeDown = false;
+      await pass(ALL_RETRIES_MS);
+      expect(guide().name).toBe('Renamed elsewhere');
+      expect(guide().tags ?? []).toContain('tag-admin');
+      await user.click(screen.getByRole('button', { name: 'Edit Renamed elsewhere' }));
+      expect(saveState()).toHaveAttribute('data-kind', 'conflict');
+      expect(saveState()).toHaveTextContent('The name changed elsewhere');
+      expect(nameBox()).toHaveValue('Brand guidelines v2');
+    });
+
+    it('an ordinary rename, move and re-tag in an open editor never looks like a conflict', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+      state = demoState();
+      bootApp(state);
+      await user.click(await screen.findByRole('button', { name: 'Edit Brand guidelines' }));
+      await user.type(nameBox(), ' v2');
+      await pass(2000);
+      await user.selectOptions(projectBox(), 'p-web');
+      await pass(2000);
+      await user.click(within(openForm()).getByRole('checkbox', { name: /Admin/ }));
+      await pass(2000);
+      await user.type(nameBox(), '3');
+      await pass(2000);
+      expect(guide().name).toBe('Brand guidelines v23');
+      expect(guide().projectId).toBe('p-web');
+      expect(guide().tags ?? []).toContain('tag-admin');
+      expect(saveState()).toHaveAttribute('data-kind', 'saved');
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+  });
+
   it('a save that fails after reopening shows in the new editor, and keeps retrying through it', async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
     state = demoState();
