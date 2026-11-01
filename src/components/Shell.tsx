@@ -9,6 +9,8 @@ import { ProjectsTab } from '../features/projects/ProjectsTab';
 import { SettingsTab } from '../features/settings/SettingsTab';
 import { EditStoreProvider } from '../features/tasks/editStore';
 import { TaskRail } from '../features/tasks/TaskRail';
+import { TaskFilterProvider } from '../features/tasks/TaskFilterBar';
+import { SelectionProvider, useSelection } from '../features/timeline/selection';
 import { TimelineTab } from '../features/timeline/TimelineTab';
 import { ActiveZoneBar } from '../features/zones';
 import { Banners } from './Banners';
@@ -39,7 +41,19 @@ function Brand() {
 }
 
 export function Shell() {
+  const { zones } = useAppState();
+  return (
+    <TaskFilterProvider>
+      <SelectionProvider zone={zones.active}>
+        <ShellBody />
+      </SelectionProvider>
+    </TaskFilterProvider>
+  );
+}
+
+function ShellBody() {
   const { snapshot } = useAppState();
+  const selection = useSelection();
   const { act } = useCommands();
   const [tab, setTab] = useState<TabId>('timeline');
   const [focusProject, setFocusProject] = useState<string | null>(null);
@@ -70,6 +84,7 @@ export function Shell() {
       },
       settingsSection,
       clearSettingsSection: () => setSettingsSection(null),
+      openExport: () => setExporting(true),
       focusTask,
       goToTask: (id, edit = false) => {
         seq.current += 1;
@@ -158,7 +173,7 @@ export function Shell() {
             <span>Hide earnings</span>
           </button>
           <Button icon={<IconDownload />} onClick={() => setExporting(true)}>
-            Export
+            Export{selection && selection.count > 0 ? ` (${selection.count} selected)` : ''}
           </Button>
         </header>
         <Banners />

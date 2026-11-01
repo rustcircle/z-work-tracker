@@ -18,9 +18,25 @@ export interface Zones {
   showBoth: boolean;
 }
 
+/**
+ * The page's clock, read without subscribing. Only whoever shows a running clock follows it every second
+ * (`useLiveSec`); everything else reads `useApp().nowSec`, which moves once a minute, or `useStepNow`.
+ */
+export interface ClockApi {
+  /** Seconds since the epoch on the backend's clock. */
+  readNow: () => number;
+  /** False while the window is hidden: nothing should be redrawn for a clock nobody can see. */
+  isAwake: () => boolean;
+  /** Told when the window goes to sleep (false) or wakes (true). Returns the way to stop listening. */
+  subscribe: (listener: (awake: boolean) => void) => () => void;
+}
+
 export interface AppValue {
   snapshot: Snapshot;
-  /** Seconds since the epoch from the backend's clock, ticking every second. */
+  /**
+   * Seconds since the epoch from the backend's clock, moving once a minute while the window is visible and
+   * again whenever new data arrives. A screen that must tick each second uses `useLiveSec`.
+   */
   nowSec: number;
   zones: Zones;
   /** Runs a backend call that returns a Snapshot, adopts it, and reports failures as `error`. */
@@ -33,10 +49,11 @@ export interface AppValue {
   clearHideNotice: () => void;
 }
 
-type AppState = Omit<AppValue, 'nowSec'>;
+type AppState = Omit<AppValue, 'nowSec'> & { clock: ClockApi };
 
 const Ctx = createContext<AppState | null>(null);
 const NowCtx = createContext(0);
+const LiveCtx = createContext(0);
 
 /** Everything but the clock. A reader of this one does not re-render on a tick. */
 export function useAppState(): AppState {
@@ -45,11 +62,66 @@ export function useAppState(): AppState {
   return v;
 }
 
-/** The state and the clock: the reader re-renders every second. Use `useAppState` if time isn't shown. */
+/** The state and a coarse clock (once a minute and on new data). Use `useAppState` if time isn't shown. */
 export function useApp(): AppValue {
   const v = useAppState();
   const nowSec = useContext(NowCtx);
   return { ...v, nowSec };
+}
+
+/** The running task's elapsed clock: the one thing that follows the shared 1 s tick. Nothing else should. */
+export function useLiveSec(): number {
+  return useContext(LiveCtx);
+}
+
+function createClock(): ClockApi & { setAwake: (awake: boolean) => void; setSkew: (ms: number) => void } {
+  let awake = true;
+  let skew = 0;
+  const listeners = new Set<(awake: boolean) => void>();
+  return {
+    readNow: () => Math.floor((Date.now() + skew) / 1000),
+    setSkew: (ms) => {
+      skew = ms;
+    },
+    isAwake: () => awake,
+    subscribe: (l) => {
+      listeners.add(l);
+      return () => void listeners.delete(l);
+    },
+    setAwake: (next) => {
+      awake = next;
+      for (const l of [...listeners]) l(next);
+    },
+  };
+}
+
+/** Owns the 1 s tick, so that only readers of `useLiveSec` render on it. Stopped while the window is hidden. */
+function LiveClock({ clock, children }: { clock: ClockApi; children: ReactNode }) {
+  const [sec, setSec] = useState(() => clock.readNow());
+  useEffect(() => {
+    let timer: number | null = null;
+    const start = () => {
+      timer ??= window.setInterval(() => setSec(clock.readNow()), 1000);
+    };
+    const stop = () => {
+      if (timer !== null) window.clearInterval(timer);
+      timer = null;
+    };
+    // Started whatever the page says: a webview that loads hidden may not report being shown, and a
+    // clock left ticking costs far less than one frozen on screen. The next signal stops it if need be.
+    start();
+    const off = clock.subscribe((awake) => {
+      if (awake) {
+        setSec(clock.readNow());
+        start();
+      } else stop();
+    });
+    return () => {
+      off();
+      stop();
+    };
+  }, [clock]);
+  return <LiveCtx.Provider value={sec}>{children}</LiveCtx.Provider>;
 }
 
 export function deriveZones(s: Snapshot): Zones {
@@ -69,13 +141,18 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hideNotice, setHideNotice] = useState<HideNoticePayload | null>(null);
-  const [tick, setTick] = useState(() => Date.now());
-  const [skew, setSkew] = useState(0);
+  const [clock] = useState(createClock);
+  const [coarse, setCoarse] = useState(() => clock.readNow());
 
-  const adopt = useCallback((s: Snapshot) => {
-    setSkew(parseIso(s.now) * 1000 - Date.now());
-    setSnapshot(s);
-  }, []);
+  const adopt = useCallback(
+    (s: Snapshot) => {
+      clock.setSkew(parseIso(s.now) * 1000 - Date.now());
+      setSnapshot(s);
+      // New data: everything derived from the time is worked out afresh.
+      setCoarse(clock.readNow());
+    },
+    [clock],
+  );
 
   useEffect(() => {
     let alive = true;
@@ -96,36 +173,46 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
     };
   }, [adopt]);
 
-  // The clock only ticks while someone can see it: the app may sit in the tray all day, and everything
+  // The clock only runs while someone can see it: the app may sit in the tray all day, and everything
   // that must go on while hidden lives in the backend. Time is read afresh on waking, so nothing is lost.
+  // Visibility is read here once and told to every clock (`clock.subscribe`).
   useEffect(() => {
-    let timer: number | null = null;
-    const begin = () => {
-      timer ??= window.setInterval(() => setTick(Date.now()), 1000);
-    };
-    const pause = () => {
-      if (timer !== null) window.clearInterval(timer);
-      timer = null;
-    };
-    const wake = () => {
-      setTick(Date.now());
-      begin();
-    };
-    const onVisibility = () => (document.visibilityState === 'hidden' ? pause() : wake());
-    // Started whatever the page says: a webview that loads hidden may not report being shown, and a
-    // clock left ticking costs far less than one frozen on screen. The next signal stops it if need be.
-    begin();
+    const sleep = () => clock.setAwake(false);
+    const wake = () => clock.setAwake(true);
+    const onVisibility = () => (document.visibilityState === 'hidden' ? sleep() : wake());
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', wake);
     // Not every webview reports a hidden window as a hidden page, so the backend says so too.
-    const unlisten = [events.onWindowHidden(pause), events.onWindowShown(wake)];
+    const unlisten = [events.onWindowHidden(sleep), events.onWindowShown(wake)];
     return () => {
-      pause();
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('focus', wake);
       for (const u of unlisten) void u.then((f) => f()).catch(() => undefined);
     };
-  }, []);
+  }, [clock]);
+
+  // The coarse clock: once a minute while awake, and straight away on waking.
+  useEffect(() => {
+    let timer: number | null = null;
+    const start = () => {
+      timer ??= window.setInterval(() => setCoarse(clock.readNow()), 60_000);
+    };
+    const stop = () => {
+      if (timer !== null) window.clearInterval(timer);
+      timer = null;
+    };
+    start();
+    const off = clock.subscribe((awake) => {
+      if (awake) {
+        setCoarse(clock.readNow());
+        start();
+      } else stop();
+    });
+    return () => {
+      off();
+      stop();
+    };
+  }, [clock]);
 
   const theme = snapshot?.prefs.theme;
   useEffect(() => {
@@ -147,7 +234,6 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
   );
 
   const zones = useMemo(() => (snapshot ? deriveZones(snapshot) : null), [snapshot]);
-  const nowSec = Math.floor((tick + skew) / 1000);
 
   const value = useMemo<AppState | null>(
     () =>
@@ -162,15 +248,18 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
             showError: setError,
             hideNotice,
             clearHideNotice: () => setHideNotice(null),
+            clock,
           }
         : null,
-    [snapshot, zones, act, adopt, error, hideNotice],
+    [snapshot, zones, act, adopt, error, hideNotice, clock],
   );
 
   if (!value) return <>{fallback(loadError)}</>;
   return (
     <Ctx.Provider value={value}>
-      <NowCtx.Provider value={nowSec}>{children}</NowCtx.Provider>
+      <NowCtx.Provider value={coarse}>
+        <LiveClock clock={clock}>{children}</LiveClock>
+      </NowCtx.Provider>
     </Ctx.Provider>
   );
 }

@@ -1,0 +1,13 @@
+.tf { display: flex; flex-direction: column; gap: 6px; }
+.tf-row { display: flex; gap: 8px; align-items: center; }
+.tf-text { flex: 1; min-width: 0; }
+.tf-extra { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: flex-end; }
+.tf-field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--text-muted); }
+.tf-tags { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; }
+.tf-tags legend { font-size: 12px; color: var(--text-muted); padding: 0; margin-bottom: 2px; }
+.tf-tag { display: inline-flex; align-items: center; gap: 5px; }
+.tf-dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--border-strong); }
+.tf-status { margin: 0; min-height: 1.2em; font-size: 12px; }
+.tf-more summary { cursor: pointer; font-size: 13px; color: var(--text-muted); }
+.tf-more { font-size: 13px; }
+.tf-compact .tf-extra { margin-top: 6px; }

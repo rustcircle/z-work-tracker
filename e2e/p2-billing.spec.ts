@@ -555,7 +555,7 @@ test.describe('PDF timesheet', () => {
     await expect(dialog.getByLabel('Title')).toHaveValue('Timesheet: Brand refresh');
     await expect(dialog.getByRole('switch', { name: 'Include prices' })).toBeChecked();
     await dialog.getByRole('button', { name: 'Export PDF' }).click();
-    expect(await pdfCalls(page)).toEqual([{ projectId: 'p-brand', from: '2026-03-01', to: '2026-03-31', zone: 'America/New_York', title: 'Timesheet: Brand refresh', includePrices: true, useLogo: false }]);
+    expect(await pdfCalls(page)).toEqual([{ projectId: 'p-brand', from: '2026-03-01', to: '2026-03-31', zone: 'America/New_York', title: 'Timesheet: Brand refresh', includePrices: true, useLogo: false, selection: null }]);
     await expect(dialog.getByTestId('pdf-result')).toContainText('Saved to /mock/timesheet-2026-03-01-to-2026-03-31.pdf');
   });
 
@@ -570,7 +570,7 @@ test.describe('PDF timesheet', () => {
     await dialog.getByRole('switch', { name: 'Include prices' }).uncheck();
     await dialog.getByLabel('Days are cut in').selectOption('Europe/Lisbon');
     await dialog.getByRole('button', { name: 'Export PDF' }).click();
-    expect(await pdfCalls(page)).toEqual([{ projectId: null, from: '2026-02-23', to: '2026-03-06', zone: 'Europe/Lisbon', title: 'Hours, February to March – Müller', includePrices: false, useLogo: false }]);
+    expect(await pdfCalls(page)).toEqual([{ projectId: null, from: '2026-02-23', to: '2026-03-06', zone: 'Europe/Lisbon', title: 'Hours, February to March – Müller', includePrices: false, useLogo: false, selection: null }]);
   });
 
   test('Hide earnings means no prices unless turned on here, with a visible note', async ({ page }) => {

@@ -98,3 +98,28 @@
 .fixed-fee { font-size: 13px; }
 .voided { font-size: 13px; }
 .voided h4 { margin: 4px 0; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+
+/* Selecting entries for export. The chosen state is a check mark in a box, a bar on the row's left edge and
+   a tint: three signals, none of them colour alone. */
+.entries tr.entry-selectable { cursor: pointer; }
+.entries tr.entry-selectable:hover td { background: color-mix(in srgb, var(--text) 5%, var(--surface)); }
+.entries tr.entry-selected td { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); }
+.entries tr.entry-selected td:first-child { box-shadow: inset 4px 0 0 var(--accent); }
+.entries tr[data-row-id]:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.entries .sel-col, .entries .sel-cell { width: 28px; padding-right: 0; }
+.sel-mark { display: inline-grid; place-items: center; width: 18px; height: 18px; border: 2px solid var(--border-strong); border-radius: 4px; background: var(--surface); box-sizing: border-box; color: var(--on-accent); }
+.sel-mark.on { background: var(--accent); border-color: var(--accent); }
+.sel-mark .icon { width: 12px; height: 12px; stroke-width: 3; }
+.sel-none { display: inline-block; width: 18px; height: 18px; opacity: 0.35; background: repeating-linear-gradient(45deg, var(--border-strong) 0 2px, transparent 2px 5px); border-radius: 4px; }
+.entry-open { font-weight: 600; text-align: left; }
+.selection-bar { position: sticky; bottom: 0; z-index: 30; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 10px 16px; margin-top: 8px; background: var(--surface); border: 2px solid var(--accent); border-radius: var(--radius); box-shadow: var(--shadow-lg); }
+.selection-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.selection-text strong { display: inline-flex; align-items: center; gap: 6px; }
+.selection-total { font-weight: 600; }
+.selection-note { font-size: 12.5px; }
+.selection-actions { display: flex; gap: 8px; }
+.color-notice code, .color-chip code { font-size: 12.5px; }
+.color-chip { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.color-dot { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--border-strong); display: inline-block; }
+.back-to-task { position: sticky; top: 0; z-index: 5; margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--radius); }
+.tag-new { margin-top: 6px; }

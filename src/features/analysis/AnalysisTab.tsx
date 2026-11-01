@@ -10,6 +10,7 @@ import { PatternDefs } from './charts';
 import { Controls } from './Controls';
 import type { DrillSel } from './drill';
 import { drillSpans, NO_FILTERS, prepare, type Filters, type Params } from './engine';
+import { matchingTaskIds } from '../tasks/taskFilter';
 import { buildInsights } from './insights';
 import { KpiRow } from './Kpis';
 import { useJumps } from './nav';
@@ -38,13 +39,13 @@ const SECTIONS = [
 
 type Computed = { ok: true; m: Metrics } | { ok: false; error: string };
 
-/** Reads the clock, which ticks every second, and passes on only the steps that can change a figure. */
+/** Reads the coarse clock (it moves once a minute) and passes on only the steps that can change a figure. */
 export function AnalysisTab() {
   const { snapshot, nowSec, zones } = useApp();
   const [range, setRange] = useState<RangeSpec>(() => defaultRange(dayOf(nowSec, zones.active)));
   const live = useMemo(() => snapshot.segments.some((s) => s.end === null && s.provisionalEnd === null), [snapshot]);
-  // Analysis follows the running segment every 10 s, and the calendar once a minute otherwise.
-  const clock = live ? Math.floor(nowSec / 10) * 10 : Math.floor(nowSec / 60) * 60;
+  // Analysis follows the running segment, and the calendar, once a minute: no figure here counts by the second.
+  const clock = Math.floor(nowSec / 60) * 60;
   return <AnalysisView snapshot={snapshot} zones={zones} live={live} clock={clock} range={range} setRange={setRange} />;
 }
 
@@ -66,7 +67,17 @@ const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, 
   const [drill, setDrill] = useState<DrillSel | null>(null);
   const [glossary, setGlossary] = useState<{ open: boolean; focus: string | null }>({ open: false, focus: null });
 
-  const params = useMemo<Params>(() => ({ zone, range, filters, compare }), [zone, range, filters, compare]);
+  // The name and description search becomes a set of task ids, so every figure, chart and exported sheet follows it.
+  const projectMap = useMemo(() => new Map(snapshot.projects.map((p) => [p.id, p])), [snapshot.projects]);
+  const query = filters.query?.trim() ?? '';
+  const searched = useMemo(() => (query === '' ? null : matchingTaskIds(snapshot.tasks, projectMap, { text: query, projectId: '', tagIds: [] })), [query, snapshot.tasks, projectMap]);
+  const effective = useMemo<Filters>(() => {
+    if (searched === null) return filters;
+    const taskIds = filters.taskIds.length > 0 ? filters.taskIds.filter((id) => searched.has(id)) : [...searched];
+    // No task matches: an id nothing has, so the screen shows no time rather than all of it.
+    return { ...filters, taskIds: taskIds.length > 0 ? taskIds : ['__no-matching-task'] };
+  }, [filters, searched]);
+  const params = useMemo<Params>(() => ({ zone, range, filters: effective, compare }), [zone, range, effective, compare]);
 
   const computed = useMemo<Computed>(() => {
     try {
@@ -77,8 +88,8 @@ const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, 
   }, [snapshot, params, clock, basis]);
 
   useEffect(() => {
-    publishAnalysisView({ range, filters, basis, compare });
-  }, [range, filters, basis, compare]);
+    publishAnalysisView({ range, filters: effective, basis, compare });
+  }, [range, effective, basis, compare]);
 
   const jumps = useJumps();
   const openGlossary = useCallback((id: string) => setGlossary({ open: true, focus: id }), []);
@@ -122,7 +133,7 @@ const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, 
         <ActiveZoneBar />
         <p className="muted a-zoneline">
           Times and days are shown in <strong>{zoneLabel(zone, clock)}</strong>. Exact totals do not change with the zone; Billable can.
-          {live ? ' The running task is included and refreshes every 10 seconds.' : ''}
+          {live ? ' The running task is included and refreshes once a minute.' : ''}
         </p>
       </header>
       <Controls
@@ -133,6 +144,7 @@ const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, 
         periodLabel={m.period.label}
         filters={filters}
         setFilters={setFilters}
+        matches={searched === null ? null : searched.size}
         basis={m.requestedBasis}
         setBasis={setBasis}
         billableAvailable={m.billableAvailable}
@@ -149,7 +161,7 @@ const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, 
       {m.hasData ? null : (
         <Invite title="No logged time here">
           Nothing is logged in {m.period.label}
-          {filters.projectIds.length || filters.taskIds.length || filters.tagIds.length || filters.band !== null || filters.shiftKey !== null ? ' with these filters' : ''}. Pick another range, clear the filters, or start a task on the Timeline.
+          {filters.projectIds.length || filters.taskIds.length || filters.tagIds.length || query !== '' || filters.band !== null || filters.shiftKey !== null ? ' with these filters' : ''}. Pick another range, clear the filters, or start a task on the Timeline.
         </Invite>
       )}
       <article className="a-card a-insights" aria-labelledby="insights-h">

@@ -5,8 +5,8 @@ import { useState } from 'react';
 import { useApp } from '../../app/store';
 import { Button, Field, Switch } from '../../components/ui';
 import { api } from '../../lib/api';
-import { dayOf } from '../../lib/tz';
-import type { PdfRequest } from '../../lib/types';
+import { dayOf, zoneLabel } from '../../lib/tz';
+import type { PdfRequest, SelectedEntry } from '../../lib/types';
 import { spanDays, type RangeSpec } from '../analysis/range';
 import { PeriodPicker, defaultPeriod, zoneChoices } from '../billing/parts';
 import '../billing/billing.css';
@@ -28,6 +28,8 @@ export interface PdfForm {
   useLogo: boolean;
   setUseLogo: (v: boolean) => void;
   request: PdfRequest;
+  /** Set while exporting the selected Timeline entries: project, period and zone then come from the selection. */
+  selected: PdfSelection | null;
   busy: boolean;
   result: { path: string | null } | null;
   error: string | null;
@@ -38,7 +40,13 @@ export interface PdfForm {
   removeLogo: () => Promise<void>;
 }
 
-export function usePdfForm(): PdfForm {
+/** The Timeline entries picked for export: the PDF covers exactly their days, in the zone they were picked in. */
+export interface PdfSelection {
+  entries: SelectedEntry[];
+  zone: string;
+}
+
+export function usePdfForm(selected: PdfSelection | null = null): PdfForm {
   const { snapshot, nowSec, zones, adopt } = useApp();
   const hidden = snapshot.prefs.hideEarnings;
   const [projectId, setProjectIdRaw] = useState('');
@@ -60,7 +68,10 @@ export function usePdfForm(): PdfForm {
   const includePrices = pricesChoice ?? !hidden;
   const useLogo = snapshot.hasPdfLogo && (logoChoice ?? true);
   const span = spanDays(range);
-  const request: PdfRequest = { projectId: project?.id ?? null, from: span.fromDay, to: span.toDay, zone, title: title.trim(), includePrices, useLogo, selection: null };
+  const days = selected ? selected.entries.map((e) => e.day).sort() : [];
+  const request: PdfRequest = selected
+    ? { projectId: null, from: days[0] ?? span.fromDay, to: days.at(-1) ?? span.toDay, zone: selected.zone, title: title.trim(), includePrices, useLogo, selection: selected.entries }
+    : { projectId: project?.id ?? null, from: span.fromDay, to: span.toDay, zone, title: title.trim(), includePrices, useLogo, selection: null };
   const key = JSON.stringify(request);
 
   async function run(): Promise<void> {
@@ -110,6 +121,7 @@ export function usePdfForm(): PdfForm {
     result: done && done.key === key ? { path: done.path } : null,
     error: failed && failed.key === key ? failed.text : null,
     run,
+    selected,
     logoBusy,
     logoError,
     chooseLogo: () => logoCall(() => api.pickPdfLogo()),
@@ -130,6 +142,12 @@ export function PdfFields({ form }: { form: PdfForm }) {
   return (
     <div className="pdf-fields">
       <p className="field-hint">A timesheet to send to a client: days, tasks and hours for the period, made on this computer.</p>
+      {form.selected ? (
+        <p className="field-hint" data-testid="pdf-selection-summary">
+          The timesheet covers only the {form.selected.entries.length} selected {form.selected.entries.length === 1 ? 'task' : 'tasks'}, from {form.request.from} to {form.request.to}, with days cut in {zoneLabel(form.selected.zone, nowSec)}. The project, period and zone follow your selection.
+        </p>
+      ) : (
+        <>
       <Field label="Project">
         {({ id, describedBy }) => (
           <select id={id} className="input" value={form.projectId} onChange={(e) => form.setProjectId(e.target.value)} aria-describedby={describedBy}>
@@ -155,6 +173,8 @@ export function PdfFields({ form }: { form: PdfForm }) {
           </select>
         )}
       </Field>
+        </>
+      )}
       <Field label="Title" hint={PDF_CHARACTER_NOTE}>
         {({ id, describedBy }) => <input id={id} className="input" type="text" value={form.title} onChange={(e) => form.setTitle(e.target.value)} aria-describedby={describedBy} autoComplete="off" />}
       </Field>

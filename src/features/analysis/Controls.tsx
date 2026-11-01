@@ -1,5 +1,5 @@
 // Range, comparison, basis and filters.
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { BANDS } from '../../lib/split';
 import { OUTSIDE, NO_FILTERS, type Filters } from './engine';
@@ -25,6 +25,8 @@ export interface ControlsProps {
   periodLabel: string;
   filters: Filters;
   setFilters: (f: Filters) => void;
+  /** How many tasks the name and description search matches, or null when nothing is typed. */
+  matches?: number | null;
   basis: Basis;
   setBasis: (b: Basis) => void;
   billableAvailable: boolean;
@@ -40,7 +42,20 @@ export function Controls(p: ControlsProps) {
   const tasks = useMemo(() => p.snapshot.tasks.filter((t) => t.state !== 'draft'), [p.snapshot.tasks]);
   const shifts = useMemo(() => [...groupVersions(p.snapshot.shifts)].map(([id, v]) => ({ id, name: [...v].sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1))[0]?.name ?? id })), [p.snapshot.shifts]);
   const liveTags = useMemo(() => p.snapshot.tags.filter((t) => !t.deleted), [p.snapshot.tags]);
-  const filtered = filters.projectIds.length > 0 || filters.taskIds.length > 0 || filters.tagIds.length > 0 || filters.band !== null || filters.shiftKey !== null;
+  const filtered = filters.projectIds.length > 0 || filters.taskIds.length > 0 || filters.tagIds.length > 0 || (filters.query ?? '') !== '' || filters.band !== null || filters.shiftKey !== null;
+  // Typing waits for a pause before the charts are worked out again.
+  const [draft, setDraft] = useState(filters.query ?? '');
+  const [seen, setSeen] = useState(filters.query ?? '');
+  if (seen !== (filters.query ?? '')) {
+    setSeen(filters.query ?? '');
+    setDraft(filters.query ?? '');
+  }
+  const { setFilters } = p;
+  useEffect(() => {
+    if (draft === (filters.query ?? '')) return;
+    const timer = window.setTimeout(() => setFilters({ ...filters, query: draft }), 200);
+    return () => window.clearTimeout(timer);
+  }, [draft, filters, setFilters]);
   const setKind = (kind: RangeKind): void => {
     if (kind === 'custom') p.setRange({ kind, anchor: span.fromDay, from: span.fromDay, to: span.toDay });
     else p.setRange({ kind, anchor: kind === range.kind ? range.anchor : p.today >= span.fromDay && p.today <= span.toDay ? p.today : span.fromDay });
@@ -161,6 +176,17 @@ export function Controls(p: ControlsProps) {
           <button type="button" className="a-btn" onClick={() => p.setFilters(NO_FILTERS)}>
             Clear filters
           </button>
+        ) : null}
+      </div>
+      <div className="a-row a-wrap" role="group" aria-label="Search">
+        <label className="a-field a-inline">
+          <span>Search</span>
+          <input type="search" placeholder="Task name or description" value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="Search tasks by name or description" autoComplete="off" />
+        </label>
+        {p.matches !== null && p.matches !== undefined ? (
+          <span className="muted" role="status" aria-live="polite" data-testid="analysis-search-status">
+            {p.matches} {p.matches === 1 ? 'task matches' : 'tasks match'}
+          </span>
         ) : null}
       </div>
       {liveTags.length > 0 ? (

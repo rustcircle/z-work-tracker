@@ -2,7 +2,8 @@
 // tag chips, billed and unbilled time, and the task-list items with their time and "Make active".
 import { useEffect, useId, useRef } from 'react';
 
-import { useApp, useAppState } from '../../app/store';
+import { useAppState } from '../../app/store';
+import { nextMarkIn, useStepNow } from '../../app/stepClock';
 import { api } from '../../lib/api';
 import { parseIso } from '../../lib/tz';
 import type { Segment, Task } from '../../lib/types';
@@ -28,8 +29,12 @@ export function TaskTimeParts({ task }: { task: Task }) {
   return hasOpenPiece(pieces) ? <LiveTimeParts task={task} pieces={pieces} snapshotSec={snapshotSec} /> : <TimeParts task={task} pieces={pieces} nowSec={snapshotSec} snapshotSec={snapshotSec} />;
 }
 
+/** A running task's item times grow, but only each whole minute of the running stretch, never each second. */
 function LiveTimeParts(p: { task: Task; pieces: readonly Segment[]; snapshotSec: number }) {
-  const { nowSec } = useApp();
+  const { snapshot } = useAppState();
+  const open = p.pieces.find((x) => x.end === null && x.provisionalEnd === null);
+  const since = open ? parseIso(open.start) : null;
+  const nowSec = useStepNow(snapshot, (at) => (since === null ? null : nextMarkIn(at, since)));
   return <TimeParts {...p} nowSec={nowSec} />;
 }
 

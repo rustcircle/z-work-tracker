@@ -1,5 +1,5 @@
 // Manage tags: list, add, rename, recolour with the picker, delete.
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from 'react';
 
 import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
@@ -41,14 +41,14 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
   // "Choose again" on the replaced-colour notice opens this editor with the cursor in the colour choice.
   const chosen = nav?.colorTarget?.kind === 'tag' && tag !== null && nav.colorTarget.id === tag.id;
   const clearColorTarget = nav?.clearColorTarget;
-  useEffect(() => {
+  const focusFirst = useEffectEvent(() => {
     if (chosen) {
       colorRef.current?.querySelector<HTMLElement>('[role="radio"][tabindex="0"], input, button')?.focus();
       clearColorTarget?.();
     } else nameInput.current?.focus();
-    // Focus once, when the editor opens.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  });
+  // Focus once, when the editor opens.
+  useEffect(() => focusFirst(), []);
 
   const nameError = validateTagName(name, snapshot.tags, tag?.id ?? null);
   const others = snapshot.tags.filter((t) => t.id !== tag?.id).map((t) => ({ name: t.name, color: t.color }));

@@ -1,4 +1,4 @@
-import { memo, useMemo, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 
 import { MASK, money as formatMoney, type RateBook } from '../../lib/billing';
 import { BANDS } from '../../lib/split';
@@ -8,10 +8,12 @@ import type { Project, RawSegment, ShiftVersion, Task } from '../../lib/types';
 import { Axis, KIND_WORD, MARK_WORD } from './Axis';
 import { repeatedPass } from './axisGeometry';
 import { amountText, clock, clockWithAbbr, dayLabel, formatDuration, formatHMS, hasAmount, relativeDay, shortDay } from '../../components/format';
-import { IconEdit, IconWarn } from '../../components/icons';
+import { IconCheck, IconEdit, IconWarn } from '../../components/icons';
 import { Badge, IconButton, ProjectChip } from '../../components/ui';
 import { gapSentence } from '../away/awayLogic';
 import { openAway } from '../away/awayStore';
+import { keyOf } from './selectionLogic';
+import { useSelection, type RowReg } from './selection';
 import { blocksOf, differs, entriesOf, isAway, kindOf, overlapSecs, projectTotals, totalsOf, workWindows, type Block, type DayData, type Entry, type SegKind } from './model';
 
 const BAND_HOURS = ['00–06', '06–12', '12–18', '18–24'] as const;
@@ -140,9 +142,33 @@ function DayCardImpl(p: DayCardProps) {
     const overlap = client ? overlapSecs(data.pieces.filter((x) => countsAsWorked(kindOf(x.seg))), work) : 0;
     const pendingSecs = entries.filter((e) => e.kind === 'pending').reduce((n, e) => n + e.end - e.start, 0);
     const bands = BANDS.map((name, i) => ({ name, hours: BAND_HOURS[i] as string, entries: entries.filter((e) => e.band === i) })).filter((b) => b.entries.length > 0);
-    return { blocks, lanes, windows, entries, totals, perProject, markers, clientMarkers, work, overlap, bands, pendingSecs };
-  }, [data, p.shifts, p.book, p.clientWork.start, p.clientWork.end, start, end, zone, client]);
+    // Only a task-day that has counted time can be selected: time away that counts nowhere cannot be exported.
+    const counted = new Set(data.rows.map((r) => r.taskId));
+    const sizes = new Map<string, number>();
+    const rows: RowReg[] = [];
+    for (const b of bands) {
+      for (const e of b.entries) {
+        if (!counted.has(e.taskId)) continue;
+        const key = keyOf(e.taskId, day);
+        sizes.set(key, (sizes.get(key) ?? 0) + 1);
+        rows.push({ rowId: e.key, key });
+      }
+    }
+    const rowIds = new Set(rows.map((r) => r.rowId));
+    return { blocks, lanes, windows, entries, totals, perProject, markers, clientMarkers, work, overlap, bands, pendingSecs, rows, rowIds, sizes };
+  }, [data, day, p.shifts, p.book, p.clientWork.start, p.clientWork.end, start, end, zone, client]);
 
+  // Tell the selection which rows are on screen, in order, so Shift ranges and Select all follow what is drawn.
+  const sel = useSelection();
+  const register = sel?.register;
+  const unregister = sel?.unregister;
+  // The rows are named by their content, so a rebuilt but equal list does not register again.
+  const rowsKey = view.rows.map((r) => `${r.rowId}\u0001${r.key}`).join('\u0002');
+  const registered = useMemo<RowReg[]>(() => (rowsKey === '' ? [] : rowsKey.split('\u0002').map((s) => ({ rowId: s.split('\u0001')[0] ?? '', key: s.split('\u0001')[1] ?? '' }))), [rowsKey]);
+  useEffect(() => {
+    register?.(day, registered);
+  }, [register, day, registered]);
+  useEffect(() => () => unregister?.(day), [unregister, day]);
   const zoneFor = (projectId: string): string | null => (client ? (p.projects.get(projectId)?.clientZone ?? client) : null);
 
   const bothTimes = (s: number, e: number, projectId: string, passes: boolean): string => {
@@ -209,8 +235,8 @@ function DayCardImpl(p: DayCardProps) {
   const windowTitle = (w: ShiftWindow): string => `${w.name}: ${clock(w.start, w.zone)}–${clock(w.end, w.zone)} ${cityOf(w.zone)}${w.breakSecs ? `, ${humanSpan(w.breakSecs)} break` : ''}, ${formatDuration(w.scheduledSecs)} scheduled`;
 
   const t = view.totals;
+  // Only the Billable amount is shown: it moves in steps, where an exact amount would creep up all day.
   const money = amountText(t.billable, p.hide);
-  const exactMoney = amountText(t.exact, p.hide);
   const split = differs(t);
   const isToday = day === p.today;
   const voidedToday = p.voided.get(day) ?? [];
@@ -248,7 +274,6 @@ function DayCardImpl(p: DayCardProps) {
               <dt>Exact</dt>
               <dd className="tabular" title={formatHMS(t.exactSecs)} data-testid="day-exact">
                 {formatDuration(t.exactSecs)}
-                {exactMoney && <span className="day-money"> {exactMoney}</span>}
               </dd>
             </div>
           )}
@@ -375,21 +400,26 @@ function DayCardImpl(p: DayCardProps) {
         )}
       </div>
 
-      <table className="entries">
-        <caption className="visually-hidden">Entries for {dayLabel(day)}, grouped by time of day. Durations and earnings are exact. Time away that is unconfirmed or dropped is listed but counts nowhere.</caption>
+      <table className="entries" role={sel ? 'grid' : undefined} aria-multiselectable={sel ? true : undefined}>
+        <caption className="visually-hidden">Entries for {dayLabel(day)}, grouped by time of day. Durations and earnings are exact. Time away that is unconfirmed or dropped is listed but counts nowhere.{sel ? ' Click an entry to select it for export; Control or Command click adds or removes one, Shift click selects a range, and the arrow keys and Space work too.' : ''}</caption>
         <thead>
           <tr>
+            {sel && (
+              <th scope="col" className="sel-col">
+                <span className="visually-hidden">Selected for export</span>
+              </th>
+            )}
             <th scope="col">Time{client ? ` (${cityOf(zone)} / ${cityOf(client)})` : ''}</th>
             <th scope="col">Task</th>
             <th scope="col">Project</th>
             <th scope="col" className="num">Duration</th>
-            <th scope="col" className="num">Earnings</th>
+            <th scope="col" className="num">Earnings (exact)</th>
           </tr>
         </thead>
         {view.bands.map((b) => (
           <tbody key={b.name} aria-label={`${b.name} ${b.hours}`}>
             <tr className="band-row">
-              <th scope="rowgroup" colSpan={5}>
+              <th scope="rowgroup" colSpan={sel ? 6 : 5}>
                 {b.name} <span className="muted">{b.hours}</span>
               </th>
             </tr>
@@ -399,18 +429,54 @@ function DayCardImpl(p: DayCardProps) {
               const raw = p.marks.get(e.segmentId);
               const away = isAway(e.kind);
               const fixed = proj?.billable && proj.billingType === 'fixedFee';
+              const selKey = sel && view.rowIds.has(e.key) ? keyOf(e.taskId, day) : null;
+              const chosen = selKey !== null && sel?.isSelected(selKey) === true;
+              const siblings = selKey ? (view.sizes.get(selKey) ?? 1) : 1;
               return (
-                <tr key={e.key} data-testid="entry" data-kind={e.kind}>
+                <tr
+                  key={e.key}
+                  data-testid="entry"
+                  data-kind={e.kind}
+                  {...(sel && selKey
+                    ? {
+                        'data-sel-key': selKey,
+                        'data-row-id': e.key,
+                        'aria-selected': chosen,
+                        tabIndex: sel.tabRow === e.key ? 0 : -1,
+                        className: chosen ? 'entry-selected' : 'entry-selectable',
+                        onClick: (ev: ReactMouseEvent<HTMLElement>) => sel.rowClick(ev, selKey, e.key),
+                        onMouseDown: sel.rowMouseDown,
+                      }
+                    : {})}
+                >
+                  {sel && (
+                    <td className="sel-cell">
+                      {selKey ? (
+                        <span className={`sel-mark${chosen ? ' on' : ''}`} aria-hidden="true" data-testid={chosen ? 'sel-mark-on' : 'sel-mark'}>
+                          {chosen && <IconCheck />}
+                        </span>
+                      ) : (
+                        <span className="sel-none" title="Not counted time, so it cannot be exported" />
+                      )}
+                    </td>
+                  )}
                   <td className="tabular">{bothTimes(e.start, e.end, e.projectId, long)}</td>
                   <td>
                     <div className="entry-task">
-                      <span>{taskName(e.taskId)}</span>
+                      <button type="button" className="link entry-open" title="Show this task in the task list" onClick={() => p.onOpenTask(e.taskId, false)}>
+                        {taskName(e.taskId)}
+                      </button>
                       {e.live && <Badge tone="success">Running</Badge>}
                       {e.kind !== 'work' && <Badge tone={e.kind === 'pending' ? 'warning' : e.kind === 'dropped' ? 'danger' : 'accent'}>{KIND_WORD[e.kind]}</Badge>}
                       {raw?.corrected && <Badge tone="neutral">{MARK_WORD.corrected}</Badge>}
                       {raw?.manual && <Badge tone="neutral">{MARK_WORD.manual}</Badge>}
                       {!away && <IconButton label={`Edit task ${taskName(e.taskId)}`} icon={<IconEdit />} className="entry-edit" onClick={() => p.onOpenTask(e.taskId, true)} />}
                     </div>
+                    {selKey && siblings > 1 && (
+                      <p className="entry-note muted" data-testid="entry-siblings">
+                        One of {siblings} rows for this task today: selecting it selects all {siblings}.
+                      </p>
+                    )}
                     {e.kind === 'thinking' && <p className="entry-note muted">Time away marked as thinking. Counts in Exact and Billable.</p>}
                     {e.kind === 'billablePause' && (
                       <p className="entry-note muted">

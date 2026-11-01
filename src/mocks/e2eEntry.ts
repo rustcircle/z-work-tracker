@@ -1,4 +1,4 @@
-// Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty`, `?theme=`, `?firstRun=1`, `?launch=cold`.
+// Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty`, `?theme=`, `?firstRun=1` (the wizard) or `?firstRun=legacy` (the old prompts), `?launch=cold`.
 import { emit } from '@tauri-apps/api/event';
 
 import { toIso } from '../lib/tz';
@@ -35,7 +35,11 @@ export function installE2eBackend(): void {
   if (theme) state.theme = theme as Theme;
   if (q.get('hide') === '1') state.hideEarnings = true;
   if (q.get('showBoth') === '1') state.settings.showBoth = true;
-  if (q.get('firstRun') === '1') {
+  // `firstRun=1`: a fresh store, which shows the setup wizard. `firstRun=legacy`: someone who updated before the
+  // wizard existed and still owes the two one-time prompts, which keep appearing as they did.
+  const firstRun = q.get('firstRun');
+  if (firstRun === '1' || firstRun === 'legacy') {
+    state.setupDone = firstRun === 'legacy';
     state.syncPromptDone = false;
     state.clientZonePromptDone = false;
     state.settings.clientZone = null;

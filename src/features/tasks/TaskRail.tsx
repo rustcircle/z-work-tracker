@@ -9,6 +9,8 @@ import { Button } from '../../components/ui';
 import { IconPlus } from '../../components/icons';
 import { TaskCard } from './TaskCard';
 import { TaskForm } from './TaskForm';
+import { matchingTaskIds, isTaskFilterActive } from './taskFilter';
+import { TaskFilterBar, useTaskFilter } from './TaskFilterBar';
 
 const STOPPED_PAGE = 8;
 const NONE: readonly Task[] = [];
@@ -19,7 +21,7 @@ export function TaskRail() {
   const nav = useNav();
   const launch = snapshot.launch;
   const [formOpen, setFormOpen] = useState(false);
-  const [filter, setFilter] = useState('');
+  const { filter } = useTaskFilter();
   const [showAllStopped, setShowAllStopped] = useState(false);
 
   const projectsById = useMemo(() => new Map(snapshot.projects.map((p) => [p.id, p])), [snapshot.projects]);
@@ -55,17 +57,26 @@ export function TaskRail() {
 
   // A request to show one task (a chain link, a timeline entry) must reach it even when it is hidden
   // by the filter or by the short list of stopped tasks.
+  // The filter itself is left alone (the Timeline shares it): the one task asked for is shown regardless,
+  // until the filter next changes.
   const { focusTask } = nav;
   const [revealedSeq, setRevealedSeq] = useState(0);
+  const [revealId, setRevealId] = useState<string | null>(null);
+  const [revealedFor, setRevealedFor] = useState(filter);
   if (focusTask && focusTask.seq !== revealedSeq) {
     setRevealedSeq(focusTask.seq);
-    setFilter('');
+    setRevealId(focusTask.id);
+    setRevealedFor(filter);
     if (tasksById.get(focusTask.id)?.state === 'stopped') setShowAllStopped(true);
+  } else if (revealedFor !== filter) {
+    setRevealedFor(filter);
+    setRevealId(null);
   }
 
   const continuing = nav.continueTaskId ? tasksById.get(nav.continueTaskId) : undefined;
-  const q = filter.trim().toLowerCase();
-  const visible = snapshot.tasks.filter((t) => q === '' || t.name.toLowerCase().includes(q) || (projectsById.get(t.projectId)?.name.toLowerCase().includes(q) ?? false));
+  const matching = useMemo(() => matchingTaskIds(snapshot.tasks, projectsById, filter), [snapshot.tasks, projectsById, filter]);
+  const filtering = isTaskFilterActive(filter);
+  const visible = snapshot.tasks.filter((t) => matching === null || matching.has(t.id) || t.id === revealId);
   const byRecent = (a: Task, b: Task): number => (last.get(b.id) ?? parseIso(b.createdAt)) - (last.get(a.id) ?? parseIso(a.createdAt));
   const active = visible.filter((t) => t.state === 'running' || t.state === 'paused').sort((a, b) => (a.state === b.state ? byRecent(a, b) : a.state === 'running' ? -1 : 1));
   const drafts = visible.filter((t) => t.state === 'draft').sort((a, b) => parseIso(b.createdAt) - parseIso(a.createdAt));
@@ -118,7 +129,7 @@ export function TaskRail() {
           </div>
         )
       )}
-      {snapshot.tasks.length > 3 && <input className="input" type="search" placeholder="Filter tasks" aria-label="Filter tasks" value={filter} onChange={(e) => setFilter(e.target.value)} />}
+      {(snapshot.tasks.length > 3 || filtering) && <TaskFilterBar scope="tasks" compact matches={matching?.size ?? snapshot.tasks.length} total={snapshot.tasks.length} />}
       <div className="rail-scroll">
         {snapshot.tasks.length === 0 && !formOpen && !continuing && <p className="muted rail-empty">No tasks yet. Use New task to add one, then press Start to begin timing.</p>}
         {group('Active', active)}
@@ -132,7 +143,7 @@ export function TaskRail() {
             </button>
           ),
         )}
-        {q !== '' && visible.length === 0 && <p className="muted rail-empty">No task matches “{filter}”.</p>}
+        {filtering && visible.length === 0 && <p className="muted rail-empty">No task matches this filter.</p>}
       </div>
     </aside>
   );

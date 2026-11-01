@@ -1,6 +1,6 @@
 // Tags on a task: a read-only chip (name always printed, colour from the tag, text colour computed)
 // and a multi-select of the live tags for the new-task form and the inline editor.
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useEffectEvent, useId, useRef } from 'react';
 
 import { readableText } from '../../lib/color';
 import type { Tag } from '../../lib/types';
@@ -54,15 +54,17 @@ export function TagPicker({ tags, value, onChange, error = null, hint, legend = 
   const intent = nav?.tagIntent ?? null;
   // Coming back from Settings with a tag made for this picker: tick it, so a required tag is satisfied.
   const created = intent && intent.origin === id ? intent.createdId : null;
-  const valueKey = value.join(',');
   const { endTagIntent, returnFocus, clearReturnFocus } = nav ?? {};
-  useEffect(() => {
-    if (!created || !live.some((t) => t.id === created)) return;
-    if (!valueKey.split(',').includes(created)) onChange([...live.filter((t) => value.includes(t.id)).map((t) => t.id), created]);
+  const tickCreated = useEffectEvent((tagId: string) => {
+    if (!live.some((t) => t.id === tagId)) return;
+    if (!value.includes(tagId)) onChange([...live.filter((t) => value.includes(t.id)).map((t) => t.id), tagId]);
     // Only the first render after the tag exists ticks it; the user may untick it afterwards.
     endTagIntent?.();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [created, live.length]);
+  });
+  const createdLive = created !== null && live.some((t) => t.id === created);
+  useEffect(() => {
+    if (created && createdLive) tickCreated(created);
+  }, [created, createdLive]);
   // After "Back to task", the cursor returns to this picker.
   useEffect(() => {
     if (returnFocus !== id) return;

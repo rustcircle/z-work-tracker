@@ -4,7 +4,7 @@ import { emit } from '@tauri-apps/api/event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { emptyState, installMock } from '../mocks/ipcMock';
-import { AppProvider, useApp, useAppState } from './store';
+import { AppProvider, useApp, useAppState, useLiveSec } from './store';
 
 let hidden = false;
 const original = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
@@ -14,8 +14,9 @@ function setHidden(value: boolean): void {
   document.dispatchEvent(new Event('visibilitychange'));
 }
 
+// The shared 1 s tick is read through `useLiveSec`: only the running task's elapsed clock follows it.
 function Clock() {
-  const { nowSec } = useApp();
+  const nowSec = useLiveSec();
   return <span data-testid="now">{nowSec}</span>;
 }
 
@@ -109,7 +110,7 @@ describe('the clock', () => {
     const renders = vi.fn();
     cleanup();
     function Count() {
-      const { nowSec } = useApp();
+      const nowSec = useLiveSec();
       renders();
       return <span>{nowSec}</span>;
     }
@@ -120,6 +121,54 @@ describe('the clock', () => {
     renders.mockClear();
     for (let i = 0; i < 3; i += 1) await advance(1000);
     expect(renders.mock.calls.length).toBe(3);
+  });
+});
+
+describe('the coarse clock behind useApp', () => {
+  beforeEach(() => {
+    hidden = false;
+    vi.useFakeTimers({ now: new Date('2026-10-31T12:00:00Z'), shouldAdvanceTime: false });
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    Reflect.deleteProperty(document, 'visibilityState');
+    if (original) Object.defineProperty(Document.prototype, 'visibilityState', original);
+  });
+
+  function Coarse({ onRender }: { onRender: () => void }) {
+    const { nowSec } = useApp();
+    onRender();
+    return <span data-testid="coarse">{nowSec}</span>;
+  }
+  const coarse = (): number => Number(screen.getByTestId('coarse').textContent);
+
+  it('does not render its reader each second: it moves once a minute', async () => {
+    const renders = vi.fn();
+    installMock(emptyState());
+    render(<AppProvider fallback={() => null}><Coarse onRender={renders} /></AppProvider>);
+    await advance(10);
+    const t0 = coarse();
+    renders.mockClear();
+    await advance(59_000);
+    expect(renders).not.toHaveBeenCalled();
+    expect(coarse()).toBe(t0);
+    await advance(2000);
+    expect(coarse()).toBeGreaterThanOrEqual(t0 + 60);
+    expect(renders.mock.calls.length).toBeLessThanOrEqual(2);
+  });
+
+  it('stops while hidden and is right again the moment the window is visible', async () => {
+    installMock(emptyState());
+    render(<AppProvider fallback={() => null}><Coarse onRender={() => undefined} /></AppProvider>);
+    await advance(10);
+    const t0 = coarse();
+    act(() => setHidden(true));
+    await advance(3_600_000);
+    expect(coarse()).toBe(t0);
+    act(() => setHidden(false));
+    expect(coarse()).toBe(t0 + 3600);
   });
 });
 

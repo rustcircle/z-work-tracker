@@ -23,9 +23,14 @@ export interface Filters {
   shiftKey: string | null;
   /** Empty means every task. Otherwise whole tasks that carry at least one of these tags. */
   tagIds: readonly string[];
+  /**
+   * Free text matched against task names and descriptions (the task filter's rules). The view turns it into
+   * `taskIds` before the engine runs, so the engine itself never reads it.
+   */
+  query?: string;
 }
 
-export const NO_FILTERS: Filters = { projectIds: [], taskIds: [], band: null, shiftKey: null, tagIds: [] };
+export const NO_FILTERS: Filters = { projectIds: [], taskIds: [], band: null, shiftKey: null, tagIds: [], query: '' };
 /** Band and shift filters cut sessions at the edge; project, task and tag filters keep whole tasks. */
 export const hasTimeFilter = (f: Filters): boolean => f.band !== null || f.shiftKey !== null;
 

@@ -15,6 +15,8 @@ export interface LiveFigures {
   sessionSecs: number;
   /** Today's exact seconds for the task in the zone, including the open piece. Never includes a pause. */
   exactSecs: number;
+  /** Exact plus billable pauses: the time rounding works on, and what decides when billable next steps. */
+  countedSecs: number;
   /** The same, with billable pauses, rounded once for the day. */
   billableSecs: number;
   /** Today's billable pauses and thinking time, both already inside `billableSecs` / `exactSecs`. */
@@ -45,6 +47,7 @@ export function liveFigures(spans: readonly LiveSpan[], nowSec: number, zone: st
   return {
     sessionSecs: open ? Math.max(0, nowSec - open.start) : 0,
     exactSecs: rows.reduce((n, r) => n + r.exactSecs, 0),
+    countedSecs: rows.reduce((n, r) => n + r.exactSecs + r.pauseSecs, 0),
     billableSecs: rows.reduce((n, r) => n + r.billableSecs, 0),
     pauseSecs: rows.reduce((n, r) => n + r.pauseSecs, 0),
     thinkingSecs: rows.reduce((n, r) => n + r.thinkingSecs, 0),

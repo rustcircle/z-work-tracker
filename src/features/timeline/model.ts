@@ -111,6 +111,8 @@ export interface DayData {
 
 export interface ClosedModel {
   zone: string;
+  /** Days cut down to a task filter, per filter set and day, kept for as long as this model lives. */
+  filtered: WeakMap<ReadonlySet<string>, Map<string, DayData>>;
   pieces: Map<string, Piece[]>;
   rows: Map<string, TaskDay[]>;
   /** Days with logged time, newest first. */
@@ -142,7 +144,7 @@ export function buildClosed(base: readonly Seg[], zone: string, book: RateBook, 
   const pieces = group(splitAll(closedSegs, zone).filter(hasLength));
   const rows = group(taskDays(spansOf(closedSegs), zone, book, rounding));
   const days = [...pieces.keys()].sort().reverse();
-  return { zone, pieces, rows, days, cache: new Map(), liveSegs, liveTaskIds, liveTaskSpans: spansOf(closedSegs.filter((s) => liveTaskIds.has(s.taskId))) };
+  return { zone, filtered: new WeakMap(), pieces, rows, days, cache: new Map(), liveSegs, liveTaskIds, liveTaskSpans: spansOf(closedSegs.filter((s) => liveTaskIds.has(s.taskId))) };
 }
 
 export interface LiveOverlay {
@@ -180,6 +182,50 @@ export function dayData(closed: ClosedModel, overlay: LiveOverlay, day: string):
     pieces: [...(closed.pieces.get(day) ?? EMPTY), ...live],
     rows: [...(closed.rows.get(day) ?? EMPTY).filter((r) => !closed.liveTaskIds.has(r.taskId)), ...(overlay.rows.get(day) ?? EMPTY)],
   };
+}
+
+const keeps = (only: ReadonlySet<string>) => (x: { taskId: string }): boolean => only.has(x.taskId);
+
+/**
+ * The data for one day with only the tasks in `only`. A day the overlay does not touch is cut once per filter
+ * and kept; today's is cut again each time the overlay moves.
+ */
+export function filteredDayData(closed: ClosedModel, overlay: LiveOverlay, day: string, only: ReadonlySet<string> | null): DayData {
+  const all = dayData(closed, overlay, day);
+  if (only === null) return all;
+  const cut = (): DayData => ({ day, pieces: all.pieces.filter((p) => only.has(p.seg.taskId)), rows: all.rows.filter(keeps(only)) });
+  if (overlay.pieces.has(day)) return cut();
+  let perDay = closed.filtered.get(only);
+  if (!perDay) {
+    perDay = new Map();
+    closed.filtered.set(only, perDay);
+  }
+  let hit = perDay.get(day);
+  if (!hit) {
+    hit = cut();
+    perDay.set(day, hit);
+  }
+  return hit;
+}
+
+const withMatch = new WeakMap<ClosedModel, WeakMap<ReadonlySet<string>, string[]>>();
+
+/** All days to list, newest first, keeping only days with time of a task in `only` when there is a filter. */
+export function visibleDays(closed: ClosedModel, overlay: LiveOverlay, only: ReadonlySet<string> | null): string[] {
+  const days = allDays(closed, overlay);
+  if (only === null) return days;
+  let per = withMatch.get(closed);
+  if (!per) {
+    per = new WeakMap();
+    withMatch.set(closed, per);
+  }
+  let closedHit = per.get(only);
+  if (!closedHit) {
+    closedHit = closed.days.filter((d) => (closed.pieces.get(d) ?? EMPTY).some((p) => only.has(p.seg.taskId)));
+    per.set(only, closedHit);
+  }
+  const live = new Set([...overlay.pieces.entries()].filter(([, ps]) => ps.some((p) => only.has(p.seg.taskId))).map(([d]) => d));
+  return live.size === 0 ? closedHit : [...new Set([...closedHit, ...live])].sort().reverse();
 }
 
 /** All days to list, newest first: logged days plus today when something is running. */

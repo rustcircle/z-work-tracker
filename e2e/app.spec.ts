@@ -104,9 +104,12 @@ test.describe('timeline with the demo data', () => {
     await expect(today.getByTestId('shift-band')).toHaveCount(2);
     await expect(today.getByTestId('block')).toHaveCount(3);
     await expect(page.getByTestId('summary-today')).toContainText('$315.00');
-    await expect(page.getByTestId('summary-today')).toContainText('running +$1.50/min');
+    // Only the Billable amount is shown: no per-minute rate, no exact amount creeping up.
+    await expect(page.getByTestId('summary-today')).not.toContainText('/min');
+    await expect(page.getByText('Exact accrual')).toHaveCount(0);
     await expect(today.getByTestId('day-billable')).toContainText('3h 30m');
     await expect(today.getByTestId('day-exact')).toContainText('3h 25m');
+    await expect(today.getByTestId('day-exact')).not.toContainText('$');
     // Live: a minute later the exact total grows by a minute and nothing else breaks.
     await advance(page, 60);
     await expect(today.getByTestId('day-exact')).toContainText('3h 26m');
@@ -169,7 +172,7 @@ test.describe('timeline with the demo data', () => {
 
 test.describe('first run', () => {
   test('asks about sync before anything is enabled, and about the client zone once', async ({ page }) => {
-    const found = await open(page, 'seed=empty&firstRun=1', false);
+    const found = await open(page, 'seed=empty&firstRun=legacy', false);
     // Nothing detected yet: a guide explains what is needed instead of a silent default.
     await expect(page.getByTestId('sync-guide')).toContainText('No OneDrive or Google Drive folder was found');
     await page.evaluate(() => {
@@ -208,8 +211,9 @@ test.describe('screenshots', () => {
 
   test('timeline live earnings', async ({ page }) => {
     const found = await open(page, 'seed=demo');
+    // Crossing a 15-minute step: the Billable amount steps from $315.00 to $337.50, with no rate or ticker beside it.
     await advance(page, 7 * 60 + 12);
-    await expect(page.getByTestId('summary-today')).toContainText('running');
+    await expect(page.getByTestId('summary-today')).toContainText('$337.50');
     await page.screenshot({ path: path.join(SHOTS, 'timeline-live-earnings.png') });
     await expectClean(page, found);
   });

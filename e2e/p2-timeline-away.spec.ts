@@ -146,7 +146,8 @@ test.describe('time away: the dialog on return', () => {
     await expect(dialog(page)).toBeHidden();
     await expect(banner(page)).toHaveCount(0);
     await expect(today(page).getByTestId('day-exact')).toContainText('3h 25m');
-    await expect(today(page).getByTestId('day-exact')).toContainText('$307.50');
+    await expect(today(page).getByTestId('day-exact')).not.toContainText('$');
+    await expect(today(page).getByTestId('day-billable')).toContainText('$360.00');
     await expect(today(page).getByTestId('day-billable')).toContainText('4h 00m');
     await expect(today(page).getByTestId('day-billable')).toContainText('$360.00');
     await expect(today(page).getByTestId('day-unconfirmed')).toHaveCount(0);
@@ -223,7 +224,8 @@ test.describe('billable pauses on the timeline', () => {
     await expect(t.getByTestId('day-pause')).toContainText('includes 30m billable pauses');
     // Exact 2h 55m = $262.50 at $90/h; Billable 3h 30m = $315.00: the pause (30m) and the 15-minute rounding.
     await expect(t.getByTestId('day-exact')).toContainText('2h 55m');
-    await expect(t.getByTestId('day-exact')).toContainText('$262.50');
+    // The exact amount is not shown any more: only the Billable amount is.
+    await expect(t.getByTestId('day-exact')).not.toContainText('$');
     await expect(t.getByTestId('day-billable')).toContainText('3h 30m');
     await expect(t.getByTestId('day-billable')).toContainText('$315.00');
     const row = t.locator('[data-testid="entry"][data-kind="billablePause"]');

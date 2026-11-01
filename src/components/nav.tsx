@@ -22,6 +22,8 @@ export interface Nav {
   continueTaskId: string | null;
   openContinue: (id: string) => void;
   clearContinue: () => void;
+  /** Opens the Export dialog. With a selection it starts on the selected entries. */
+  openExport: () => void;
   /** An item whose colour the "colour was replaced" notice asked to choose again. */
   colorTarget: { kind: 'project' | 'tag'; id: string } | null;
   chooseColor: (kind: 'project' | 'tag', id: string) => void;
