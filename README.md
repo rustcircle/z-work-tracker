@@ -518,6 +518,8 @@ This is the route for your own PCs, and only those. A self-signed certificate is
 
 **What it doesn't do.** SmartScreen may still warn about a downloaded file, because its reputation check is separate from trusting a certificate. Norton and other security tools decide on their own and may still flag the file. If Norton flags it, don't add exclusions; report a false positive through Norton's route: <https://support.norton.com/sp/en/us/home/current/solutions/kb20090410134005EN>.
 
+Smart App Control, on a PC where it is switched on, is a further check. Microsoft says it runs an app only if its own service recognises it or it is signed by a certificate authority in the Microsoft Trusted Root Program, which a self-signed certificate is not: <https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview>. Microsoft doesn't describe trusting a certificate yourself as a way round that, so the steps below may not be enough there. Settings > Windows Security > App and Browser Control shows whether it is on.
+
 **What has been tested.** None of the PowerShell here has run, because this project has no Windows machine to test on. The signing itself has run from macOS with a throwaway certificate; see [signing from macOS](#signing-from-macos).
 
 **1. Create the certificate, once, on one PC.** It can sign code and nothing else, and lasts 5 years. In PowerShell:
