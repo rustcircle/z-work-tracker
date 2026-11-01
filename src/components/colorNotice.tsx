@@ -51,7 +51,7 @@ export function ColorNoticeBar() {
             <span className="color-chip"><span className="color-dot" style={{ background: n.got }} aria-hidden="true" /> <code>{n.got}</code></span>.
           </span>
           <Button small onClick={() => nav?.chooseColor(n.kind, n.itemId)}>
-            Choose again<span className="visually-hidden"> colour for {n.name}</span>
+            Choose again <span className="visually-hidden">colour for {n.name}</span>
           </Button>
           <button type="button" className="icon-btn" aria-label={`Keep the new colour for ${n.name}`} onClick={() => dismissFor(n.kind, n.itemId)}>
             <IconClose />

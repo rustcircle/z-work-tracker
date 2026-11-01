@@ -120,6 +120,7 @@ export function ShiftsSection() {
   const [form, setForm] = useState<ShiftDraft | null>(null);
   const [formKey, setFormKey] = useState(0);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [reverting, setReverting] = useState<{ version: ShiftVersion; before: ShiftVersion | null; name: string } | null>(null);
   const groups = shiftGroups(snapshot.shifts, today);
 
   const blank = (over: Partial<ShiftDraft> = {}): ShiftDraft => ({
@@ -192,17 +193,45 @@ export function ShiftsSection() {
               <details className="versions">
                 <summary>{g.versions.length} versions</summary>
                 <ul className="plain-list">
-                  {g.versions.map((v) => (
-                    <li key={v.id}>
-                      From <strong>{v.effectiveFrom}</strong>: {v.retired ? 'retired' : summary(v)}
-                    </li>
-                  ))}
+                  {[...g.versions]
+                    .sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
+                    .map((v, i, sorted) => (
+                      <li key={v.id} className="version-row">
+                        <span>
+                          From <strong>{v.effectiveFrom}</strong>: {v.retired ? 'retired' : summary(v)}
+                        </span>
+                        <Button small onClick={() => setReverting({ version: v, before: sorted[i - 1] ?? null, name: g.current.name })}>
+                          Revert this version <span className="visually-hidden">of {g.current.name} from {v.effectiveFrom}</span>
+                        </Button>
+                      </li>
+                    ))}
                 </ul>
               </details>
             )}
           </li>
         ))}
       </ul>
+      <ConfirmDialog
+        open={reverting !== null}
+        title="Revert this version?"
+        confirmLabel="Revert version"
+        onCancel={() => setReverting(null)}
+        onConfirm={() => {
+          const v = reverting?.version;
+          setReverting(null);
+          if (v) void act(() => api.revertShiftVersion(v.id));
+        }}
+      >
+        {reverting && (
+          <>
+            <p>
+              This removes the version of {reverting.name} that starts on {reverting.version.effectiveFrom}.{' '}
+              {reverting.before ? `From then on the earlier version applies again: ${reverting.before.retired ? 'retired' : summary(reverting.before)}.` : 'It is the first version, so days before the next version have no band for this shift.'}
+            </p>
+            <p>The other versions and your logged time are not touched.</p>
+          </>
+        )}
+      </ConfirmDialog>
       <ConfirmDialog
         open={deleting !== null}
         title="Delete this shift?"

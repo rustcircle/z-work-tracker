@@ -257,3 +257,25 @@ test.describe('drafts', () => {
     await expectClean(page, found);
   });
 });
+
+test.describe('shift versions', () => {
+  test('reverting one version asks first and leaves the other', async ({ page }) => {
+    const found = await open(page, 'seed=demo');
+    await page.evaluate(() => {
+      const first = window.__mock.shifts.find((v) => v.shiftId === 'sh-morning');
+      if (first) window.__mock.shifts.push({ ...first, id: 'sv-late', effectiveFrom: '2026-03-01', start: '08:00', end: '12:00' });
+    });
+    await page.getByRole('tab', { name: 'Settings' }).click();
+    // The mock hands out a fresh snapshot after any change; a harmless setting change refreshes it.
+    await page.getByRole('radio', { name: 'Light', exact: true }).click();
+    await page.getByRole('radio', { name: 'Solarized Light' }).click();
+    await page.getByText('2 versions').click();
+    await page.getByRole('button', { name: /Revert this version of Morning from 2026-03-01/ }).click();
+    const dialog = page.getByRole('dialog', { name: 'Revert this version?' });
+    await expect(dialog).toContainText('the earlier version applies again');
+    await dialog.getByRole('button', { name: 'Revert version' }).click();
+    await expect(page.getByText('2 versions')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__mock.shifts.filter((v) => v.shiftId === 'sh-morning' && !v.deleted).length)).toBe(1);
+    await expectClean(page, found);
+  });
+});
