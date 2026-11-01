@@ -138,7 +138,7 @@ impl ExportSource {
         Ok(Self {
             data,
             device_id: self.device_id.clone(),
-            remote_devices: BTreeMap::new(),
+            remote_devices: self.remote_devices.clone(),
             now: self.now,
             only: Some(Arc::new(Only { tz, keys })),
         })
@@ -150,24 +150,28 @@ impl ExportSource {
         self.only.as_ref().map(|o| o.keys.len())
     }
 
-    /// The part of a stretch of a task's time inside the selection, first moment to last.
-    fn within_selection(&self, task_id: &str, start: Ts, end: Ts) -> Option<(Ts, Ts)> {
+    /// The parts of a stretch of a task's time inside the selection, one for each unbroken run of
+    /// selected days, so nothing spans a day the selection left out.
+    fn within_selection(&self, task_id: &str, start: Ts, end: Ts) -> Vec<(Ts, Ts)> {
         let Some(only) = &self.only else {
-            return Some((start, end));
+            return vec![(start, end)];
         };
-        let mut out: Option<(Ts, Ts)> = None;
+        let mut out: Vec<(Ts, Ts)> = Vec::new();
         for (day, s, e) in split_by_day(start, end.max(start), only.tz) {
             if only.keys.contains(&(task_id.to_owned(), day)) {
-                out = Some(out.map_or((s, e), |(a, _)| (a, e)));
+                match out.last_mut() {
+                    Some(last) if last.1 == s => last.1 = e,
+                    _ => out.push((s, e)),
+                }
             }
         }
-        if out.is_none()
+        if out.is_empty()
             && end <= start
             && only
                 .keys
                 .contains(&(task_id.to_owned(), day_of(start, only.tz)))
         {
-            out = Some((start, start));
+            out.push((start, start));
         }
         out
     }
@@ -277,6 +281,19 @@ impl ExportSource {
                 let task = self.data.tasks.get(&p.task_id).filter(|t| t.is_live())?;
                 let project = self.data.projects.get(&task.project_id);
                 let raw = self.data.segments.get(&p.source_id);
+                // A selection shows nothing of a day it left out, raw times included: they're cut to
+                // the selected piece, or left out when a correction moved the time elsewhere.
+                let (raw_start, raw_end) = match raw {
+                    Some(r) if self.only.is_some() => {
+                        if r.start < p.end && r.end.is_none_or(|e| e > p.start) {
+                            (Some(r.start.max(p.start)), r.end.map(|e| e.min(p.end)))
+                        } else {
+                            (None, None)
+                        }
+                    }
+                    Some(r) => (Some(r.start), r.end),
+                    None => (None, None),
+                };
                 Some(SegmentRow {
                     segment_id: p.id.clone(),
                     task_name: task.name.clone(),
@@ -287,17 +304,8 @@ impl ExportSource {
                     end: (!p.open).then_some(p.end),
                     effective_end: p.end,
                     kind: p.kind,
-                    // A selection shows nothing of a day it left out, raw times included.
-                    raw_start: raw.map(|r| {
-                        if self.only.is_some() {
-                            r.start.max(p.start)
-                        } else {
-                            r.start
-                        }
-                    }),
-                    raw_end: raw
-                        .and_then(|r| r.end)
-                        .map(|e| if self.only.is_some() { e.min(p.end) } else { e }),
+                    raw_start,
+                    raw_end,
                 })
             })
             .collect();
@@ -330,40 +338,36 @@ impl ExportSource {
                 GapDecision::Drop => "Away, dropped (not counted)",
                 GapDecision::Thinking => "Away, thinking",
             };
-            let Some((start, end)) = self.within_selection(&g.task_id, g.start, g.end) else {
-                continue;
-            };
-            rows.push(AdjustmentRow {
-                kind,
-                task_name,
-                start,
-                end,
-                note: String::new(),
-            });
+            for (start, end) in self.within_selection(&g.task_id, g.start, g.end) {
+                rows.push(AdjustmentRow {
+                    kind,
+                    task_name: task_name.clone(),
+                    start,
+                    end,
+                    note: String::new(),
+                });
+            }
         }
         for p in self.data.pauses.values().filter(|p| !p.deleted) {
             let Some(task_name) = task_of(&p.task_id) else {
                 continue;
             };
-            let Some((start, end)) = self.within_selection(&p.task_id, p.start, p.end) else {
-                continue;
-            };
-            rows.push(AdjustmentRow {
-                kind: "Billable pause",
-                task_name,
-                start,
-                end,
-                note: p.note.clone(),
-            });
+            for (start, end) in self.within_selection(&p.task_id, p.start, p.end) {
+                rows.push(AdjustmentRow {
+                    kind: "Billable pause",
+                    task_name: task_name.clone(),
+                    start,
+                    end,
+                    note: p.note.clone(),
+                });
+            }
         }
         for s in self.data.segments.values() {
             let Some(task_name) = task_of(&s.task_id) else {
                 continue;
             };
             let end = s.end.unwrap_or(s.start);
-            if let Some(e) = &s.edit
-                && let Some((from, to)) = self.within_selection(&s.task_id, e.start, e.end)
-            {
+            if let Some(e) = &s.edit {
                 // The recorded times could name a day the selection left out.
                 let note = if self.only.is_some() {
                     e.reason.trim().to_owned()
@@ -372,24 +376,26 @@ impl ExportSource {
                         .trim()
                         .to_owned()
                 };
-                rows.push(AdjustmentRow {
-                    kind: if e.voided { "Voided" } else { "Corrected" },
-                    task_name: task_name.clone(),
-                    start: from,
-                    end: to,
-                    note,
-                });
+                for (from, to) in self.within_selection(&s.task_id, e.start, e.end) {
+                    rows.push(AdjustmentRow {
+                        kind: if e.voided { "Voided" } else { "Corrected" },
+                        task_name: task_name.clone(),
+                        start: from,
+                        end: to,
+                        note: note.clone(),
+                    });
+                }
             }
-            if s.manual
-                && let Some((from, to)) = self.within_selection(&s.task_id, s.start, end)
-            {
-                rows.push(AdjustmentRow {
-                    kind: "Entered by hand",
-                    task_name,
-                    start: from,
-                    end: to,
-                    note: String::new(),
-                });
+            if s.manual {
+                for (from, to) in self.within_selection(&s.task_id, s.start, end) {
+                    rows.push(AdjustmentRow {
+                        kind: "Entered by hand",
+                        task_name: task_name.clone(),
+                        start: from,
+                        end: to,
+                        note: String::new(),
+                    });
+                }
             }
         }
         rows.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.kind.cmp(b.kind)));
@@ -828,6 +834,85 @@ pub(crate) mod tests {
             if let Ok(path) = std::env::var("ZWT_SAMPLE_SELECTION_XLSX") {
                 std::fs::write(path, &bytes).unwrap();
             }
+        }
+
+        #[test]
+        fn a_remote_open_segment_counts_the_same_when_selected() {
+            let (mut src, t, _) = world();
+            src.data.segments.insert(
+                "open".into(),
+                Segment {
+                    id: "open".into(),
+                    task_id: t.clone(),
+                    device_id: "pc-b".into(),
+                    start: Ts::parse("2026-03-05T09:00:00Z").unwrap(),
+                    end: None,
+                    ..Segment::default()
+                },
+            );
+            src.remote_devices.insert(
+                "pc-b".into(),
+                RemoteDevice {
+                    name: "B".into(),
+                    last_heartbeat: Ts::parse("2026-03-05T10:00:00Z"),
+                    written_at: Ts::parse("2026-03-05T10:00:00Z").unwrap(),
+                },
+            );
+            let full = src.rows(UTC);
+            let same = full
+                .iter()
+                .find(|r| r.row.day.to_string() == "2026-03-05")
+                .unwrap();
+            let only = src.narrowed(UTC, &[entry(&t, "2026-03-05")]).unwrap();
+            let rows = only.rows(UTC);
+            assert_eq!(rows[0].row.exact_secs, 3600);
+            assert_eq!(rows[0].row.exact_secs, same.row.exact_secs);
+        }
+
+        #[test]
+        fn a_correction_shows_no_recorded_time_from_a_day_left_out() {
+            let (mut src, t, _) = world();
+            let seg = src.data.segments.get_mut("b").unwrap();
+            seg.edit = Some(crate::model::SegmentEdit {
+                start: Ts::parse("2026-03-01T14:00:00Z").unwrap(),
+                end: Ts::parse("2026-03-01T15:00:00Z").unwrap(),
+                voided: false,
+                reason: String::new(),
+            });
+            let only = src.narrowed(UTC, &[entry(&t, "2026-03-01")]).unwrap();
+            for row in only.segments() {
+                for raw in [row.raw_start, row.raw_end].into_iter().flatten() {
+                    assert!(raw.iso().starts_with("2026-03-01"), "{}", raw.iso());
+                }
+            }
+        }
+
+        #[test]
+        fn an_adjustment_across_a_day_left_out_becomes_one_row_per_run() {
+            let (mut src, t, _) = world();
+            src.data.pauses.insert(
+                "long".into(),
+                crate::model::BillablePause {
+                    id: "long".into(),
+                    task_id: t.clone(),
+                    start: Ts::parse("2026-03-01T12:00:00Z").unwrap(),
+                    end: Ts::parse("2026-03-03T01:00:00Z").unwrap(),
+                    note: String::new(),
+                    deleted: false,
+                    stamp: crate::model::Stamp::default(),
+                },
+            );
+            let only = src
+                .narrowed(UTC, &[entry(&t, "2026-03-01"), entry(&t, "2026-03-03")])
+                .unwrap();
+            let rows: Vec<_> = only
+                .adjustments()
+                .into_iter()
+                .filter(|r| r.kind == "Billable pause")
+                .collect();
+            assert_eq!(rows.len(), 2);
+            assert!(rows[0].end.iso().starts_with("2026-03-02T00:00"));
+            assert!(rows[1].start.iso().starts_with("2026-03-03T00:00"));
         }
 
         #[test]

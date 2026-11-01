@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { AppProvider, useAppState } from './app/store';
 import { Banners } from './components/Banners';
@@ -10,6 +10,7 @@ import { ToastProvider } from './components/Toasts';
 import { SyncPrompt } from './features/settings/SyncPrompt';
 import { SetupProvider, useSetup } from './features/setup/setupContext';
 import { SetupWizard } from './features/setup/SetupWizard';
+import { api } from './lib/api';
 
 import './styles/ui.css';
 import './styles/shell.css';
@@ -52,9 +53,22 @@ function Root() {
   );
 }
 
+/** Tells the backend the page has painted, once, so it can show the (transparent) window with something in it. */
+function WindowReady() {
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      // The backend shows the window by itself after a few seconds, so a failure here needs no handling.
+      void api.windowReady().catch(() => undefined);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+  return null;
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
+    <WindowReady />
     <AppProvider
       fallback={(error) => (
         <div className="loading" role={error ? 'alert' : 'status'}>

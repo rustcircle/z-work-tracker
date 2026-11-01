@@ -364,6 +364,11 @@ fn write_details_sheet(
         let shift_text = request
             .segment_shifts
             .get(&seg.segment_id)
+            // A selection cuts a segment at midnight, and each part keeps the shifts of the whole.
+            .or_else(|| {
+                let whole = seg.segment_id.split(':').next().unwrap_or_default();
+                request.segment_shifts.get(whole)
+            })
             .map_or("", String::as_str);
         let pieces = if request.include_earnings {
             split_by_rate(&source.data, &seg.project_id, seg.start, seg.effective_end)

@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { SavedColor, Snapshot } from '../lib/types';
 import { demoP2State, demoState } from './demoSeed';
 import { fullProject, nextProjectColor } from './factories';
+import { capAtPauseRequest } from './pieces';
 import { DEVICE_ID, emptyState, handle, type MockState } from './ipcMock';
 
 const call = <T,>(s: MockState, cmd: string, a: Record<string, unknown> = {}) => handle(s, cmd, a) as T;
@@ -126,6 +127,34 @@ describe('remote pause, shift versions, setup and drafts', () => {
     expect(call<Snapshot>(s, 'request_remote_pause', { taskId: 't-logo' }).pauseRequests).toHaveLength(1);
     // That device's own record is untouched.
     expect(open.end).toBeNull();
+  });
+
+  it('a pause request caps what the other device\'s open segment counts, at the earliest request, and never before it began', () => {
+    const s = demoState();
+    const t = s.tasks.find((x) => x.id === 't-logo');
+    const open = s.segments.find((x) => x.taskId === 't-logo' && x.end === null);
+    if (!t || !open) throw new Error('seed');
+    open.deviceId = 'other-device';
+    t.runningElsewhere = 'Office PC';
+    const piece = () => call<Snapshot>(s, 'get_snapshot').segments.find((x) => x.segmentId === open.id);
+    const start = Date.parse(open.start) / 1000;
+    const iso = (sec: number) => new Date(sec * 1000).toISOString().replace('.000Z', 'Z');
+    open.provisionalEnd = iso(start + 3600);
+    expect(piece()?.provisionalEnd).toBe(iso(start + 3600));
+    const req = (id: string, at: number) => ({ id, taskId: 't-logo', segmentId: open.id, requestedBy: DEVICE_ID, at: iso(at), stamp: { at: iso(at), by: DEVICE_ID } });
+    // A later request than the last known moment changes nothing; an earlier one wins; the earliest of several wins.
+    s.pauseRequests.push(req('late', start + 7200));
+    expect(piece()?.provisionalEnd).toBe(iso(start + 3600));
+    s.pauseRequests.push(req('early', start + 600));
+    expect(piece()?.provisionalEnd).toBe(iso(start + 600));
+    s.pauseRequests.push(req('earlier', start + 300));
+    expect(piece()?.provisionalEnd).toBe(iso(start + 300));
+    // Never before the segment began, and the segment itself is never rewritten.
+    s.pauseRequests.push(req('before', start - 100));
+    expect(piece()?.provisionalEnd).toBe(iso(start));
+    expect(open.end).toBeNull();
+    // A segment of this device ignores requests.
+    expect(capAtPauseRequest(start + 3600, { id: open.id, start: open.start, deviceId: DEVICE_ID }, s.pauseRequests, DEVICE_ID)).toBe(start + 3600);
   });
 
   it('reverts one shift version but never the only one', () => {

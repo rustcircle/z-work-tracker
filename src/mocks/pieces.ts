@@ -43,6 +43,18 @@ export function effective(s: MockSegment): [number, number | null] | null {
   return [parseIso(s.start), s.end === null ? null : parseIso(s.end)];
 }
 
+/**
+ * What counts of another device's open segment once someone asked it to pause (the backend's `end_of`): nothing after
+ * the earliest request for that segment, whatever the other device says, and never before the segment began.
+ * `end` is the last known moment; a segment of this device, or one nobody asked about, keeps it.
+ */
+export function capAtPauseRequest(end: number, seg: Pick<MockSegment, 'id' | 'start' | 'deviceId'>, requests: readonly { segmentId: string; at: string }[], thisDevice: string): number {
+  if (seg.deviceId === thisDevice) return end;
+  const asked = requests.filter((q) => q.segmentId === seg.id).map((q) => parseIso(q.at));
+  if (asked.length === 0) return end;
+  return Math.max(Math.min(end, Math.min(...asked)), parseIso(seg.start));
+}
+
 type Span = [number, number];
 
 function subtract(intervals: Span[], cut: Span): Span[] {

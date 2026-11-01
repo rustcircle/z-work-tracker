@@ -21,6 +21,9 @@ export const STEP_TITLE: Record<StepId, string> = {
 };
 
 /** Steps the user may leave out. Everything can be skipped; the optional ones are called that on screen. */
+/** Steps that create records (projects, shifts) rather than set a preference. */
+export const DATA_STEPS: readonly StepId[] = ['project', 'shifts'];
+
 export const OPTIONAL_STEPS: readonly StepId[] = ['project', 'shifts', 'sync'];
 
 /**
@@ -49,14 +52,17 @@ export function answeredBy(step: StepId, s: Pick<Snapshot, 'settings' | 'roundin
 export interface VisibleOptions {
   /** A detected folder holds another computer's data, so connecting is offered first. */
   offerConnect: boolean;
-  /** First run: skip what the data answers. A rerun from Settings shows every step. */
+  /** First run: skip what the data answers. A rerun from Settings shows every settings step. */
   skipAnswered: boolean;
+  /** A rerun changes settings only: the first project and the shifts are data, so they are left out. */
+  omitData?: boolean;
 }
 
 /** The steps to walk through, in order. */
 export function visibleSteps(s: Pick<Snapshot, 'settings' | 'rounding' | 'projects' | 'shifts' | 'sync'>, o: VisibleOptions): StepId[] {
   return STEPS.filter((id) => {
     if (id === 'connect') return o.offerConnect && s.sync.targets.length === 0;
+    if (o.omitData && DATA_STEPS.includes(id)) return false;
     if (o.skipAnswered && answeredBy(id, s)) return false;
     return true;
   });

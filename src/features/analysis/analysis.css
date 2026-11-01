@@ -47,7 +47,7 @@
 .a-grid-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px; }
 .a-wide { grid-column: 1 / -1; }
 .a-note { margin: 8px 0 0; font-size: 12px; }
-.a-nav { display: flex; flex-wrap: wrap; gap: 6px; position: sticky; top: 0; z-index: 10; background: var(--bg); padding: 6px 0; }
+.a-nav { display: flex; flex-wrap: wrap; gap: 6px; position: sticky; top: 0; z-index: 10; background: var(--bg-solid); padding: 6px 0; }
 .a-invite h3 { margin-bottom: 4px; }
 .a-invite p { margin: 0; }
 .a-empty { padding: 28px 12px; text-align: center; color: var(--text-muted); background: var(--surface-alt); border-radius: 8px; border: 1px dashed var(--border-strong); }

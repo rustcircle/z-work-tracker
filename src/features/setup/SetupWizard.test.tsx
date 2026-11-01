@@ -173,12 +173,17 @@ describe('first-run wizard', () => {
 
   it('refuses a duplicate project name on the step, with the reason, and goes nowhere', async () => {
     const user = userEvent.setup();
-    const s = emptyState('2026-03-12T15:20:00Z');
-    s.projects.push(fullProject({ id: 'p1', name: 'Taken', color: '#2563eb' }));
+    const s = fresh();
     boot(s);
-    await user.click(await screen.findByRole('tab', { name: 'Settings' }));
-    await user.click(await screen.findByRole('button', { name: 'Run setup again' }));
-    await user.click(screen.getByRole('button', { name: 'Run setup' }));
+    await screen.findByTestId('setup-wizard');
+    while (step() !== 'project') await user.click(screen.getByRole('button', { name: 'Next' }));
+    // Someone else's data arrives while the project step is behind us: the name is checked against it.
+    for (let i = 0; i < 3; i += 1) await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(step()).toBe('theme');
+    s.projects.push(fullProject({ id: 'p1', name: 'Taken', color: '#2563eb' }));
+    await user.click(within(wizard()).getByRole('radio', { name: 'Light' }));
+    await user.click(within(wizard()).getByRole('radio', { name: /^Dark$/ }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
     while (step() !== 'project') await user.click(screen.getByRole('button', { name: 'Next' }));
     await user.type(screen.getByRole('textbox', { name: 'Project name' }), 'taken');
     await user.click(screen.getByRole('button', { name: 'Next' }));
@@ -256,7 +261,7 @@ describe('first-run wizard', () => {
 });
 
 describe('run setup again', () => {
-  it('asks first, shows every step, changes nothing on Skip and Back, and leaves the saved step alone', async () => {
+  it('asks first, shows the settings steps only, changes nothing on Skip and Back, and leaves the saved step alone', async () => {
     const user = userEvent.setup();
     const s = emptyState('2026-03-12T15:20:00Z');
     s.projects.push(fullProject({ id: 'p1', name: 'Existing', color: '#2563eb' }));
@@ -272,7 +277,8 @@ describe('run setup again', () => {
     await user.click(screen.getByRole('button', { name: 'Run setup' }));
     expect(step()).toBe('welcome');
     // Every step is shown again, including the ones the data already answers.
-    expect(screen.getByTestId('wizard-progress')).toHaveTextContent(`Step 1 of ${STEPS.length - 1}`);
+    // Settings steps only: the project and the shifts are data and are not part of a rerun.
+    expect(screen.getByTestId('wizard-progress')).toHaveTextContent(`Step 1 of ${STEPS.length - 3}`);
     await user.click(screen.getByRole('button', { name: 'Next' }));
     await user.click(screen.getByRole('button', { name: 'Skip' }));
     expect(step()).toBe('zones');
@@ -282,5 +288,73 @@ describe('run setup again', () => {
     expect(cmds(s)).not.toContain('finish_setup');
     expect(s.projects).toHaveLength(1);
     expect(s.settings.myZone).toBe('Europe/Lisbon');
+  });
+});
+
+describe('steps that write as they are chosen', () => {
+  const themeOf = (s: MockState) => s.theme;
+
+  it('Skip and Back put the earlier theme, zone and Start with Windows back; Next keeps them', async () => {
+    const user = userEvent.setup();
+    const s = fresh();
+    s.settings = { clientZone: 'America/New_York' };
+    boot(s);
+    await screen.findByTestId('setup-wizard');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(step()).toBe('theme');
+    // Skip: the theme chosen on screen is undone.
+    await user.click(within(wizard()).getByRole('radio', { name: /^Dark$/ }));
+    await waitFor(() => expect(themeOf(s)).toBe('dark'));
+    await user.click(screen.getByRole('button', { name: 'Skip' }));
+    await waitFor(() => expect(themeOf(s)).toBe('light'));
+    expect(step()).toBe('zones');
+    // Back from zones: a zone change made there is undone.
+    await user.click(screen.getByRole('button', { name: 'No client zone' }));
+    await waitFor(() => expect(s.settings.clientZone ?? null).toBe(null));
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await waitFor(() => expect(s.settings.clientZone).toBe('America/New_York'));
+    expect(step()).toBe('theme');
+    // Next keeps the theme: it is the new baseline and survives going back and skipping.
+    await user.click(within(wizard()).getByRole('radio', { name: 'Solarized Dark' }));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(step()).toBe('theme');
+    await user.click(screen.getByRole('button', { name: 'Skip' }));
+    await waitFor(() => expect(themeOf(s)).toBe('solarizedDark'));
+  });
+
+  it('Start with Windows is put back by Skip and kept by Next', async () => {
+    const user = userEvent.setup();
+    const s = fresh();
+    s.setupStep = STEPS.indexOf('autostart');
+    boot(s);
+    await screen.findByTestId('setup-wizard');
+    expect(step()).toBe('autostart');
+    const toggle = await within(wizard()).findByRole('switch', { name: /Start zWorkTracker/ });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    await user.click(toggle);
+    await waitFor(() => expect(s.autostart).toBe(true));
+    await user.click(screen.getByRole('button', { name: 'Skip' }));
+    await waitFor(() => expect(s.autostart).toBe(false));
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await user.click(await within(wizard()).findByRole('switch', { name: /Start zWorkTracker/ }));
+    await waitFor(() => expect(s.autostart).toBe(true));
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(step()).toBe('summary');
+    expect(s.autostart).toBe(true);
+  });
+
+  it('Finish with defaults undoes the step it is pressed on, and a rerun Exit does too', async () => {
+    const user = userEvent.setup();
+    const s = fresh();
+    boot(s);
+    await screen.findByTestId('setup-wizard');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(within(wizard()).getByRole('radio', { name: /^Dark$/ }));
+    await waitFor(() => expect(themeOf(s)).toBe('dark'));
+    await user.click(screen.getByTestId('finish-defaults'));
+    await screen.findByRole('tab', { name: 'Timeline' });
+    expect(themeOf(s)).toBe('light');
+    expect(s.setupDone).toBe(true);
   });
 });

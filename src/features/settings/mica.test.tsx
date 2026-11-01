@@ -44,6 +44,16 @@ describe('Mica setting', () => {
     expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#f3f4f6');
   });
 
+  it('stays opaque when the backend says Mica is unavailable, even with the switch on and a Light theme', async () => {
+    const s = emptyState();
+    s.mica = true;
+    s.micaAvailable = false;
+    await setting(s);
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('light'));
+    expect(document.documentElement.dataset.mica).toBeUndefined();
+    expect(document.documentElement.style.getPropertyValue('--bg')).toBe('#f3f4f6');
+  });
+
   it('stays opaque under a Solarized theme even when on, and the hint says so', async () => {
     const s = emptyState();
     s.micaAvailable = true;

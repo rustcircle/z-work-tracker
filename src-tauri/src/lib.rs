@@ -846,28 +846,60 @@ fn finish_setup(app: AppHandle, core: CoreState<'_>) -> CmdResult<Snapshot> {
 #[tauri::command(async)]
 fn set_mica(app: AppHandle, core: CoreState<'_>, on: bool) -> CmdResult<Snapshot> {
     let snapshot = core.change(&app, |s| s.set_mica(on))?.1;
-    apply_mica(&app, on && snapshot.prefs.mica_available);
-    Ok(snapshot)
+    if apply_mica(&app, on && snapshot.prefs.mica_available) {
+        return Ok(snapshot);
+    }
+    // The page is opaque unless the backdrop is really there.
+    Ok(core
+        .change(&app, |s| {
+            s.set_mica_available(false);
+            Ok(())
+        })?
+        .1)
+}
+
+/// Shows the window once, after the page has painted, so a transparent window never appears empty.
+static WINDOW_SHOWN: AtomicBool = AtomicBool::new(false);
+
+fn show_main_once(app: &AppHandle) {
+    if !WINDOW_SHOWN.swap(true, Ordering::SeqCst)
+        && let Some(w) = app.get_webview_window("main")
+    {
+        let _ = w.show();
+    }
+}
+
+#[tauri::command]
+fn window_ready(app: AppHandle) {
+    show_main_once(&app);
 }
 
 /// Windows 11's backdrop. The page turns transparent only for the themes it suits.
+/// Returns false when the backdrop was asked for and could not be applied.
 #[cfg(windows)]
-fn apply_mica(app: &AppHandle, on: bool) {
+fn apply_mica(app: &AppHandle, on: bool) -> bool {
     use tauri::utils::config::WindowEffectsConfig;
     use tauri::window::Effect;
-    if let Some(w) = app.get_webview_window("main") {
-        let effects = on.then(|| WindowEffectsConfig {
-            effects: vec![Effect::Mica],
-            ..WindowEffectsConfig::default()
-        });
-        if let Err(e) = w.set_effects(effects) {
+    let Some(w) = app.get_webview_window("main") else {
+        return !on;
+    };
+    let effects = on.then(|| WindowEffectsConfig {
+        effects: vec![Effect::Mica],
+        ..WindowEffectsConfig::default()
+    });
+    match w.set_effects(effects) {
+        Ok(()) => true,
+        Err(e) => {
             eprintln!("Mica could not be applied: {e}");
+            !on
         }
     }
 }
 
 #[cfg(not(windows))]
-fn apply_mica(_: &AppHandle, _: bool) {}
+const fn apply_mica(_: &AppHandle, on: bool) -> bool {
+    !on
+}
 
 /// Mica needs Windows 11, build 22000 or later.
 #[cfg(windows)]
@@ -1526,21 +1558,26 @@ pub fn run() {
                 spawn_sync(handle.clone(), Arc::clone(&core), Arc::clone(svc));
                 let theme = guard(svc).file().prefs.theme;
                 apply_native_theme(&handle, theme);
-                let mica = guard(svc).file().prefs.mica;
-                apply_mica(&handle, mica && mica_available());
-            }
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                #[cfg(feature = "smoke")]
-                if let Ok(path) = std::env::var("ZWT_SMOKE_SCRIPT")
-                    && let Ok(js) = std::fs::read_to_string(path)
-                {
-                    let target = w.clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(1500));
-                        let _ = target.eval(js);
-                    });
+                let mica = guard(svc).file().prefs.mica && mica_available();
+                if !apply_mica(&handle, mica) {
+                    guard(svc).set_mica_available(false);
                 }
+            }
+            // The page says when it has painted. If it never does, the window still has to appear.
+            let late = handle.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(4));
+                show_main_once(&late);
+            });
+            #[cfg(feature = "smoke")]
+            if let Some(w) = app.get_webview_window("main")
+                && let Ok(path) = std::env::var("ZWT_SMOKE_SCRIPT")
+                && let Ok(js) = std::fs::read_to_string(path)
+            {
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(1500));
+                    let _ = w.eval(js);
+                });
             }
             Ok(())
         })
@@ -1599,6 +1636,7 @@ pub fn run() {
         set_setup_step,
         finish_setup,
         set_mica,
+        window_ready,
         add_manual_entry,
         correct_segment,
         void_segment,
@@ -1672,6 +1710,7 @@ pub fn run() {
         set_setup_step,
         finish_setup,
         set_mica,
+        window_ready,
         add_manual_entry,
         correct_segment,
         void_segment,

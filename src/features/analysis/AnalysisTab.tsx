@@ -1,7 +1,9 @@
 // The Analysis tab: controls, key figures, written insights and one section per metric family.
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 
+import { useStepNow } from '../../app/stepClock';
 import { useApp, type Zones } from '../../app/store';
+import { analysisWake } from './analysisClock';
 import { dayOf, zoneLabel } from '../../lib/tz';
 import type { Snapshot } from '../../lib/types';
 import { ActiveZoneBar } from '../zones';
@@ -39,13 +41,14 @@ const SECTIONS = [
 
 type Computed = { ok: true; m: Metrics } | { ok: false; error: string };
 
-/** Reads the coarse clock (it moves once a minute) and passes on only the steps that can change a figure. */
+/** Reads the clock only when a step of billable time, a minute of the running stretch or midnight falls due. */
 export function AnalysisTab() {
   const { snapshot, nowSec, zones } = useApp();
   const [range, setRange] = useState<RangeSpec>(() => defaultRange(dayOf(nowSec, zones.active)));
   const live = useMemo(() => snapshot.segments.some((s) => s.end === null && s.provisionalEnd === null), [snapshot]);
-  // Analysis follows the running segment, and the calendar, once a minute: no figure here counts by the second.
-  const clock = Math.floor(nowSec / 60) * 60;
+  const zone = zones.active;
+  // New data (the snapshot carries the zone and the rounding too) can change when the next wake is.
+  const clock = useStepNow(snapshot, (at) => analysisWake(snapshot, zone, at));
   return <AnalysisView snapshot={snapshot} zones={zones} live={live} clock={clock} range={range} setRange={setRange} />;
 }
 

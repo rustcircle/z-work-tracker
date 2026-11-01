@@ -38,6 +38,8 @@ describe('applyTheme with Mica', () => {
       expect(root.dataset.mica).toBe('on');
       expect(root.style.getPropertyValue('--bg')).toBe(glassBackground(THEMES[theme].bg));
       expect(root.style.getPropertyValue('--bg')).toMatch(/\/ 0\.\d+\)$/);
+      // Sticky bars use the solid colour: nothing scrolls visibly through them.
+      expect(root.style.getPropertyValue('--bg-solid')).toBe(THEMES[theme].bg);
       // Panels, dialogs and every text colour keep their exact opaque token.
       for (const key of ['surface', 'surface-alt', 'text', 'text-muted', 'accent', 'border'] as const) {
         expect(root.style.getPropertyValue(`--${key}`)).toMatch(/^#[0-9a-f]{6}$/i);
@@ -102,8 +104,22 @@ describe('contrast over the worst backdrop', () => {
 describe('CSS', () => {
   it('lets the window show only under data-mica, so the body is opaque (the --bg token) otherwise', () => {
     expect(base).toMatch(/body \{[^}]*background: var\(--bg\)/);
+    // A page that has not run its effect yet, or a bundle that failed, is never see-through: a static opaque
+    // --bg and an html background exist without any script.
+    expect(base).toMatch(/:root \{ --bg: #[0-9a-f]{6}; --bg-solid: #[0-9a-f]{6}; \}/i);
+    expect(base).toMatch(/\nhtml \{ background: var\(--bg\); \}/);
     expect(base).toMatch(/html\[data-mica='on'\][^{]*\{ background: transparent; \}/);
     // The only rule that makes the body transparent is under data-mica.
     expect((base.match(/background: transparent/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('sticky bars', () => {
+  it('Analysis navigation and every other sticky bar paint an opaque token, never the translucent --bg', () => {
+    const css = readFileSync(path.resolve(import.meta.dirname, '../features/analysis/analysis.css'), 'utf8');
+    const nav = css.split('\n').find((l) => l.startsWith('.a-nav '));
+    expect(nav).toContain('position: sticky');
+    expect(nav).toMatch(/background: var\(--bg-solid\)/);
+    expect(nav).not.toMatch(/var\(--bg\)/);
   });
 });

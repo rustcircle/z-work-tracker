@@ -115,6 +115,7 @@ fn earnings_text(file: &LocalFile, task_id: &str, now: Ts, tz: Tz) -> Option<Str
             .filter(|(_, p)| p.task_id == task_id)
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
+        pause_requests: file.data.pause_requests.clone(),
         ..Default::default()
     };
     data.tasks.insert(task.id.clone(), task);

@@ -1,6 +1,12 @@
 /* Reset and shared primitives. Colours come only from the theme tokens set by lib/themes.ts. */
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { height: 100%; }
+/* The window itself is transparent on Windows (for Mica), so the page must paint an opaque background of its own
+   before any script has run, and whenever Mica is off or unavailable. `applyTheme` replaces --bg with the theme's
+   colour; only html[data-mica='on'] below lets the window show through. --bg-solid is the same colour, never
+   translucent, for sticky bars and anything else that must cover what scrolls under it. */
+:root { --bg: #f3f4f6; --bg-solid: #f3f4f6; }
+html { background: var(--bg); }
 body {
   margin: 0;
   background: var(--bg);

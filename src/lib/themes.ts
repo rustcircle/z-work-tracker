@@ -119,6 +119,8 @@ export function applyTheme(theme: Theme, root: HTMLElement = document.documentEl
     if (typeof value === 'string') root.style.setProperty(`--${kebab(key)}`, value);
     else (value as readonly string[]).forEach((c, i) => root.style.setProperty(`--${kebab(key)}-${i}`, c));
   }
+  // The theme's page colour, always opaque: for anything that must cover what scrolls under it, whatever Mica does.
+  root.style.setProperty('--bg-solid', tokens.bg);
   const glass = mica && MICA_THEMES.includes(theme);
   if (glass) root.style.setProperty('--bg', glassBackground(tokens.bg));
   if (glass) root.dataset.mica = 'on';

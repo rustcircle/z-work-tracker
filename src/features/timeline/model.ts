@@ -152,6 +152,14 @@ export interface LiveOverlay {
   rows: Map<string, TaskDay[]>;
 }
 
+/**
+ * The rows still growing at the moment `day` is in: only that day's. A segment that began on an earlier day has
+ * stopped adding to that day's row at midnight, so its counted time is no reason to look at the clock again.
+ */
+export function growingRows(overlay: LiveOverlay, day: string): { counted: number; rule: TaskDay['rule'] }[] {
+  return (overlay.rows.get(day) ?? []).map((r) => ({ counted: r.exactSecs + r.pauseSecs, rule: r.rule }));
+}
+
 const NO_OVERLAY: LiveOverlay = { pieces: new Map(), rows: new Map() };
 
 /** Re-splits only the running segments, and re-rounds only the running tasks on the days they touch. */

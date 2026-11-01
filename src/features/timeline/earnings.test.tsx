@@ -40,6 +40,22 @@ describe('earnings and the clock', () => {
     expect(within(today).getByTestId('day-exact').textContent).not.toMatch(/[$€]/);
   });
 
+  it('the Timeline rows carry no exact amount at all: no column, no per-row figure, no tooltip earnings', async () => {
+    boot(demoState());
+    await advance(100);
+    const today = screen.getByRole('article', { name: 'Thu 12 Mar 2026' });
+    expect(within(today).queryByRole('columnheader', { name: /Earnings/ })).toBeNull();
+    for (const row of within(today).getAllByTestId('entry')) expect(row.textContent).not.toMatch(/[$€]\d/);
+    expect(document.body.textContent).not.toMatch(/Exact earnings|Earnings \(exact\)/);
+    // The running row's amount used to move each minute; now nothing in the rows can.
+    const before = within(today).getAllByTestId('entry').map((r) => r.textContent);
+    await advance(61_000);
+    expect(within(screen.getByRole('article', { name: 'Thu 12 Mar 2026' })).getAllByTestId('entry').map((r) => (r.textContent ?? '').replace(/\d+h \d+m|\d+m|\d{2}:\d{2}/g, '')).every((t) => !/[$€]\d/.test(t))).toBe(true);
+    expect(before.length).toBeGreaterThan(0);
+    // The Billable amount stays in the day's totals.
+    expect(todayLine()).toContain('$315.00');
+  });
+
   it('the amount holds still while seconds pass, and the session clock keeps counting', async () => {
     boot(demoState());
     await advance(100);

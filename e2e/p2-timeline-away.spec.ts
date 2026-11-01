@@ -233,7 +233,8 @@ test.describe('billable pauses on the timeline', () => {
     await expect(row).toContainText('10:45');
     await expect(row).toContainText('Billable pause');
     await expect(row).toContainText('Waiting on the client call');
-    await expect(row).toContainText('$45.00');
+    // Earnings are the Billable amount of the task-day, in the day's totals: no per-row amount, exact or otherwise.
+    await expect(row).not.toContainText('$');
     await expect(row).toContainText('30m');
     await expectClean(page, found);
   });

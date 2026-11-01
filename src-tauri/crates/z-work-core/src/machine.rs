@@ -759,17 +759,19 @@ impl Shared {
         let mut changed = false;
         // A pause asked for from another device: this device closes its own segment, at the moment
         // of the request or at once if that has passed the segment's own start.
-        let asked: Vec<(String, String, Ts)> = self
-            .pause_requests
-            .values()
-            .filter(|q| {
-                self.segments
-                    .get(&q.segment_id)
-                    .is_some_and(|s| s.end.is_none() && s.device_id == ctx.device)
-            })
-            .map(|q| (q.segment_id.clone(), q.task_id.clone(), q.at))
-            .collect();
-        for (seg_id, task_id, at) in asked {
+        // Several devices may have asked: the earliest stands, which is also what `end_of` counts.
+        let mut asked = std::collections::BTreeMap::<String, (String, Ts)>::new();
+        for q in self.pause_requests.values().filter(|q| {
+            self.segments
+                .get(&q.segment_id)
+                .is_some_and(|s| s.end.is_none() && s.device_id == ctx.device)
+        }) {
+            asked
+                .entry(q.segment_id.clone())
+                .and_modify(|(_, at)| *at = (*at).min(q.at))
+                .or_insert((q.task_id.clone(), q.at));
+        }
+        for (seg_id, (task_id, at)) in asked {
             self.close_segment(&seg_id, at.min(ctx.now));
             self.set_state(
                 ctx,
@@ -1068,7 +1070,7 @@ impl Shared {
 }
 
 /// An edit removed the active subtask's item: no subtask is active now.
-fn clear_missing_active(t: &mut Task, ctx: &Ctx<'_>) {
+pub(crate) fn clear_missing_active(t: &mut Task, ctx: &Ctx<'_>) {
     let gone = t
         .active_subtask
         .as_ref()

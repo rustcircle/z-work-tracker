@@ -15,7 +15,7 @@ import { Legend } from './Legend';
 import { SelectionBar } from './SelectionBar';
 import { useSelection } from './selection';
 import { entryOf } from './selectionLogic';
-import { buildClosed, buildOverlay, dayData, differs, filteredDayData, rawIndex, timelineSegs, totalsOf, visibleDays, weekStart, type Totals } from './model';
+import { buildClosed, buildOverlay, dayData, growingRows, differs, filteredDayData, rawIndex, timelineSegs, totalsOf, visibleDays, weekStart, type Totals } from './model';
 
 const PAGE = 14;
 
@@ -70,7 +70,7 @@ export function TimelineTab() {
     // Nothing running: only the end of the day changes what the Timeline says.
     if (closed.liveSegs.length === 0) return midnight;
     const ov = nowFor(at);
-    const rows: LiveRow[] = [...ov.rows.values()].flat().map((r) => ({ counted: r.exactSecs + r.pauseSecs, rule: r.rule }));
+    const rows: LiveRow[] = growingRows(ov, dayOf(at, zone));
     return nextWake(rows, at, closed.liveSegs[0]?.start ?? null, midnight);
   });
   const overlay = useMemo(() => nowFor(now), [nowFor, now]);

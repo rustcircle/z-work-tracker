@@ -63,6 +63,38 @@ describe('pointer selection', () => {
     expect(within(row).getByTestId('sel-mark-on')).toBeInTheDocument();
   });
 
+  it('the task name opens the task on a plain click, but is part of the row when Ctrl, Cmd or Shift is held', async () => {
+    const user = await open();
+    const row = rowsOf(TODAY)[0] as HTMLElement;
+    const name = within(row).getByRole('button', { name: nameOf(row) });
+    const card = () => screen.getAllByRole('article').find((a) => a.getAttribute('aria-label') === nameOf(row) || within(a).queryByRole('heading', { name: nameOf(row) }) !== null);
+    // Plain click: opens the task (the card takes focus) and selects nothing.
+    await user.click(name);
+    expect(row).toHaveAttribute('aria-selected', 'false');
+    expect(card()).toHaveFocus();
+    (document.activeElement as HTMLElement).blur();
+    // Ctrl: toggles the row and opens nothing.
+    await user.keyboard('{Control>}');
+    await user.click(name);
+    await user.keyboard('{/Control}');
+    expect(row).toHaveAttribute('aria-selected', 'true');
+    expect(card()).not.toHaveFocus();
+    // Cmd does the same.
+    await user.keyboard('{Meta>}');
+    await user.click(name);
+    await user.keyboard('{/Meta}');
+    expect(row).toHaveAttribute('aria-selected', 'false');
+    expect(card()).not.toHaveFocus();
+    // Shift from another row extends a range through it, and opens nothing either.
+    await user.click(rowsOf(YESTERDAY)[0] as HTMLElement);
+    await user.keyboard('{Shift>}');
+    await user.click(name);
+    await user.keyboard('{/Shift}');
+    expect(row).toHaveAttribute('aria-selected', 'true');
+    expect(selectedRows().length).toBeGreaterThanOrEqual(2);
+    expect(card()).not.toHaveFocus();
+  });
+
   it('a plain click on another row replaces the selection', async () => {
     const user = await open();
     const rows = rowsOf(YESTERDAY);

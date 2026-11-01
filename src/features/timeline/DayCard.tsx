@@ -219,9 +219,9 @@ function DayCardImpl(p: DayCardProps) {
         {b.kind === 'dropped' && <span>Dropped: not counted.</span>}
         {b.gapKind && <span>{gapSentence(b.gapKind)}</span>}
         {raw && <span>{rawNote(raw, zone, day)}</span>}
-        {isAway(b.kind) ? null : hasAmount(clean) ? (
-          <span className="tabular">{b.kind === 'billablePause' ? 'Billable earnings' : 'Exact earnings'} {amountText(clean, p.hide)}</span>
-        ) : !proj?.billable ? (
+        {/* Earnings are only ever the Billable amount, which is per task per day: it is in the day's totals, so an entry
+            names only why it has none. */}
+        {isAway(b.kind) || hasAmount(clean) ? null : !proj?.billable ? (
           <span>Non-billable</span>
         ) : proj.billingType === 'fixedFee' ? (
           <span>Fixed fee{feeText(proj, p.hide) && ` ${feeText(proj, p.hide)}`}</span>
@@ -401,7 +401,7 @@ function DayCardImpl(p: DayCardProps) {
       </div>
 
       <table className="entries" role={sel ? 'grid' : undefined} aria-multiselectable={sel ? true : undefined}>
-        <caption className="visually-hidden">Entries for {dayLabel(day)}, grouped by time of day. Durations and earnings are exact. Time away that is unconfirmed or dropped is listed but counts nowhere.{sel ? ' Click an entry to select it for export; Control or Command click adds or removes one, Shift click selects a range, and the arrow keys and Space work too.' : ''}</caption>
+        <caption className="visually-hidden">Entries for {dayLabel(day)}, grouped by time of day. Durations are exact; earnings are the Billable amount in the day's totals. Time away that is unconfirmed or dropped is listed but counts nowhere.{sel ? ' Click an entry to select it for export; Control or Command click adds or removes one, Shift click selects a range, and the arrow keys and Space work too.' : ''}</caption>
         <thead>
           <tr>
             {sel && (
@@ -413,22 +413,19 @@ function DayCardImpl(p: DayCardProps) {
             <th scope="col">Task</th>
             <th scope="col">Project</th>
             <th scope="col" className="num">Duration</th>
-            <th scope="col" className="num">Earnings (exact)</th>
           </tr>
         </thead>
         {view.bands.map((b) => (
           <tbody key={b.name} aria-label={`${b.name} ${b.hours}`}>
             <tr className="band-row">
-              <th scope="rowgroup" colSpan={sel ? 6 : 5}>
+              <th scope="rowgroup" colSpan={sel ? 5 : 4}>
                 {b.name} <span className="muted">{b.hours}</span>
               </th>
             </tr>
             {b.entries.map((e) => {
               const proj = p.projects.get(e.projectId);
-              const amt = amountText(e.numerators, p.hide);
               const raw = p.marks.get(e.segmentId);
               const away = isAway(e.kind);
-              const fixed = proj?.billable && proj.billingType === 'fixedFee';
               const selKey = sel && view.rowIds.has(e.key) ? keyOf(e.taskId, day) : null;
               const chosen = selKey !== null && sel?.isSelected(selKey) === true;
               const siblings = selKey ? (view.sizes.get(selKey) ?? 1) : 1;
@@ -463,7 +460,17 @@ function DayCardImpl(p: DayCardProps) {
                   <td className="tabular">{bothTimes(e.start, e.end, e.projectId, long)}</td>
                   <td>
                     <div className="entry-task">
-                      <button type="button" className="link entry-open" title="Show this task in the task list" onClick={() => p.onOpenTask(e.taskId, false)}>
+                      <button
+                        type="button"
+                        className="link entry-open"
+                        title="Show this task in the task list"
+                        data-select-with-modifier=""
+                        onClick={(ev) => {
+                          // Ctrl, Cmd or Shift is a selection click on the row, never a way into the task.
+                          if (ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+                          p.onOpenTask(e.taskId, false);
+                        }}
+                      >
                         {taskName(e.taskId)}
                       </button>
                       {e.live && <Badge tone="success">Running</Badge>}
@@ -498,9 +505,6 @@ function DayCardImpl(p: DayCardProps) {
                   <td>{proj ? <ProjectChip name={proj.name} color={proj.color} archived={proj.archived} /> : '—'}</td>
                   <td className={`num tabular ${away ? 'not-counted' : ''}`} title={away ? `${formatHMS(e.end - e.start)}, not counted` : formatHMS(e.end - e.start)}>
                     {formatDuration(e.end - e.start)}
-                  </td>
-                  <td className="num tabular">
-                    {amt || <span className="muted" title={away ? 'Not counted' : fixed ? 'Fixed fee' : proj?.billable ? 'No rate set for this project' : 'Non-billable'}>—</span>}
                   </td>
                 </tr>
               );

@@ -69,3 +69,14 @@ describe('the rounding table', () => {
     expect(ruleSentence({ incrementMinutes: 15, method: 'up' })).toMatch(/blocks of 15 minutes.*started block counts in full/);
   });
 });
+
+describe('a rerun from Settings', () => {
+  const empty = { settings: {}, rounding: [], projects: [], shifts: [], sync: { targets: [], detected: [], promptPending: false, pendingCopy: null } } as never;
+  it('leaves out the steps that create records, and keeps every settings step', () => {
+    const steps = visibleSteps(empty, { offerConnect: false, skipAnswered: false, omitData: true });
+    expect(steps).not.toContain('project');
+    expect(steps).not.toContain('shifts');
+    expect(steps).toEqual(['welcome', 'theme', 'zones', 'rules', 'sync', 'autostart', 'summary']);
+    expect(visibleSteps(empty, { offerConnect: false, skipAnswered: false })).toContain('project');
+  });
+});

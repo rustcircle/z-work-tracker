@@ -274,7 +274,7 @@ run(async () => {
 });
 `, out);
   const r2 = await waitFile(out);
-  check('data and theme persist across relaunch', r2 && r2.tasks === 1 && r2.projects === 1 && r2.theme === 'solarizedDark', JSON.stringify(r2));
+  check('data and theme persist across relaunch', r2 && r2.tasks === 1 && r2.projects === 2 && r2.theme === 'solarizedDark', JSON.stringify(r2));
   check('no crash notice after a clean exit', r2?.notices === 0);
   check('a relaunch is cold and the backend refuses resume', r2?.warm === false && r2?.coldResume === 'cold_start_required', r2?.coldResume);
   check('tray Resume while cold opens the form and starts nothing', r2?.trayColdState === 'paused' && r2?.trayColdSegments === r2?.segments && r2?.trayColdVisible === true && r2?.trayColdForm === true, JSON.stringify(r2));

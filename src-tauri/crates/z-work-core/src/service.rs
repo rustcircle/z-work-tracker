@@ -133,6 +133,8 @@ impl Service {
         svc.recover_crash()?;
         // Writes the store on first launch too, so the data folder always holds a valid file.
         persist::save(&svc.paths, &svc.file, now)?;
+        // Only now are recovered drafts safe in the store. A failed save keeps them for next time.
+        let _ = crate::drafts::write(&svc.paths.dir, &BTreeMap::new());
         Ok(svc)
     }
 
@@ -540,6 +542,7 @@ impl Service {
                 task.description =
                     crate::subtasks::assign_ids(&draft.description, Some(&task.description));
                 task.description_stamp = ctx.next(&task.description_stamp);
+                crate::machine::clear_missing_active(task, &ctx);
                 restored.push(task.name.clone());
             }
         }
@@ -552,7 +555,6 @@ impl Service {
                 ),
             );
         }
-        let _ = crate::drafts::write(&dir, &BTreeMap::new());
     }
 
     /// A fresh store, or a setup already under way. Someone who updated with data, or has already
@@ -964,8 +966,11 @@ impl Service {
         if target.root.trim().is_empty() {
             return Err(CoreError::Validation("choose a folder".into()));
         }
+        let under_way = self.setup_pending();
         self.mutate(|f, _| {
-            setup_under_way(&mut f.prefs);
+            if under_way {
+                f.prefs.setup_step = f.prefs.setup_step.max(1);
+            }
             f.prefs.sync_prompt_done = true;
             if !f.prefs.sync_targets.iter().any(|t| t.root == target.root) {
                 f.prefs.sync_targets.push(target);
@@ -1106,8 +1111,11 @@ impl Service {
         to: SyncTarget,
         pending: Option<PendingCopy>,
     ) -> Result<(), CoreError> {
+        let under_way = self.setup_pending();
         let result = self.mutate(|f, _| {
-            setup_under_way(&mut f.prefs);
+            if under_way {
+                f.prefs.setup_step = f.prefs.setup_step.max(1);
+            }
             f.prefs.sync_prompt_done = true;
             if let Some(old) = replacing {
                 f.prefs.sync_targets.retain(|t| t.root != old);
@@ -1165,7 +1173,10 @@ impl Service {
     fn end_source(&self) -> ExportSource {
         ExportSource {
             only: None,
-            data: Shared::default(),
+            data: Shared {
+                pause_requests: self.file.data.pause_requests.clone(),
+                ..Shared::default()
+            },
             device_id: self.file.device_id.clone(),
             remote_devices: self.file.remote_devices.clone(),
             now: self.now(),
@@ -1533,13 +1544,6 @@ fn name_device(e: CoreError, devices: BTreeMap<String, RemoteDevice>) -> CoreErr
                 .map_or_else(|| "another device".to_owned(), |d| d.name.clone()),
         ),
         other => other,
-    }
-}
-
-/// Connecting a folder answers the sync prompt, which must not end a setup that is under way.
-fn setup_under_way(prefs: &mut crate::model::LocalPrefs) {
-    if !prefs.setup_done && !prefs.sync_prompt_done {
-        prefs.setup_step = prefs.setup_step.max(1);
     }
 }
 
@@ -2817,6 +2821,12 @@ mod tests {
         let mut s = open(dir.path(), &clock);
         s.create_project(&pinput("Mine")).unwrap();
         assert!(!s.snapshot().setup.pending, "data from before the wizard");
+        s.add_sync_target(SyncTarget {
+            provider: SyncProvider::Custom,
+            root: "/elsewhere".into(),
+        })
+        .unwrap();
+        assert!(!s.snapshot().setup.pending, "connecting doesn't start it");
     }
 
     #[test]
@@ -2868,6 +2878,62 @@ mod tests {
         drop(s);
         let s = open(dir.path(), &clock);
         assert!(s.snapshot().notices.is_empty(), "replayed once");
+    }
+
+    #[test]
+    fn a_failed_save_at_launch_keeps_the_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        clock.advance(5);
+        s.stash_draft(&t, &doc("Typed")).unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        // The temporary file the save writes through is a folder, so the save fails.
+        let blocked = dir.path().join("z-work-data.json.tmp");
+        std::fs::create_dir(&blocked).unwrap();
+        clock.advance(5);
+        assert!(Service::open(dir.path(), Arc::new(clock.clone()), "pc").is_err());
+        assert!(!crate::drafts::read(dir.path()).is_empty());
+        std::fs::remove_dir(&blocked).unwrap();
+        let s = open(dir.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Typed"));
+    }
+
+    #[test]
+    fn two_pause_requests_close_at_the_earliest_with_one_audit_entry() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut owner, t) = running(dir_a.path(), &clock);
+        clock.advance(600);
+        let mut data = owner.file().data.clone();
+        let seg = data.segments.keys().next().unwrap().clone();
+        let at = |n: i64| Ts(Ts::parse(T0).unwrap().0 + n);
+        for (id, n) in [("late", 500), ("early", 100)] {
+            data.pause_requests.insert(
+                id.into(),
+                crate::model::PauseRequest {
+                    id: id.into(),
+                    task_id: t.clone(),
+                    segment_id: seg.clone(),
+                    requested_by: "pc-b".into(),
+                    at: at(n),
+                    stamp: crate::model::Stamp::default(),
+                },
+            );
+        }
+        owner.absorb_remote(&data, BTreeMap::new(), Vec::new());
+        assert_eq!(owner.file().data.segments[&seg].end, Some(at(100)));
+        let audits = owner
+            .file()
+            .data
+            .audit_log
+            .values()
+            .filter(|a| a.action == "pausedByRequest")
+            .count();
+        assert_eq!(audits, 1);
     }
 
     #[test]

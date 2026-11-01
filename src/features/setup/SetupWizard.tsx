@@ -59,7 +59,7 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
     const p = previews.get(d.root);
     return p !== undefined && p !== 'error' && p.hasData && !snapshot.sync.targets.some((t) => t.root === d.root);
   });
-  const base = visibleSteps(snapshot, { offerConnect: withData.length > 0, skipAnswered: !rerun });
+  const base = visibleSteps(snapshot, { offerConnect: withData.length > 0, skipAnswered: !rerun, omitData: rerun });
 
   const [at, setAt] = useState<StepId>(() => (rerun ? 'welcome' : resumeAt(snapshot.setup.step, visibleSteps(snapshot, { offerConnect: false, skipAnswered: true }))));
   // A step the user has opened stays in the walk even when what they just did makes the data answer it, so Back
@@ -90,6 +90,46 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
   const [pick, setPick] = useState<'my' | 'client' | null>(null);
   const [touched, setTouched] = useState(false);
 
+  // Theme, zones and Start with Windows write the moment they are chosen (the theme is a live preview). Leaving
+  // such a step with Skip, Back or Finish with defaults puts back what it was when the step was opened; Next
+  // keeps the choice and makes it the new baseline.
+  const [themeBase, setThemeBase] = useState(snapshot.prefs.theme);
+  const [zoneBase, setZoneBase] = useState({ my: snapshot.settings.myZone ?? null, client: snapshot.settings.clientZone ?? null });
+  const [autoBase, setAutoBase] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.getAutostart().then(
+      (v) => alive && setAutoBase(v),
+      () => undefined,
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function settle(id: StepId, confirmed: boolean): Promise<void> {
+    try {
+      if (id === 'theme') {
+        const cur = snapshot.prefs.theme;
+        if (confirmed) setThemeBase(cur);
+        else if (cur !== themeBase) await act(() => api.setTheme(themeBase));
+      } else if (id === 'zones') {
+        const cur = { my: snapshot.settings.myZone ?? null, client: snapshot.settings.clientZone ?? null };
+        if (confirmed) setZoneBase(cur);
+        else {
+          if (cur.my !== zoneBase.my) await act(() => api.setSetting('myZone', zoneBase.my));
+          if (cur.client !== zoneBase.client) await act(() => api.setSetting('clientZone', zoneBase.client));
+        }
+      } else if (id === 'autostart') {
+        const cur = await api.getAutostart();
+        if (confirmed) setAutoBase(cur);
+        else if (autoBase !== null && cur !== autoBase) await api.setAutostart(autoBase);
+      }
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  }
+
   const go = (id: StepId): void => {
     setError(null);
     setTouched(false);
@@ -99,14 +139,24 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
   };
   const after = (id: StepId): StepId => steps.find((s) => stepIndex(s) > stepIndex(id)) ?? 'summary';
   const next = (): void => go(after(current));
-  const back = (): void => {
-    const i = steps.indexOf(current);
-    if (i > 0) go(steps[i - 1] as StepId);
+  /** Leaves the step without confirming it: Skip and Back. */
+  const leaveUnconfirmed = (to: () => void): void => {
+    setBusy(true);
+    void settle(current, false)
+      .then(to)
+      .finally(() => setBusy(false));
   };
+  const skip = (): void => leaveUnconfirmed(next);
+  const back = (): void =>
+    leaveUnconfirmed(() => {
+      const i = steps.indexOf(current);
+      if (i > 0) go(steps[i - 1] as StepId);
+    });
 
-  async function finish(): Promise<void> {
+  async function finish(confirmed = true): Promise<void> {
     setBusy(true);
     try {
+      if (!confirmed) await settle(current, false);
       // A rerun has nothing to finish: the first run was finished long ago and no state changes.
       if (rerun || (await act(() => api.finishSetup()))) onFinished();
     } finally {
@@ -191,7 +241,7 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
           <div className="wizard-body">
             <p className="lead">Welcome to zWorkTracker. It times your work, one task at a time, and keeps everything on this computer.</p>
             <p>A few quick choices make it yours. Every step has a sensible default, you can skip any of them, and everything can be changed later in Settings. Nothing here logs any time.</p>
-            {rerun && <p className="wizard-note">This is the setup again. It only changes a setting when you press Next on its step, and it never touches your projects, tasks or logged time.</p>}
+            {rerun && <p className="wizard-note">This is the setup again, for settings only. A setting changes when you press Next on its step; Skip, Back and Exit put back what the step showed when you opened it. Projects and shifts are not part of it, and your tasks and logged time are never touched.</p>}
           </div>
         )}
 
@@ -224,13 +274,14 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
 
         {current === 'theme' && (
           <div className="wizard-body">
-            <p>Pick how the app looks. The page changes as you choose. Light is the default.</p>
+            <p>Pick how the app looks. The page changes as you choose, so you can see it; Next keeps it, Skip or Back puts back the earlier theme. Light is the default.</p>
             <ThemeSection />
           </div>
         )}
 
         {current === 'zones' && (
           <div className="wizard-body">
+            <p className="field-hint">A zone you pick is used straight away. Next keeps it; Skip or Back puts back what it was.</p>
             <div className="kv">
               <div>
                 <p className="kv-label">My zone</p>
@@ -363,7 +414,7 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
 
         {current === 'autostart' && (
           <div className="wizard-body">
-            <p>Off by default. If you turn it on, zWorkTracker starts hidden in the system tray when you sign in. It changes only this computer.</p>
+            <p>Off by default. If you turn it on, zWorkTracker starts hidden in the system tray when you sign in. It changes only this computer. Next keeps your choice; Skip or Back puts it back as it was.</p>
             <AutostartSection />
           </div>
         )}
@@ -421,12 +472,12 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
               </Button>
             )}
             {!last && current !== 'welcome' && current !== 'sync' && (
-              <Button variant="ghost" onClick={next} disabled={busy}>
+              <Button variant="ghost" onClick={skip} disabled={busy}>
                 {current === 'connect' ? 'Not now' : 'Skip'}
               </Button>
             )}
             {current === 'sync' && (
-              <Button variant="ghost" onClick={next} disabled={busy}>
+              <Button variant="ghost" onClick={skip} disabled={busy}>
                 Skip
               </Button>
             )}
@@ -443,7 +494,11 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
                   onClick={() => {
                     setBusy(true);
                     void save(current)
-                      .then((ok) => ok && next())
+                      .then(async (ok) => {
+                        if (!ok) return;
+                        await settle(current, true);
+                        next();
+                      })
                       .finally(() => setBusy(false));
                   }}
                 >
@@ -453,7 +508,7 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
             )}
           </div>
           {!last && (
-            <Button variant="secondary" onClick={() => void finish()} disabled={busy} data-testid="finish-defaults">
+            <Button variant="secondary" onClick={() => void finish(false)} disabled={busy} data-testid="finish-defaults">
               {rerun ? 'Exit setup' : 'Finish with defaults'}
             </Button>
           )}

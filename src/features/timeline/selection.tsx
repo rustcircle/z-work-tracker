@@ -105,8 +105,10 @@ export function SelectionProvider({ zone, children }: { zone: string; children: 
   const rowClick = useCallback(
     (e: MouseEvent<HTMLElement>, key: string, rowId: string) => {
       const target = e.target as HTMLElement;
-      // Clicks on the row's own controls (edit, open, links) are theirs: they never select.
-      if (target.closest(INTERACTIVE)) return;
+      // Clicks on the row's own controls (edit, open, links) are theirs: they never select. The task name is the
+      // one exception: a plain click opens the task, but with Ctrl, Cmd or Shift held it is part of the row.
+      const control = target.closest(INTERACTIVE);
+      if (control && !((e.ctrlKey || e.metaKey || e.shiftKey) && control.hasAttribute('data-select-with-modifier'))) return;
       // A drag that selected text to copy it is not a click on the row.
       if (!e.shiftKey && !e.ctrlKey && !e.metaKey && (window.getSelection()?.toString() ?? '') !== '') return;
       const additive = e.ctrlKey || e.metaKey;

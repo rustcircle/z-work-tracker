@@ -115,6 +115,8 @@ export const api = {
   clearDraft: (taskId: string) => invoke<void>('clear_draft', { taskId }),
   setSetupStep: (step: number) => invoke<Snapshot>('set_setup_step', { step }),
   finishSetup: () => invoke<Snapshot>('finish_setup'),
+  /** The page has painted: the native window may be shown. Errors are ignored by the caller. */
+  windowReady: () => invoke<void>('window_ready'),
   setMica: (on: boolean) => invoke<Snapshot>('set_mica', { on }),
 };
 

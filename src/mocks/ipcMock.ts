@@ -10,7 +10,7 @@ import { docHasText } from '../lib/docText';
 import { assignSubtaskIds, resetSubtasks, subtaskItems } from '../lib/subtasks';
 import { isZone, parseIso, toIso } from '../lib/tz';
 import { summaryCsv } from './summaryCsv';
-import { computePieces, effective, projectFigures, summaryPreview, taskTotals, unconfirmedSecs, type MockSegment, type PieceInput } from './pieces';
+import { capAtPauseRequest, computePieces, effective, projectFigures, summaryPreview, taskTotals, unconfirmedSecs, type MockSegment, type PieceInput } from './pieces';
 import type {
   AuditEntry,
   BackupInfo,
@@ -408,7 +408,7 @@ function closeAllAndPause(s: MockState, reason: PauseReason): string[] {
 }
 
 /** Open segments end now on this device, and at their last known moment on another. */
-const endOf = (s: MockState) => (seg: MockSegment): number => (seg.provisionalEnd ? parseIso(seg.provisionalEnd) : s.now);
+const endOf = (s: MockState) => (seg: MockSegment): number => capAtPauseRequest(seg.provisionalEnd ? parseIso(seg.provisionalEnd) : s.now, seg, s.pauseRequests, DEVICE_ID);
 
 const liveTaskIds = (s: MockState): Set<string> => new Set(s.tasks.map((t) => t.id));
 
@@ -1098,6 +1098,8 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
       s.syncPromptDone = true;
       s.clientZonePromptDone = true;
       return snapshot(s);
+    case 'window_ready':
+      return null;
     case 'set_mica':
       s.mica = a.on === true;
       return snapshot(s);
