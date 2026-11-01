@@ -291,6 +291,33 @@ test.describe('words that meet newer text', () => {
     await expect(editor(page)).toHaveCount(0);
   });
 
+  test('quick clicks on Done, each one more of a run to the browser, count once the notice has had its second', async ({ page }) => {
+    await open(page, 'seed=demo');
+    const form = await typedThenNewer(page);
+    const done = form.getByRole('button', { name: 'Done' });
+    await done.click();
+    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
+    const box = await done.boundingBox();
+    if (!box) throw new Error('Done has no box');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    const click = async (clickCount: number) => {
+      await page.mouse.down({ clickCount });
+      await page.mouse.up({ clickCount });
+    };
+    // 360 ms apart, like a user who sees Done do nothing. These three fall inside the notice's first second.
+    for (let n = 2; n <= 4; n++) {
+      await click(n);
+      await page.clock.runFor(360);
+    }
+    await page.waitForTimeout(100);
+    await heldOpen(page, form);
+    // The second has passed, and the run of clicks goes on.
+    await click(5);
+    await settled(page);
+    expect(await stored(page)).toContain('mine');
+    await expect(editor(page)).toHaveCount(0);
+  });
+
   test('a press dragged off Done speaks for no later key', async ({ page }) => {
     await open(page, 'seed=demo');
     await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();

@@ -615,12 +615,12 @@ export function TaskEditor({ task }: { task: Task }) {
               if (e.repeat) e.preventDefault();
             }}
             onClick={(e) => {
-              // The second click of a double click comes too soon after the first to be a choice of what that one held.
-              if (e.detail > 1) return;
               // Only what was on screen as held before this press is the user's to send regardless. A keyboard press
               // has no pointer-down, and any blur of its own came with an earlier key. It reads no list either, as the
               // list of a press dragged off this button is still here, and `detail` is 0 for a click of no pointer.
-              // Nor is a notice not yet read: it stays up, for a press after that.
+              // Nor is a notice not yet read: it stays up, for a press after that. That also keeps the second click of a
+              // double click from choosing what the first one's blur held. `detail` doesn't tell them apart: the browser
+              // goes on counting clicks that follow one another quickly, and one that comes after the second counts.
               const chosen = (e.detail > 0 ? heldAtPress.current : null) ?? readHeldFields(session);
               heldAtPress.current = null;
               void (async () => {
