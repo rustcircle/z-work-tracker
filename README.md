@@ -354,8 +354,8 @@ Definitions worth knowing:
 | **macOS** | `~/Library/Application Support/com.rustcircle.zworktracker/` |
 | **Main file** | `z-work-data.json`: versioned JSON with timestamps in UTC (`2026-03-08T07:00:00Z`) |
 | **Backup** | `z-work-data.json.bak`: the previous good version |
-| **Drafts** | `z-work-drafts.json`: descriptions being typed, local only, put back or shown once at launch |
-| **Kept words** | `z-work-kept-words.json`: words the store wouldn't take, local only, shown in a notice at each launch until it is dismissed |
+| **Drafts** | `z-work-drafts.json`: descriptions being typed, local only, read at the next launch and then gone: put back, or moved to kept words |
+| **Kept words** | `z-work-kept-words.json`: words the store wouldn't take, local only, shown in a notice at each launch until it is dismissed. If this file is damaged, a notice says so and it is kept as `z-work-kept-words.corrupt-<time>.json` |
 | **Heartbeat** | `z-work-heartbeat.json`: while a task runs, the last moment the app was alive. It holds one time |
 | **Dated backups** | `backups/`: one copy a day, plus safety copies made before a restore |
 | **Before a migration** | `z-work-data.v1.json`: the store as it was before an upgrade |

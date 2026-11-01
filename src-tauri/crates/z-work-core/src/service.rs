@@ -54,6 +54,8 @@ pub struct Service {
     revision: u64,
     /// Words kept out of the store, by the id of the notice showing them.
     kept_out: BTreeMap<String, Kept>,
+    /// Their file couldn't be read or moved aside at this launch, so this run writes nothing over it.
+    kept_file_stuck: bool,
     /// When this launch began. Nothing it had to write can have reached another device by then.
     opened: Ts,
     /// Drafts put back at this launch, as stored, until something else replaces them.
@@ -131,6 +133,7 @@ impl Service {
             color_replaced: None,
             mica_available: false,
             kept_out: BTreeMap::new(),
+            kept_file_stuck: false,
             opened: now,
             recovered: BTreeMap::new(),
         };
@@ -632,12 +635,22 @@ impl Service {
 
     /// Words kept at an earlier launch and not yet dismissed.
     fn load_kept(&mut self) {
-        let Some(mut all) = crate::drafts::read_kept(&self.paths.dir) else {
-            let name = crate::drafts::set_aside_kept(&self.paths.dir);
+        let read = crate::drafts::read_kept(&self.paths.dir);
+        let Ok(Some(mut all)) = read else {
+            // A damaged file goes aside. One that can't be read may only be in use, so it stays for the next launch.
+            let aside = match read {
+                Ok(None) => crate::drafts::set_aside_kept(&self.paths.dir, self.now()).ok(),
+                _ => None,
+            };
+            let end = aside.as_ref().map_or_else(
+                || "It is left as it is, for the next launch to try again.".to_owned(),
+                |name| format!("It is now {name} in the data folder."),
+            );
+            self.kept_file_stuck = aside.is_none();
             self.notify(
                 "warning",
                 format!(
-                    "Words kept for you from an earlier launch can't be shown, because the file holding them can't be read. It is now {name} in the data folder."
+                    "Words kept for you from an earlier launch can't be shown, because the file holding them can't be read. {end}"
                 ),
             );
             return;
@@ -653,6 +666,11 @@ impl Service {
 
     /// Writes the words kept out of the store to their file, or removes it if none are left.
     fn save_kept(&self) -> Result<(), CoreError> {
+        if self.kept_file_stuck {
+            return Err(CoreError::StoreUnavailable(
+                "the file of kept words can't be read".to_owned(),
+            ));
+        }
         let all: Vec<&Kept> = self.kept_out.values().collect();
         crate::drafts::write_kept(&self.paths.dir, &all)
     }
@@ -3335,9 +3353,22 @@ mod tests {
     fn kept_words(dir: &Path) -> Vec<String> {
         crate::drafts::read_kept(dir)
             .unwrap()
+            .unwrap()
             .into_iter()
             .map(|k| k.words)
             .collect()
+    }
+
+    /// What the files of kept words moved aside hold.
+    fn kept_files_aside(dir: &Path) -> Vec<String> {
+        let mut aside: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains("z-work-kept-words.corrupt-"))
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .collect();
+        aside.sort();
+        aside
     }
 
     /// What the notices say of the words kept at a launch.
@@ -3640,6 +3671,42 @@ mod tests {
     }
 
     #[test]
+    fn a_file_of_kept_words_that_cannot_be_read_now_is_left_for_the_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        drop(open(dir.path(), &clock));
+        // A folder in its place can't be read, like a file something else has open.
+        let path = dir.path().join("z-work-kept-words.json");
+        std::fs::create_dir(&path).unwrap();
+        let mut s = open(dir.path(), &clock);
+        let notices = s.snapshot().notices;
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].message.contains("can't be read"));
+        assert!(notices[0].message.contains("next launch"));
+        assert!(path.is_dir(), "not moved");
+        s.keep_unsaved_words("gone", "Old name", Some("New name"), None);
+        s.on_exit().unwrap();
+        assert!(path.is_dir(), "not written over");
+        drop(s);
+        std::fs::remove_dir(&path).unwrap();
+        let s = open(dir.path(), &clock);
+        assert!(s.snapshot().notices.is_empty());
+    }
+
+    #[test]
+    fn a_second_file_of_kept_words_that_cannot_be_read_does_not_replace_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        drop(open(dir.path(), &clock));
+        let path = dir.path().join("z-work-kept-words.json");
+        for damaged in ["{ first", "{ second"] {
+            std::fs::write(&path, damaged).unwrap();
+            drop(open(dir.path(), &clock));
+        }
+        assert_eq!(kept_files_aside(dir.path()), ["{ first", "{ second"]);
+    }
+
+    #[test]
     fn the_stash_of_words_kept_for_a_gone_task_goes_only_once_their_file_has_them() {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
@@ -3744,7 +3811,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_of_kept_words_that_cannot_be_read_is_told_of_and_not_written_over() {
+    fn a_file_of_kept_words_that_is_damaged_is_told_of_and_not_written_over() {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         drop(open(dir.path(), &clock));
@@ -3754,11 +3821,9 @@ mod tests {
         let notices = s.snapshot().notices;
         assert_eq!(notices.len(), 1);
         assert!(notices[0].message.contains("can't be read"));
+        assert!(notices[0].message.contains("z-work-kept-words.corrupt-"));
         assert!(!path.exists());
-        assert_eq!(
-            std::fs::read(dir.path().join("z-work-kept-words.json.damaged")).unwrap(),
-            b"{ not the words"
-        );
+        assert_eq!(kept_files_aside(dir.path()), ["{ not the words"]);
         drop(s);
         let s = open(dir.path(), &clock);
         assert!(s.snapshot().notices.is_empty(), "told once");

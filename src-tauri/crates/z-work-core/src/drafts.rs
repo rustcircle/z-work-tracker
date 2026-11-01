@@ -74,13 +74,13 @@ pub struct Kept {
     pub because: KeptBecause,
 }
 
-/// The words kept. `None` if the file is there but can't be read, which unlike a draft is worth saying.
-#[must_use]
-pub fn read_kept(dir: &Path) -> Option<Vec<Kept>> {
+/// The words kept, or `None` for a file that is damaged. An error says it couldn't be read at all, which may
+/// only mean something else has it open. Unlike a draft, this is the only copy, so none of it is shrugged off.
+pub fn read_kept(dir: &Path) -> std::io::Result<Option<Vec<Kept>>> {
     match fs::read(dir.join(KEPT_FILE)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).ok(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
-        Err(_) => None,
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(Vec::new())),
+        Err(e) => Err(e),
     }
 }
 
@@ -98,9 +98,11 @@ pub fn write_kept(dir: &Path, kept: &[&Kept]) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// Moves a file that can't be read out of the way of the next write. Returns its new name.
-pub fn set_aside_kept(dir: &Path) -> String {
-    let name = format!("{KEPT_FILE}.damaged");
-    let _ = fs::rename(dir.join(KEPT_FILE), dir.join(&name));
-    name
+/// Moves a damaged file out of the way of the next write. Returns its new name.
+pub fn set_aside_kept(dir: &Path, now: Ts) -> std::io::Result<String> {
+    let moved = persist::set_aside(dir, "z-work-kept-words", &dir.join(KEPT_FILE), now)?;
+    Ok(moved.file_name().map_or_else(
+        || KEPT_FILE.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    ))
 }

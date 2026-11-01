@@ -209,16 +209,20 @@ fn read_opt(path: &Path) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
-/// Moves a damaged file aside under a unique name so it stays available for hand recovery.
 fn quarantine(paths: &Paths, from: &Path, now: Ts) -> io::Result<PathBuf> {
+    set_aside(&paths.dir, "z-work-data", from, now)
+}
+
+/// Moves a damaged file aside under a unique name so it stays available for hand recovery.
+pub(crate) fn set_aside(dir: &Path, stem: &str, from: &Path, now: Ts) -> io::Result<PathBuf> {
     let stamp = now.datetime().format("%Y%m%dT%H%M%SZ");
     for n in 0..1000 {
         let name = if n == 0 {
-            format!("z-work-data.corrupt-{stamp}.json")
+            format!("{stem}.corrupt-{stamp}.json")
         } else {
-            format!("z-work-data.corrupt-{stamp}-{n}.json")
+            format!("{stem}.corrupt-{stamp}-{n}.json")
         };
-        let target = paths.dir.join(name);
+        let target = dir.join(name);
         if !target.exists() {
             fs::rename(from, &target)?;
             return Ok(target);
