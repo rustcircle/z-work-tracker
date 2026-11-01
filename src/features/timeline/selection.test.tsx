@@ -268,13 +268,13 @@ describe('exporting a selection', () => {
     await ctrl(user, rowsOf('Tue 10 Mar 2026')[0] as HTMLElement);
   }
 
-  it('starts on Selected, sends task and day ids with no analytics, and keeps the selection', async () => {
+  it('starts on Selected, sends task and day ids with no figures of its own, and keeps the selection', async () => {
     const user = await open();
     await selectTwo(user);
     await user.click(within(bar() as HTMLElement).getByRole('button', { name: 'Export selected' }));
     const dialog = await screen.findByRole('dialog', { name: 'Export' });
     expect(within(dialog).getByRole('radio', { name: 'Selected (2)' })).toBeChecked();
-    expect(within(dialog).getByTestId('selection-scope-note')).toHaveTextContent(/analysis sheets are left out/);
+    expect(within(dialog).getByTestId('selection-scope-note')).toHaveTextContent(/analysis sheets count those entries only/);
     await user.click(within(dialog).getByRole('button', { name: 'Export Excel' }));
     await within(dialog).findByTestId('export-result');
     const req = state.exports[0]?.request;

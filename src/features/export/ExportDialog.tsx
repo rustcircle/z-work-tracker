@@ -66,7 +66,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         clientZone: withClient ? zones.client : null,
         includeEarnings,
         segmentShifts: segmentShiftText(toSegs(snapshot, nowSec), snapshot.shifts),
-        // A selection exports only its own rows: the backend leaves the analysis sheets out, so none are built.
+        // The backend works out a selection's analysis sheets from the selected entries, so none are sent.
         analytics: kind === 'xlsx' && !picked ? buildAnalyticsSheets(snapshot, zone, nowSec).filter((s) => includeEarnings || !s.containsPrices) : [],
         selection: picked ? picked.entries : null,
       };
@@ -109,7 +109,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         />
         {bySelection && selectedCount > 0 && (
           <p className="field-hint" data-testid="selection-scope-note">
-            Only the {selectedCount} {selectedCount === 1 ? 'task' : 'tasks'} you selected on the Timeline go into the file, each for the day you selected it on. {kind === 'xlsx' ? 'The analysis sheets are left out, and an "About this selection" sheet says so. ' : kind === 'csv' ? 'A final "selection" row says so. ' : 'The timesheet says so. '}
+            Only the {selectedCount} {selectedCount === 1 ? 'task' : 'tasks'} you selected on the Timeline go into the file, each for the day you selected it on. {kind === 'xlsx' ? 'The analysis sheets count those entries only, and an "About this selection" sheet says what the file is. ' : kind === 'csv' ? 'A final "selection" row says so. ' : 'The timesheet says so. '}
             Totals are worked out from those rows only, rounded per task and day exactly as on the Timeline. A task still running is counted up to the moment of export.
           </p>
         )}
@@ -153,7 +153,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
               onChange={setEarnings}
               hint={includeEarnings ? (hidden ? 'Earnings are hidden on screen, but this file will contain them.' : 'Prices and amounts are in the file.') : 'Turn off for client-facing files: no rates, prices or amounts, and analysis sheets with money are left out.'}
             />
-            {kind === 'xlsx' && !picked && <p className="field-hint">The Excel file also holds analysis sheets for the same zone.</p>}
+            {kind === 'xlsx' && <p className="field-hint">The Excel file also holds analysis sheets for the same zone.</p>}
             {picked && <p className="field-hint">The days are the ones you selected, cut in {zoneLabel(picked.zone, nowSec)}.</p>}
             {result &&
               (result.path ? (

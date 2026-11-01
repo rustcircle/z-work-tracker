@@ -133,14 +133,14 @@ test.describe('selecting Timeline entries', () => {
     await expectClean(page, found);
   });
 
-  test('exporting a multi-day task for one day only sends that task-day, with no analytics and no totals', async ({ page }) => {
+  test('exporting a multi-day task for one day only sends that task-day, with no figures and no totals', async ({ page }) => {
     const found = await open(page, 'seed=demo');
     // Logo concepts has time on several days; only today's is selected.
     await day(page, TODAY).locator('tr[data-testid="entry"]', { hasText: 'Logo concepts' }).first().click();
     await bar(page).getByRole('button', { name: 'Export selected' }).click();
     const dialog = page.getByRole('dialog', { name: 'Export' });
     await expect(dialog.getByRole('radio', { name: 'Selected (1)' })).toBeChecked();
-    await expect(dialog.getByTestId('selection-scope-note')).toContainText('analysis sheets are left out');
+    await expect(dialog.getByTestId('selection-scope-note')).toContainText('analysis sheets count those entries only');
     await dialog.getByRole('button', { name: 'Export Excel' }).click();
     await expect(dialog.getByTestId('export-result')).toBeVisible();
     const sent = await exportsOf(page);

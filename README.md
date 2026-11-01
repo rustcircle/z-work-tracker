@@ -271,7 +271,7 @@ The Excel workbook has these sheets:
 3. **Earnings** (if included): per project and currency, with per-currency totals.
 4. **Analytics:** KPI summary, Bands, Projects, Weekdays, Shifts when configured, and earnings sheets if included. These follow the last Analysis view, or all logged history if Analysis was never opened.
 
-**Exporting a selection.** When entries are selected, the dialog's scope defaults to **Selected** instead of **All in period**. The backend gets only task ids and days, checks them, refuses an empty selection or an entry with no time, and recomputes everything itself, with rounding per task-day, so figures match the Timeline. Labor by project, Segment details, Earnings and Adjustments cover the selection only, with the first sheet's columns unchanged. The Analytics sheets are left out, since they describe the whole period, and a sheet named **About this selection** says what the file is. CSV ends with a `selection` row and the PDF timesheet prints a line saying the same. The selection clears after an export only if you ask.
+**Exporting a selection.** When entries are selected, the dialog's scope defaults to **Selected** instead of **All in period**. The backend gets only task ids and days, checks them, refuses an empty selection or an entry with no time, and recomputes everything itself, with rounding per task-day, so figures match the Timeline. Labor by project, Segment details, Earnings, Adjustments and the Analytics sheets cover the selection only, with the first sheet's columns unchanged, and a sheet named **About this selection** says what the file is. The backend works out those Analytics sheets itself, by the same rules as the Analysis tab: their period runs from the first to the last selected day, each title says it is a selection, and `fixtures/analytics-parity.json` holds both sides to the same figures. Four things differ from a whole-period file, because of what a selection is: the earnings sheet has no row for a day left out, shift figures count only the shifts of selected days (a shift that runs on a selected day is named even with no selected time in it), an effective hourly rate on a fixed fee is over the selected time only, and there is no projected total. Averages per calendar day and per weekday still count the days between selected days. CSV ends with a `selection` row and the PDF timesheet prints a line saying the same. The selection clears after an export only if you ask.
 
 ![Export scope](docs/images/export-scope-light.png)
 
@@ -399,6 +399,9 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warn
 # Read a sample selection back, and scan the raw file for anything unselected
 ZWT_SAMPLE_SELECTION_XLSX=/tmp/sel.xlsx cargo test --manifest-path src-tauri/Cargo.toml -p z-work-core the_workbook_builds
 uv run --no-project --with openpyxl scripts/verify_selection.py /tmp/sel.xlsx
+# Read the mixed-script timesheet with a real PDF reader, and render its first page
+ZWT_SAMPLE_UNICODE_PDF=/tmp/uni.pdf cargo test --manifest-path src-tauri/Cargo.toml -p z-work-core the_mixed_script_sample
+uv run --no-project --with pypdf --with pypdfium2 --with pillow scripts/verify_pdf.py /tmp/uni.pdf /tmp/uni.png
 # Read a sample Excel file back with an independent reader
 ZWT_SAMPLE_XLSX=/tmp/sample.xlsx cargo test -p z-work-core builds_with_earnings
 cd .. && uv run --no-project --with openpyxl scripts/verify_xlsx.py /tmp/sample.xlsx
