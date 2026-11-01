@@ -540,6 +540,108 @@ run(async () => {
   check('dismissing the notice ends those words, and leaves no draft behind', r5.dismissed === true && !existsSync(join(dataDir, 'z-work-drafts.json')) && !JSON.stringify(keptNow).includes('Words before the restart'));
   check('an edit to a task deleted elsewhere goes in a notice with its words, and outlasts the run', r5.goneClosed === true && r5.goneAlerts?.length === 0 && r5.goneNotices?.length === 1 && /no longer exists/.test(r5.goneNotices[0]) && keptNow.length === 1 && keptNow[0].because === 'taskGone' && /Words on a doomed task/.test(keptNow[0].words), JSON.stringify([r5.goneAlerts, r5.goneNotices]));
   check('a closed editor whose saves fail for real says so in a banner, and when its retries have run out a later write sends the words', /could not be saved yet/.test(r5.unsentBanner ?? '') && r5.unsentStored === false && r5.sentByLaterWrite === true, JSON.stringify([r5.unsentBanner, r5.unsentStored, r5.sentByLaterWrite]));
+
+  // Run 6: Shift+Enter and Enter in a description, on the real backend and in the real webview. The keys go to the
+  // editor as keydown events, which its keymap hears as it does from the keyboard.
+  out = join(work, 'r6.json');
+  app = launch(exe, `
+const form = () => document.querySelector('form.task-editor');
+const box = () => form().querySelector('[aria-multiline="true"]');
+const edit = (name) => document.querySelector('button[aria-label="Edit ' + name + '"]');
+const stored = async (id) => (await inv('get_snapshot')).tasks.find((x) => x.id === id);
+// A beat after each, as the editor reads what was typed from the page a moment later, which a person's pace allows for.
+const type = async (text) => { box().focus(); document.execCommand('insertText', false, text); await wait(100); };
+const enter = async (shiftKey) => { box().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, shiftKey, bubbles: true, cancelable: true })); await wait(100); };
+// The paragraphs of the editor, a line break shown as a newline.
+const blocks = () => [...box().children].filter((b) => b.tagName === 'P').map((p) => [...p.childNodes].map((n) => (n.nodeName === 'BR' ? (n.classList.contains('ProseMirror-trailingBreak') ? '' : '\\n') : n.textContent)).join(''));
+// The same from a stored document.
+const shape = (doc) => doc.content.filter((b) => b.type === 'paragraph' && b.content).map((p) => p.content.map((n) => (n.type === 'hardBreak' ? '\\n' : n.text)).join(''));
+const breaks = (doc) => JSON.stringify(doc).match(/"type":"hardBreak"/g)?.length ?? 0;
+const day = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+run(async () => {
+  await until(() => /Smoke task/.test(document.body.innerText), 'task');
+  const r = {};
+  const projectId = (await inv('get_snapshot')).tasks.find((x) => x.name === 'Smoke task').projectId;
+
+  // Typed in the editor, autosaved by the real backend, then the editor closed and opened again.
+  const t = await inv('create_task', { input: { name: 'Smoke breaks', projectId, description: null, tags: [] } });
+  await inv('smoke_emit_changed');
+  await until(() => edit('Smoke breaks'), 'its card');
+  edit('Smoke breaks').click();
+  await until(form, 'its editor');
+  await type('first line');
+  await enter(true);
+  await type('second line');
+  await enter(false);
+  await type('next paragraph');
+  r.typed = blocks();
+  await until(async () => JSON.stringify((await stored(t.id)).description).includes('next paragraph'), 'the autosave');
+  r.storedShape = shape((await stored(t.id)).description);
+  r.storedBreaks = breaks((await stored(t.id)).description);
+  edit('Smoke breaks').click();
+  await until(() => !form(), 'the editor to close');
+  edit('Smoke breaks').click();
+  await until(form, 'the editor again');
+  r.reopened = blocks();
+
+  // A task list typed the same way, with time on it: its subtasks are listed and it goes to Excel.
+  const list = await inv('create_task', { input: { name: 'Smoke breaks list', projectId, description: null, tags: [] } });
+  await inv('smoke_emit_changed');
+  await until(() => edit('Smoke breaks list'), 'the list task');
+  edit('Smoke breaks list').click();
+  await until(() => form()?.getAttribute('aria-label') === 'Editing Smoke breaks list', 'its editor');
+  form().querySelector('button[aria-label="Task list"]').click();
+  await type('Call Anna');
+  await enter(true);
+  await type('about the invoice');
+  await enter(false);
+  await type('Send it');
+  await until(async () => JSON.stringify((await stored(list.id)).description).includes('Send it'), 'the list to save');
+  await inv('add_manual_entry', { input: { taskId: list.id, start: day(3) + 'T09:00:00Z', end: day(3) + 'T10:00:00Z', reason: 'smoke', allowOverlap: true } });
+  r.xlsx = await inv('export_xlsx', { request: { dayZone: 'America/New_York', myZone: 'Europe/Lisbon', clientZone: 'America/New_York', includeEarnings: true, segmentShifts: {}, analytics: [] } });
+  r.listSubtasks = (await stored(list.id)).subtasks.map((x) => x.text);
+  // Two paragraphs in one item, which a paste makes, read as one line of words too.
+  const para = (text) => ({ type: 'paragraph', content: [{ type: 'text', text }] });
+  const pasted = await inv('create_task', { input: { name: 'Smoke two paragraphs', projectId, description: { type: 'doc', content: [{ type: 'taskList', content: [{ type: 'taskItem', attrs: { checked: false }, content: [para('Alpha'), para('Beta')] }] }] }, tags: [] } });
+  r.twoParagraphs = (await stored(pasted.id)).subtasks.map((x) => x.text);
+
+  // Words typed on a task that is deleted elsewhere go in a notice, a break as a space and a paragraph as a line.
+  const doomed = await inv('create_task', { input: { name: 'Smoke breaks doomed', projectId, description: null, tags: [] } });
+  await inv('smoke_emit_changed');
+  await until(() => edit('Smoke breaks doomed'), 'the doomed task');
+  edit('Smoke breaks doomed').click();
+  await until(() => form()?.getAttribute('aria-label') === 'Editing Smoke breaks doomed', 'its editor');
+  await type('Kept one');
+  await enter(true);
+  await type('kept two');
+  await enter(false);
+  await type('kept three');
+  await inv('delete_draft', { id: doomed.id });
+  await inv('smoke_emit_changed');
+  await until(() => document.querySelector('button[aria-label*="Kept one"]'), 'the notice with the words');
+  r.notice = (await inv('get_snapshot')).notices.map((n) => n.message).find((m) => /Kept one/.test(m));
+  return r;
+}).then(() => inv('quit_app'));
+`, out);
+  const r6 = await waitFile(out);
+  check('line breaks and paragraphs ran on the real backend', r6 && !r6.error, r6 ? (r6.error ?? '') : 'no report in time');
+  if (!r6 || r6.error) {
+    app.child.kill();
+    return false;
+  }
+  const exit6 = await withTimeout(app.exited, 15000);
+  check('and quit cleanly a last time', exit6 !== 'timeout' && exit6.code === 0, JSON.stringify(exit6));
+  const lines = ['first line\nsecond line', 'next paragraph'];
+  check('in the real editor Shift+Enter is a line break inside the paragraph and Enter another paragraph, and the real backend stored both', JSON.stringify(r6.typed) === JSON.stringify(lines) && JSON.stringify(r6.storedShape) === JSON.stringify(lines) && r6.storedBreaks === 1, JSON.stringify([r6.typed, r6.storedShape, r6.storedBreaks]));
+  check('closed and opened again the editor shows them as typed', JSON.stringify(r6.reopened) === JSON.stringify(lines), JSON.stringify(r6.reopened));
+  const onDisk = Object.values(readStore().data.tasks).find((t) => t.name === 'Smoke breaks')?.description;
+  const diskShape = (onDisk?.content ?? []).filter((b) => b.type === 'paragraph' && b.content).map((p) => p.content.map((n) => (n.type === 'hardBreak' ? '\n' : n.text)).join(''));
+  check('and the file on disk holds the break and the paragraph', JSON.stringify(diskShape) === JSON.stringify(lines) && JSON.stringify(onDisk).includes('"type":"hardBreak"'), JSON.stringify(diskShape));
+  const sheetStrings = existsSync(r6.xlsx ?? '') ? spawnSync('unzip', ['-p', r6.xlsx, 'xl/sharedStrings.xml'], { encoding: 'utf8' }).stdout : '';
+  check('a break in a list item, or a second paragraph in one, is a space in the subtask list, and a break is a space in the Excel Subtasks column of a sound archive', sheetStrings.includes('[ ] Call Anna about the invoice\n[ ] Send it') && spawnSync('unzip', ['-t', r6.xlsx ?? ''], { encoding: 'utf8' }).status === 0 && JSON.stringify(r6.listSubtasks) === JSON.stringify(['Call Anna about the invoice', 'Send it']) && JSON.stringify(r6.twoParagraphs) === JSON.stringify(['Alpha Beta']), JSON.stringify([r6.listSubtasks, r6.twoParagraphs]));
+  const wanted = 'Kept one kept two\nkept three';
+  const keptWords = existsSync(join(dataDir, 'z-work-kept-words.json')) ? JSON.parse(readFileSync(join(dataDir, 'z-work-kept-words.json'), 'utf8')).map((k) => k.words) : [];
+  check('words kept in a notice show a break as a space and a paragraph as a line, and so does their file', typeof r6.notice === 'string' && r6.notice.endsWith(wanted) && keptWords.includes(wanted), JSON.stringify([r6.notice, keptWords]));
   return true;
 }
 
