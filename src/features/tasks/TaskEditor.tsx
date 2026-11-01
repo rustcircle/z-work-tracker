@@ -21,7 +21,7 @@ import { errorMessage } from '../../lib/errorMessage';
 export const AUTOSAVE_MS = 600;
 /** How soon typed description text is stashed on disk, so a Windows shutdown in the next second loses nothing. */
 export const DRAFT_MS = 300;
-const RETRY_BASE_MS = 2000;
+export const RETRY_BASE_MS = 2000;
 const MAX_RETRIES = 5;
 
 type Status = { kind: 'idle' } | { kind: 'saving' } | { kind: 'saved' } | { kind: 'rejected'; message: string } | { kind: 'failed'; willRetry: boolean };

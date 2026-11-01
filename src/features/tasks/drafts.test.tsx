@@ -1,7 +1,7 @@
 // Last-moment edits: what is typed into a task's description is stashed on disk within a fraction of a second,
 // well before the autosave, and cleared once the real save has landed.
 import { clearMocks } from '@tauri-apps/api/mocks';
-import { screen, waitFor, within } from '@testing-library/react';
+import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -9,10 +9,14 @@ import { boot as bootApp, polyfillDom } from '../../components/testKit';
 import { api } from '../../lib/api';
 import { demoState } from '../../mocks/demoSeed';
 import type { MockState } from '../../mocks/ipcMock';
-import { AUTOSAVE_MS, DRAFT_MS } from './TaskEditor';
+import { AUTOSAVE_MS, DRAFT_MS, RETRY_BASE_MS } from './TaskEditor';
 
 beforeEach(polyfillDom);
-afterEach(() => {
+// An editor saves what is pending as it unmounts, so the mock has to outlast that save. If it goes first the save
+// fails, the editor retries RETRY_BASE_MS later, and the retry lands in whichever test is running by then.
+afterEach(async () => {
+  cleanup();
+  await new Promise((resolve) => setTimeout(resolve));
   clearMocks();
   vi.restoreAllMocks();
 });
@@ -90,5 +94,21 @@ describe('description drafts', () => {
     await waitFor(() => expect(JSON.stringify(state.drafts['t-guide'] ?? null)).toContain('two'));
     await waitFor(() => expect(calls('patch_task')).toHaveLength(2), { timeout: 3000 });
     await waitFor(() => expect(state.drafts['t-guide']).toBeUndefined());
+  });
+
+  describe('between tests', () => {
+    it('stand-in: a test that ends with an edit still unsaved', async () => {
+      const { user, box } = await openEditor();
+      await user.click(box);
+      await user.keyboard(' left unsaved');
+      expect(calls('patch_task')).toHaveLength(0);
+    });
+
+    it('no save from the editor before arrives in the next test', async () => {
+      boot(demoState());
+      await screen.findByRole('button', { name: 'Edit Brand guidelines' });
+      await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_MS + 200));
+      expect(calls('patch_task')).toHaveLength(0);
+    });
   });
 });
