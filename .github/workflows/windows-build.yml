@@ -1,10 +1,11 @@
 name: Windows build
 
-# Manual or tag only, as a fallback to the build from macOS. Signing is opt-in and has three states,
-# chosen by the repository variable SIGNING_ROUTE:
-#   unset or anything else  the build job. Without secrets it succeeds and says it is unsigned. With
-#                           Azure or certificate secrets, verification must pass.
-#   signpath                the signpath job. Each request waits for manual approval in SignPath.
+# Manual or tag only, as a fallback to the build from macOS. Signing is opt-in, chosen by the repository
+# variable SIGNING_ROUTE:
+#   unset or anything else  the build job. Without secrets it succeeds, and the artifact is called
+#                           z-work-tracker-windows-UNSIGNED. With the self-signed certificate's secrets
+#                           (see the README) or Azure's, every signature must verify.
+#   signpath                the signpath job. Not in use: it stays dormant unless this variable is set.
 on:
   workflow_dispatch:
   push:
@@ -43,20 +44,63 @@ jobs:
             src-tauri/target
           key: windows-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
       - run: pnpm install --frozen-lockfile
+      # Nothing here prints a secret, and with no secrets set every signing branch below is skipped.
       - name: Prepare signing
+        id: signing
         shell: pwsh
         env:
           AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
-          if ($env:WINDOWS_CERT_PFX_BASE64) {
+          # The same order as scripts/windows-sign.mjs chooses in.
+          $label = 'UNSIGNED'
+          if ($env:AZURE_SIGNING_ACCOUNT) {
+            $label = 'signed'
+            cargo install trusted-signing-cli --version 0.11.0 --locked
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          } elseif ($env:WINDOWS_CERT_THUMBPRINT) {
+            $label = 'signed'
+          } elseif ($env:WINDOWS_CERT_PFX_BASE64 -or $env:WINDOWS_CERT_PASSWORD) {
+            if (-not ($env:WINDOWS_CERT_PFX_BASE64 -and $env:WINDOWS_CERT_PASSWORD)) {
+              Write-Error 'Set WINDOWS_CERT_PFX_BASE64 and WINDOWS_CERT_PASSWORD together, or neither.'
+              exit 1
+            }
             $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+            # Finds a bad secret now rather than after the build. The errors say nothing about its value.
+            try {
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+              $cert = [Security.Cryptography.X509Certificates.X509Certificate2]::new($pfx, $env:WINDOWS_CERT_PASSWORD, [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+            } catch {
+              Write-Error 'WINDOWS_CERT_PFX_BASE64 is not a base64 PFX that opens with WINDOWS_CERT_PASSWORD.'
+              exit 1
+            }
+            if (-not $cert.HasPrivateKey) { Write-Error 'The PFX has no private key.'; exit 1 }
+            if ($cert.NotAfter -lt (Get-Date)) { Write-Error "The certificate expired on $($cert.NotAfter.ToString('yyyy-MM-dd'))."; exit 1 }
             "WINDOWS_CERT_PFX_PATH=$pfx" >> $env:GITHUB_ENV
+            $label = 'signed'
+            if ($cert.Subject -eq $cert.Issuer) {
+              $label = 'self-signed'
+              # signtool verify /pa only accepts a chain this machine trusts, so a self-signed certificate
+              # has to be trusted here, as on the PCs it is for. The public part only, on a runner that is thrown away.
+              $public = [Security.Cryptography.X509Certificates.X509Certificate2]::new($cert.RawData)
+              foreach ($name in 'Root', 'TrustedPublisher') {
+                $store = [Security.Cryptography.X509Certificates.X509Store]::new($name, 'LocalMachine')
+                $store.Open('ReadWrite')
+                $store.Add($public)
+                $store.Close()
+              }
+            }
+            "thumbprint=$($cert.Thumbprint)" >> $env:GITHUB_OUTPUT
+            $cert.Dispose()
           }
-          if ($env:AZURE_SIGNING_ACCOUNT) { cargo install trusted-signing-cli --version 0.11.0 --locked }
-          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
-          "SIGNTOOL_PATH=$($signtool.FullName)" >> $env:GITHUB_ENV
+          "label=$label" >> $env:GITHUB_OUTPUT
+          if ($label -ne 'UNSIGNED') {
+            $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) { Write-Error 'signtool.exe was not found on this runner.'; exit 1 }
+            "SIGNTOOL_PATH=$($signtool.FullName)" >> $env:GITHUB_ENV
+          }
       - name: Build the installer
         env:
           AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
@@ -69,33 +113,54 @@ jobs:
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
           WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
         run: pnpm tauri build --bundles nsis
-      - name: Verify the signature, or report unsigned
-        shell: pwsh
-        env:
-          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
-          WINDOWS_CERT_THUMBPRINT: ${{ secrets.WINDOWS_CERT_THUMBPRINT }}
-          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-        run: |
-          $files = @('src-tauri\target\release\zWorkTracker.exe') + (Get-ChildItem 'src-tauri\target\release\bundle\nsis\*-setup.exe').FullName
-          $wanted = $env:AZURE_SIGNING_ACCOUNT -or $env:WINDOWS_CERT_THUMBPRINT -or $env:WINDOWS_CERT_PFX_BASE64
-          foreach ($file in $files) {
-            if ($wanted) {
-              & $env:SIGNTOOL_PATH verify /pa /v $file
-              if ($LASTEXITCODE -ne 0) { Write-Error "Signature verification failed: $file"; exit 1 }
-            } else {
-              Write-Host "UNSIGNED: no signing secrets are set, $file is not signed."
-            }
-          }
+      # Runs even if the build failed or the run was cancelled. The PFX is not needed after the build.
       - name: Remove the temporary certificate
         if: always()
         shell: pwsh
-        run: if ($env:WINDOWS_CERT_PFX_PATH) { Remove-Item $env:WINDOWS_CERT_PFX_PATH -Force -ErrorAction SilentlyContinue }
+        run: Remove-Item (Join-Path $env:RUNNER_TEMP 'cert.pfx') -Force -ErrorAction SilentlyContinue
+      # What matters is what gets installed, so the files are read from inside the installer. Tauri signs a
+      # copy of the exe for it: target\release\zWorkTracker.exe stays unsigned, also in a signed build.
+      - name: Verify the signatures, or report unsigned
+        shell: pwsh
+        env:
+          LABEL: ${{ steps.signing.outputs.label }}
+          THUMBPRINT: ${{ steps.signing.outputs.thumbprint }}
+        run: |
+          $installer = (Get-ChildItem 'src-tauri\target\release\bundle\nsis\*-setup.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+          if (-not $installer) { Write-Error 'No installer was produced.'; exit 1 }
+          if ($env:LABEL -eq 'UNSIGNED') {
+            Write-Host '::warning title=Unsigned build::No signing secrets are set, so the installer and everything in it are unsigned.'
+            "### UNSIGNED build`nNo signing secrets are set. Nothing in this installer is signed." >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          $content = Join-Path $env:RUNNER_TEMP 'installer-content'
+          7z x $installer "-o$content" zWorkTracker.exe uninstall.exe WebView2Loader.dll -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { Write-Error 'The installer could not be opened with 7z.'; exit 1 }
+          foreach ($needed in 'zWorkTracker.exe', 'uninstall.exe') {
+            if (-not (Test-Path (Join-Path $content $needed))) { Write-Error "$needed was not found inside the installer."; exit 1 }
+          }
+          $files = @($installer) + (Get-ChildItem $content -File).FullName
+          foreach ($file in $files) {
+            & $env:SIGNTOOL_PATH verify /pa /v $file
+            if ($LASTEXITCODE -ne 0) { Write-Error "Signature verification failed: $file"; exit 1 }
+            $signature = Get-AuthenticodeSignature -LiteralPath $file
+            if ($signature.Status -ne 'Valid') { Write-Error "Signature status is $($signature.Status): $file"; exit 1 }
+            if (-not $signature.TimeStamperCertificate) { Write-Error "No timestamp: $file"; exit 1 }
+            if ($env:THUMBPRINT -and $signature.SignerCertificate.Thumbprint -ne $env:THUMBPRINT) { Write-Error "Signed with a different certificate: $file"; exit 1 }
+          }
+          "### Build is $env:LABEL`nVerified: $(($files | Split-Path -Leaf) -join ', ')." >> $env:GITHUB_STEP_SUMMARY
+          if ($env:LABEL -eq 'self-signed') {
+            "Self-signed: only PCs that trust this certificate accept it. See the README." >> $env:GITHUB_STEP_SUMMARY
+          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: z-work-tracker-windows
+          # z-work-tracker-windows-UNSIGNED, -self-signed or -signed.
+          name: z-work-tracker-windows-${{ steps.signing.outputs.label }}
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
           retention-days: 14
 
+  # Dormant: nothing runs here unless SIGNING_ROUTE is signpath.
   # SignPath Foundation signs only what a GitHub-hosted runner built from this repository, so nothing
   # built on macOS goes through here. The exe is signed first, then packed into the installer, then
   # the installer is signed. The publisher Windows shows will be "SignPath Foundation".
@@ -148,6 +213,8 @@ jobs:
           output-artifact-directory: signed-exe
       - name: Pack the signed exe into the installer
         shell: pwsh
+        env:
+          REF_NAME: ${{ github.ref_name }}
         run: |
           Copy-Item signed-exe\zWorkTracker.exe "$env:RELEASE_DIR\zWorkTracker.exe" -Force
           $makensis = Get-ChildItem "$env:LOCALAPPDATA\tauri" -Recurse -Filter makensis.exe | Select-Object -First 1
@@ -157,7 +224,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           Pop-Location
           New-Item -ItemType Directory -Force to-sign | Out-Null
-          Copy-Item "$env:NSIS_DIR\nsis-output.exe" "to-sign\zWorkTracker_${{ github.ref_name }}_x64-setup.exe"
+          Copy-Item "$env:NSIS_DIR\nsis-output.exe" "to-sign\zWorkTracker_${env:REF_NAME}_x64-setup.exe"
       - id: upload-installer
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
