@@ -15,11 +15,20 @@ function inlineText(n: Json, out: string[]): void {
   else for (const c of kids(n)) inlineText(c, out);
 }
 
-/** The item's own text, without any nested list. */
+/**
+ * The item's own text, without any nested list. A line break is a space, and so is the gap between two
+ * paragraphs (a paste can put several in one item), so no two words run together.
+ */
 function itemText(item: Json): string {
-  const out: string[] = [];
-  for (const c of kids(item)) if (!isList(c.type)) inlineText(c, out);
-  return out.join('').trim();
+  const parts: string[] = [];
+  for (const c of kids(item)) {
+    if (isList(c.type)) continue;
+    const out: string[] = [];
+    inlineText(c, out);
+    const text = out.join('').trim();
+    if (text !== '') parts.push(text);
+  }
+  return parts.join(' ');
 }
 
 export interface DocItem {

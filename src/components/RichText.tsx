@@ -25,7 +25,7 @@ export const SubtaskItem = TaskItem.extend({
   },
 });
 
-function extensions() {
+export function extensions() {
   return [
     StarterKit.configure({ link: false, underline: false, blockquote: false, code: false, codeBlock: false, strike: false, horizontalRule: false }),
     TaskList,

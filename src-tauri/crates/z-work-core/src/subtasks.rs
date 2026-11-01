@@ -56,19 +56,8 @@ fn walk_list(list: &Value, depth: usize, lines: &mut Vec<String>) {
             }
             _ => "\u{2022}".to_owned(),
         };
-        let mut parts: Vec<String> = Vec::new();
-        for child in children(item) {
-            if !is_list(child.get("type").and_then(Value::as_str)) {
-                let mut text = String::new();
-                inline_text(child, &mut text);
-                let text = text.trim().to_owned();
-                if !text.is_empty() {
-                    parts.push(text);
-                }
-            }
-        }
         lines.push(
-            format!("{}{marker} {}", "    ".repeat(depth), parts.join(" "))
+            format!("{}{marker} {}", "    ".repeat(depth), item_text(item))
                 .trim_end()
                 .to_owned(),
         );
@@ -131,14 +120,22 @@ pub struct Item {
     pub checked: bool,
 }
 
+/// What the item says itself, without any nested list. A line break is a space, and so is the gap between two
+/// paragraphs (a paste can put several in one item), so no two words run together. The spreadsheet's Subtasks
+/// column uses this too, so it and the list of subtasks always read an item the same way.
 fn item_text(item: &Value) -> String {
-    let mut text = String::new();
+    let mut parts: Vec<String> = Vec::new();
     for child in children(item) {
         if !is_list(child.get("type").and_then(Value::as_str)) {
+            let mut text = String::new();
             inline_text(child, &mut text);
+            let text = text.trim();
+            if !text.is_empty() {
+                parts.push(text.to_owned());
+            }
         }
     }
-    text.trim().to_owned()
+    parts.join(" ")
 }
 
 fn walk_items(node: &Value, out: &mut Vec<Item>) {
@@ -380,5 +377,79 @@ mod tests {
             {"type":"text","text":"b"}
         ]})])]}]});
         assert_eq!(extract(&doc), "1. a b");
+    }
+
+    fn text(t: &str) -> Value {
+        json!({"type":"text","text":t})
+    }
+    fn hard_break() -> Value {
+        json!({"type":"hardBreak"})
+    }
+    fn para_of(content: Vec<Value>) -> Value {
+        json!({"type":"paragraph","content":content})
+    }
+    fn task_item(content: Vec<Value>) -> Value {
+        json!({"type":"taskItem","attrs":{"checked":false},"content":content})
+    }
+
+    /// Shift+Enter makes a `hardBreak` inside a paragraph and Enter makes another paragraph. Either one,
+    /// in a paragraph or in a list item, must leave a gap between the words on its two sides.
+    #[test]
+    fn a_line_break_and_a_new_paragraph_both_keep_words_apart_in_the_words_a_notice_shows() {
+        let doc = json!({"type":"doc","content":[
+            {"type":"heading","attrs":{"level":2},"content":[text("Head")]},
+            para_of(vec![text("one"), hard_break(), text("two")]),
+            para("three"),
+            para_of(vec![
+                json!({"type":"text","text":"bold","marks":[{"type":"bold"}]}),
+                hard_break(),
+                json!({"type":"text","text":"italic","marks":[{"type":"italic"}]}),
+            ]),
+            {"type":"bulletList","content":[
+                li(vec![para_of(vec![text("four"), hard_break(), text("five")])]),
+                li(vec![para("six")]),
+            ]},
+            {"type":"taskList","content":[task_item(vec![para_of(vec![text("seven"), hard_break(), text("eight")])])]},
+        ]});
+        assert_eq!(
+            plain_text(&doc),
+            "Head\none two\nthree\nbold italic\nfour five\nsix\nseven eight"
+        );
+    }
+
+    #[test]
+    fn extra_enters_and_breaks_leave_no_blank_words_and_no_joined_ones() {
+        let doc = json!({"type":"doc","content":[
+            para("alpha"),
+            {"type":"paragraph"},
+            para_of(vec![hard_break()]),
+            para_of(vec![text("beta"), hard_break(), hard_break(), text("gamma"), hard_break()]),
+        ]});
+        let words: Vec<String> = plain_text(&doc)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(words, ["alpha", "beta", "gamma"]);
+    }
+
+    /// A paste can put two paragraphs in one list item, which the editor accepts. They are read with a space
+    /// between them, as the Subtasks column of the spreadsheet joins them, so both places say the same.
+    #[test]
+    fn a_list_item_of_two_paragraphs_is_one_line_with_a_space_between_them() {
+        let doc = json!({"type":"doc","content":[{"type":"taskList","content":[
+            task_item(vec![para("One"), para("Two")]),
+            task_item(vec![para_of(vec![text("Three"), hard_break(), text("Four")])]),
+            task_item(vec![
+                para("Own"),
+                json!({"type":"paragraph"}),
+                json!({"type":"bulletList","content":[li(vec![para("Nested")])]}),
+            ]),
+        ]}]});
+        let texts: Vec<String> = items(&doc).into_iter().map(|i| i.text).collect();
+        assert_eq!(texts, ["One Two", "Three Four", "Own"]);
+        assert_eq!(
+            extract(&doc),
+            "[ ] One Two\n[ ] Three Four\n[ ] Own\n    \u{2022} Nested"
+        );
     }
 }

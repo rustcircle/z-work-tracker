@@ -3956,6 +3956,29 @@ mod tests {
     }
 
     #[test]
+    fn words_kept_for_a_gone_task_keep_a_line_break_as_a_space_between_their_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        // Shift+Enter makes a `hardBreak` inside the paragraph, and Enter makes the next paragraph.
+        let typed = serde_json::json!({"type":"doc","content":[
+            {"type":"paragraph","content":[
+                {"type":"text","text":"Call Anna"},{"type":"hardBreak"},{"type":"text","text":"about the invoice"}
+            ]},
+            {"type":"paragraph","content":[{"type":"text","text":"Then send it"}]},
+        ]});
+        s.keep_unsaved_words("gone", "Old name", None, Some(&typed));
+        assert_eq!(
+            kept_words(dir.path()),
+            ["Call Anna about the invoice\nThen send it"]
+        );
+        assert!(
+            kept_notices(&s)[0].contains("Call Anna about the invoice\nThen send it"),
+            "and the notice shows them the same way"
+        );
+    }
+
+    #[test]
     fn dismissing_any_notice_reads_as_newer_so_no_older_reply_brings_it_back() {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);

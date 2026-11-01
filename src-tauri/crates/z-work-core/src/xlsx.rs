@@ -913,6 +913,46 @@ pub(crate) mod tests {
         }
     }
 
+    /// Shift+Enter in a list item is a `hardBreak` in the stored document, and Enter in a paste can make a second
+    /// paragraph. The Subtasks column reads each as a space, so an item stays on one line of its cell with its words
+    /// apart, and the file is still a sound archive.
+    #[test]
+    fn a_line_break_or_second_paragraph_in_a_subtask_is_a_space_in_the_subtasks_column() {
+        let (mut src, req) = sample();
+        let id = src
+            .data
+            .tasks
+            .values()
+            .find(|t| t.name == "Write report")
+            .map(|t| t.id.clone())
+            .unwrap();
+        src.data.tasks.get_mut(&id).unwrap().description = json!({"type":"doc","content":[
+            {"type":"orderedList","content":[
+                {"type":"listItem","content":[{"type":"paragraph","content":[
+                    {"type":"text","text":"Call Anna"},{"type":"hardBreak"},{"type":"text","text":"about the invoice"}
+                ]}]},
+                {"type":"listItem","content":[
+                    {"type":"paragraph","content":[{"type":"text","text":"Send"}]},
+                    {"type":"paragraph","content":[{"type":"text","text":"the file"}]}
+                ]},
+            ]},
+        ]});
+        let bytes = build(&src, &req).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let all = unzip_all(&bytes, dir.path());
+        assert!(
+            all.contains("1. Call Anna about the invoice\n2. Send the file"),
+            "the cell holds one line per item, each with its words apart"
+        );
+        assert!(!all.contains("Annaabout") && !all.contains("Sendthe"));
+        let sound = std::process::Command::new("unzip")
+            .arg("-t")
+            .arg(dir.path().join("x.xlsx"))
+            .output()
+            .unwrap();
+        assert!(sound.status.success(), "the workbook is a sound archive");
+    }
+
     #[test]
     fn empty_data_still_builds() {
         let (src, mut req) = sample();
