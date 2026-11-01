@@ -219,7 +219,32 @@ test.describe('words that meet newer text', () => {
     const form = await typedThenNewer(page);
     await settled(page);
     await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
+    await page.clock.runFor(1000);
     await form.getByRole('button', { name: 'Done' }).click();
+    await settled(page);
+    expect(await stored(page)).toContain('mine');
+    await expect(editor(page)).toHaveCount(0);
+  });
+
+  test('a press of Done in the first second of the notice saves nothing, and one after it does', async ({ page }) => {
+    await open(page, 'seed=demo');
+    const form = await typedThenNewer(page);
+    const done = form.getByRole('button', { name: 'Done' });
+    await done.focus();
+    // Enter closes the editor, which saves, which meets the newer text. Focus is still on Done.
+    await page.keyboard.press('Enter');
+    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
+    await expect(done).toBeFocused();
+    // The clock stands still here, so these all fall inside the notice's first second.
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter');
+    await done.click();
+    await page.clock.runFor(900);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(100);
+    await heldOpen(page, form);
+    await page.clock.runFor(100);
+    await page.keyboard.press('Enter');
     await settled(page);
     expect(await stored(page)).toContain('mine');
     await expect(editor(page)).toHaveCount(0);
@@ -244,6 +269,7 @@ test.describe('words that meet newer text', () => {
     await arrive(page);
     await settled(page);
     await heldOpen(page, form);
+    await page.clock.runFor(1000);
     await done.focus();
     await page.keyboard.press('Enter');
     await settled(page);

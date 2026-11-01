@@ -408,7 +408,8 @@ run(async () => {
   await open('Smoke task');
   r.reopenedHeld = kind() === 'conflict' && !document.querySelector('[data-testid="held-banner"]');
 
-  // Done after the notice is the choice, and sends no expected value.
+  // Done after the notice has been up for a second is the choice, and sends no expected value.
+  await wait(1200);
   button('Done').click();
   await until(() => !form(), 'Done to close');
   r.doneOverrides = has((await stored(id)).description, 'real words') && has((await stored(id)).description, 'typed on') && !has((await stored(id)).description, 'Newer from elsewhere');
