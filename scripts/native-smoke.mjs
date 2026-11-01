@@ -428,9 +428,8 @@ run(async () => {
   button('Discard my words').click();
   await until(() => kind() === 'discarded', 'the discard');
   r.discarded = /Keep me/.test(box().innerText) && !/give up/.test(box().innerText) && has((await stored(id)).description, 'Keep me');
-  document.querySelector('button[aria-label^="Dismiss notice"]').click();
-  await until(() => !/Words before the restart/.test(document.body.innerText), 'the notice to go');
-  r.dismissed = true;
+  // All that was typed and saved on this task, and the notice was never dismissed.
+  r.noticeStays = /Words before the restart/.test(document.body.innerText);
   await wait(800);
   return r;
 }).then(() => inv('quit_app'));
@@ -444,7 +443,6 @@ run(async () => {
   const exit4 = await withTimeout(app.exited, 15000);
   check('and quit cleanly', exit4 !== 'timeout' && exit4.code === 0, JSON.stringify(exit4));
   check('a draft never replaces newer text at launch, and a notice shows the words', r4.replayKept === true && r4.replayNotices?.length === 1 && /Words before the restart/.test(r4.replayNotices[0]) && /changed elsewhere/.test(r4.replayNotices[0]), JSON.stringify(r4.replayNotices));
-  check('dismissing the notice ends those words, and leaves no draft behind', r4.dismissed === true && !existsSync(join(dataDir, 'z-work-drafts.json')));
   check('patch_task refuses only the stale field, gives back what is stored, and applies the rest', JSON.stringify(r4.cmdConflicts) === '["description"]' && r4.cmdStoredText === true && r4.cmdStoredName === 'Smoke renamed' && r4.cmdSnapshotName === 'Smoke renamed', JSON.stringify(r4.cmdConflicts));
   check('a stored value equal to the one saved is success, and no expected value changes nothing', JSON.stringify(r4.cmdEqual) === '[]' && JSON.stringify(r4.cmdNoExpected) === JSON.stringify([[], 'Smoke task']));
   check('an expected value for a field not sent is no concern, and a stale name alone conflicts', JSON.stringify(r4.cmdOtherFieldIgnored) === '["name"]', JSON.stringify(r4.cmdOtherFieldIgnored));
@@ -456,6 +454,31 @@ run(async () => {
   check('Done after the notice saves the words over the newer text', r4.doneOverrides === true);
   check('a clean editor shows newer text and saves on from it', r4.cleanFollows === true);
   check('Discard my words keeps the newer text', r4.discarded === true);
+
+  // Run 5: the notice was left up through all of that. It comes back, and only dismissing it ends the words.
+  out = join(work, 'r5.json');
+  app = launch(exe, `
+const notice = () => document.querySelector('button[aria-label*="Words before the restart"]');
+run(async () => {
+  await until(notice, 'the notice to come back');
+  const r = { notices: (await inv('get_snapshot')).notices.map((n) => n.message) };
+  notice().click();
+  await until(() => !notice(), 'the notice to go');
+  r.dismissed = true;
+  await wait(300);
+  return r;
+}).then(() => inv('quit_app'));
+`, out);
+  const r5 = await waitFile(out);
+  check('the words came back on the real backend', r5 && !r5.error, r5?.error ?? '');
+  if (!r5 || r5.error) {
+    app.child.kill();
+    return false;
+  }
+  const exit5 = await withTimeout(app.exited, 15000);
+  check('and quit cleanly again', exit5 !== 'timeout' && exit5.code === 0, JSON.stringify(exit5));
+  check('typing and saving on a task leaves the words its notice shows, and the notice comes back', r4.noticeStays === true && r5.notices?.some((m) => /Words before the restart/.test(m)), JSON.stringify(r5.notices));
+  check('dismissing the notice ends those words, and leaves no draft behind', r5.dismissed === true && !existsSync(join(dataDir, 'z-work-drafts.json')) && !existsSync(join(dataDir, 'z-work-kept-words.json')));
   return true;
 }
 

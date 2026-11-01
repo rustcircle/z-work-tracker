@@ -355,6 +355,7 @@ Definitions worth knowing:
 | **Main file** | `z-work-data.json`: versioned JSON with timestamps in UTC (`2026-03-08T07:00:00Z`) |
 | **Backup** | `z-work-data.json.bak`: the previous good version |
 | **Drafts** | `z-work-drafts.json`: descriptions being typed, local only, put back or shown once at launch |
+| **Kept words** | `z-work-kept-words.json`: words the store wouldn't take, local only, shown in a notice at each launch until it is dismissed |
 | **Heartbeat** | `z-work-heartbeat.json`: while a task runs, the last moment the app was alive. It holds one time |
 | **Dated backups** | `backups/`: one copy a day, plus safety copies made before a restore |
 | **Before a migration** | `z-work-data.v1.json`: the store as it was before an upgrade |
@@ -707,7 +708,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 - A restore with sync on merges newer records back, and the app warns about that.
 - The PDF prints Japanese, Chinese, Korean, Hebrew, Arabic and emoji as empty boxes, and warns when it does. A font covering CJK would add about 10.8 MB to the installer, against about 0.4 MB for Noto Sans. Right-to-left text isn't laid out as such: its boxes sit on a left-to-right line, and when several such words are copied from the PDF, their order depends on the PDF reader.
 - A correction made on another device before a summary syncs lands on billed time; the summary keeps its frozen numbers.
-- Description edits on an existing task are stashed in a small local file about 300 ms after each change. At the next launch they're put back, once, with a notice, if the description they were typed over is still stored. If it changed elsewhere meanwhile, or the first sync brings a later edit over them, the newer text stays and a notice shows your words instead, as plain text. It comes back at each launch until dismissed, and dismissing it ends them. The new-task form isn't covered, and nothing typed in the last 300 ms is.
+- Description edits on an existing task are stashed in a small local file about 300 ms after each change. At the next launch they're put back, once, with a notice, if the description they were typed over is still stored. If it changed elsewhere meanwhile, or the first sync brings a later edit over them, the newer text stays and a notice shows your words instead, as plain text. They're kept in a file of their own, `z-work-kept-words.json`, so the notice comes back at each launch whatever you type in that task meanwhile, and only dismissing it ends them. The new-task form isn't covered, and nothing typed in the last 300 ms is.
 - A name, project or tags held back because they changed elsewhere live only in memory, so a restart loses them. The notice says so while they're held. An unsaved edit to a task deleted elsewhere is dropped along with the task.
 - Map zone boundaries are approximate near borders, and the highlight is clipped to country outlines. The list is the exact choice.
 - Time zone rules run from 2000 to 2045; earlier times use the first known offset.
