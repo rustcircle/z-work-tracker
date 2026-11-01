@@ -548,11 +548,16 @@ impl Service {
         crate::validate::check_description(description)?;
         let dir = &self.paths.dir;
         let mut all = crate::drafts::read(dir);
+        // The page writes a stash again in case it failed, and that makes its words no newer than they were.
+        let at = all
+            .get(task_id)
+            .filter(|d| d.description == *description && d.base == *base)
+            .map_or_else(|| self.now(), |d| d.at);
         all.insert(
             task_id.to_owned(),
             Draft {
                 description: description.clone(),
-                at: self.now(),
+                at,
                 base: base.clone(),
             },
         );
@@ -4037,6 +4042,52 @@ mod tests {
 
     /// Stamps run ahead of the clock when saves come faster than one a second or another device's clock is
     /// ahead, so a stamp later than a draft does not show the draft is older than the save.
+    #[test]
+    fn stashing_the_same_words_again_keeps_the_time_they_were_stashed_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        s.stash_draft(&t, &doc("Typed"), &shown).unwrap();
+        let first = crate::drafts::read(dir.path())[&t].at;
+        clock.advance(5);
+        s.stash_draft(&t, &doc("Typed"), &shown).unwrap();
+        assert_eq!(crate::drafts::read(dir.path())[&t].at, first);
+        clock.advance(5);
+        s.stash_draft(&t, &doc("Typed on"), &shown).unwrap();
+        assert!(crate::drafts::read(dir.path())[&t].at > first);
+    }
+
+    #[test]
+    fn held_words_stashed_again_after_this_devices_newer_text_are_shown_not_put_back_over_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        s.stash_draft(&t, &doc("Held words"), &shown).unwrap();
+        clock.advance(2);
+        s.patch_task(
+            &t,
+            &TaskPatch {
+                description: Some(doc("Newer here")),
+                ..TaskPatch::default()
+            },
+            &TaskExpected::default(),
+        )
+        .unwrap();
+        clock.advance(2);
+        // What the page does when the save of those words is refused.
+        s.stash_draft(&t, &doc("Held words"), &shown).unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let s = open(dir.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Newer here"));
+        let words = kept_notices(&s);
+        assert_eq!(words.len(), 1, "{:?}", s.snapshot().notices);
+        assert!(words[0].contains("Held words"));
+    }
+
     #[test]
     fn a_draft_with_an_earlier_time_than_this_devices_save_is_shown_not_dropped() {
         let dir = tempfile::tempdir().unwrap();
