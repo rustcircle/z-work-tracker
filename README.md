@@ -99,6 +99,7 @@ Closing the window with X hides it to the tray. **The app keeps running and a ru
 
 - Left-click the tray icon to show the window.
 - The menu has Show, the current task with its elapsed time, Pause or Resume, and Quit. On a cold launch, tray Resume opens the window with the form and starts nothing.
+- Elapsed time in the tray is h:mm, with no seconds. The tray's text changes only when that minute or your data changes, and the amount is worked out again only when a billing step is due or your data changes. It can lag by up to a minute after a change the app makes by itself, without you doing anything in it.
 - The tooltip shows the running task or "No task running". The icon changes shape while a task runs: an open stopwatch when idle, a filled one with a play mark when running.
 
 Only the tray's **Quit** really exits. On a real exit a running segment closes at that moment and the task is marked paused. Opening the app again while it runs brings up the existing window. **Start with Windows** is an optional setting, off by default.

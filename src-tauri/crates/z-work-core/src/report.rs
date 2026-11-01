@@ -504,6 +504,12 @@ pub fn hms(secs: i64) -> String {
     format!("{}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
 }
 
+/// Whole hours and minutes. Seconds are dropped, not rounded.
+#[must_use]
+pub fn hm(secs: i64) -> String {
+    format!("{}:{:02}", secs / 3600, (secs % 3600) / 60)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

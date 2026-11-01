@@ -32,14 +32,14 @@ use z_work_core::sync::{
     move_target, preview_folder, preview_move, run_cycle,
 };
 use z_work_core::tray::{
-    CloseDecision, ToggleRoute, TrayAction, close_decision, toggle_route, tray_state,
+    CloseDecision, ToggleRoute, TrayAction, TrayCache, TrayState, close_decision, toggle_route,
+    tray_state,
 };
 use z_work_core::validate::parse_zone;
 use z_work_core::view::Snapshot;
 use z_work_core::{CoreError, SystemClock, csv, xlsx};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
-const TRAY_TICK: Duration = Duration::from_secs(5);
 const EXIT_SYNC_LIMIT: Duration = Duration::from_secs(5);
 const ACTIVITY_TICK: Duration = Duration::from_secs(5);
 const CHORES_TICK: Duration = Duration::from_secs(60);
@@ -88,6 +88,8 @@ struct Core {
     service: Result<Arc<Mutex<Service>>, String>,
     sync: Mutex<Option<Sender<SyncMsg>>>,
     tray: Mutex<Option<Arc<TrayHandles>>>,
+    /// Wakes the tray thread. It alone writes the tray, so an older text can never overwrite a newer one.
+    tray_wake: Mutex<Option<Sender<()>>>,
     quitting: AtomicBool,
     exit_done: AtomicBool,
     /// The first-hide fallback timer still applies. Reading the notice cancels it.
@@ -157,11 +159,21 @@ fn zone_for_tray(snapshot_zone: Option<&serde_json::Value>, fallback: &str) -> c
         .unwrap_or(chrono_tz::UTC)
 }
 
+/// Asks the tray thread to look now, for example after a data change. Tray calls can wait on the UI
+/// thread, so nothing here waits for them.
 fn refresh_tray(_app: &AppHandle, core: &Core) {
+    if let Some(tx) = guard(&core.tray_wake).as_ref() {
+        let _ = tx.send(());
+    }
+}
+
+/// Writes whatever changed to the tray, and returns how long until its text can next change by itself.
+fn update_tray(core: &Core, cache: &mut TrayCache) -> Duration {
+    const IDLE: Duration = Duration::from_secs(60);
     let Ok(svc) = core.service.as_ref() else {
-        return;
+        return IDLE;
     };
-    let state = {
+    let (state, wait) = {
         let s = guard(svc);
         let settings = &s.file().data.settings;
         let chosen = settings
@@ -170,8 +182,17 @@ fn refresh_tray(_app: &AppHandle, core: &Core) {
             .or_else(|| settings.get("myZone"))
             .map(|e| &e.value);
         let zone = zone_for_tray(chosen, &s.snapshot_system_zone());
-        tray_state(s.file(), s.now(), zone)
+        let now = s.now();
+        let state = cache.refresh(s.file(), s.revision(), now, zone);
+        (state, Duration::from_secs(cache.next_wake_secs(now)))
     };
+    if let Some(state) = state {
+        show_tray_state(core, &state);
+    }
+    wait
+}
+
+fn show_tray_state(core: &Core, state: &TrayState) {
     // Tray calls can wait on the UI thread. Holding the lock across them could deadlock with it.
     let Some(h) = guard(&core.tray).as_ref().map(Arc::clone) else {
         return;
@@ -1349,6 +1370,7 @@ fn observe_activity(app: &AppHandle, core: &Core, idle: Option<u64>, locked: Opt
             );
             let _ = app.emit("state-changed", ());
             core.tell_sync(SyncMsg::Changed);
+            refresh_tray(app, core);
         }
         Ok(false) => {}
         Err(e) => eprintln!("time away could not be saved: {e}"),
@@ -1422,10 +1444,14 @@ fn spawn_ticker(app: AppHandle, core: Arc<Core>) {
             std::thread::sleep(CHORES_TICK);
         }
     });
+    let (tray_wake, tray_woken) = mpsc::channel();
+    *guard(&core.tray_wake) = Some(tray_wake);
     std::thread::spawn(move || {
+        let mut cache = TrayCache::default();
         while !core.exit_done.load(Ordering::SeqCst) {
-            std::thread::sleep(TRAY_TICK);
-            refresh_tray(&app, &core);
+            let wait = update_tray(&core, &mut cache);
+            let _ = tray_woken.recv_timeout(wait);
+            while tray_woken.try_recv().is_ok() {}
         }
     });
 }
@@ -1545,6 +1571,7 @@ pub fn run() {
                 }),
                 sync: Mutex::new(None),
                 tray: Mutex::new(None),
+                tray_wake: Mutex::new(None),
                 quitting: AtomicBool::new(false),
                 exit_done: AtomicBool::new(false),
                 hide_pending: AtomicBool::new(false),
@@ -1552,7 +1579,6 @@ pub fn run() {
             });
             app.manage(Arc::clone(&core));
             build_tray(&handle, &core)?;
-            refresh_tray(&handle, &core);
             spawn_ticker(handle.clone(), Arc::clone(&core));
             if let Ok(svc) = &core.service {
                 spawn_sync(handle.clone(), Arc::clone(&core), Arc::clone(svc));

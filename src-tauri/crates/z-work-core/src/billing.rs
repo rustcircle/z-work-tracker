@@ -92,6 +92,31 @@ pub fn round_seconds(exact: i64, increment_minutes: u32, method: RoundMethod) ->
     }
 }
 
+/// Seconds of further counted time until `round_seconds` next gives a different result, or `None` when
+/// rounding is off and every second counts.
+#[must_use]
+pub fn secs_to_next_step(counted: i64, increment_minutes: u32, method: RoundMethod) -> Option<i64> {
+    if increment_minutes == 0 {
+        return None;
+    }
+    let inc = i64::from(increment_minutes) * 60;
+    let rem = counted.rem_euclid(inc);
+    Some(match method {
+        RoundMethod::Down => inc - rem,
+        // The next increment is reached one second past a whole one.
+        RoundMethod::Up if rem == 0 => 1,
+        RoundMethod::Up => inc - rem + 1,
+        RoundMethod::Nearest => {
+            let half = (inc + 1) / 2;
+            if rem < half {
+                half - rem
+            } else {
+                inc - rem + half
+            }
+        }
+    })
+}
+
 /// `round(numerator / 3600)` half up, in whole cents, with no floating point involved.
 #[must_use]
 pub fn cents_from_numerator(numerator: i64) -> i64 {
@@ -155,6 +180,16 @@ fn rates_for<'a>(shared: &'a Shared, project_id: &str) -> Vec<&'a RateVersion> {
             .then_with(|| stamp_order(&a.stamp, &a.id, &b.stamp, &b.id))
     });
     rates
+}
+
+/// The first moment after `after` at which a new rate for this project takes effect.
+#[must_use]
+pub fn next_rate_change(shared: &Shared, project_id: &str, after: Ts) -> Option<Ts> {
+    rates_for(shared, project_id)
+        .iter()
+        .map(|r| r.effective_from)
+        .filter(|t| *t > after)
+        .min()
 }
 
 /// A slice of a segment under a single rate.
@@ -1164,5 +1199,26 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_next_step_is_exactly_where_rounding_next_changes() {
+        for method in [RoundMethod::Up, RoundMethod::Down, RoundMethod::Nearest] {
+            for minutes in [1u32, 5, 6, 7, 15] {
+                let inc = i64::from(minutes) * 60;
+                for counted in 0..(2 * inc + 3) {
+                    let now = round_seconds(counted, minutes, method);
+                    let expected = (1..=inc + 1)
+                        .find(|s| round_seconds(counted + s, minutes, method) != now)
+                        .unwrap();
+                    assert_eq!(
+                        secs_to_next_step(counted, minutes, method),
+                        Some(expected),
+                        "{minutes} min {method:?} from {counted} s"
+                    );
+                }
+            }
+        }
+        assert_eq!(secs_to_next_step(42, 0, RoundMethod::Up), None);
     }
 }
