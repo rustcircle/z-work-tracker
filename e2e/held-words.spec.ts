@@ -250,6 +250,27 @@ test.describe('words that meet newer text', () => {
     await expect(editor(page)).toHaveCount(0);
   });
 
+  test('a press of Done whose own blur brings the notice, then a press after its second, saves and closes', async ({ page }) => {
+    await open(page, 'seed=demo');
+    await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
+    const form = editor(page);
+    await form.getByRole('textbox', { name: 'Description' }).click();
+    await page.keyboard.type(' mine');
+    // The page isn't told. Only the save finds the newer text, and the mock replies without a hop of the event loop.
+    await page.evaluate((doc) => {
+      const task = window.__mock.tasks.find((t) => t.id === 't-guide');
+      if (task) task.description = doc;
+    }, DOC);
+    const done = form.getByRole('button', { name: 'Done' });
+    await done.click();
+    await heldOpen(page, form);
+    await page.clock.runFor(1100);
+    await done.click();
+    await settled(page);
+    expect(await stored(page)).toContain('mine');
+    await expect(editor(page)).toHaveCount(0);
+  });
+
   test('a press dragged off Done speaks for no later key', async ({ page }) => {
     await open(page, 'seed=demo');
     await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();

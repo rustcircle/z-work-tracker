@@ -1270,6 +1270,19 @@ describe('a press of Done just as the notice appears', () => {
     expect(kind()).toBe('conflict');
   });
 
+  it('renders while the notice is up do not give it its second again', async () => {
+    const user = await justHeld();
+    // The page hears of something every 300 ms, as it does with a task running, and the editor renders each time.
+    for (let i = 0; i < 4; i++) {
+      await arrive(() => undefined);
+      await pass(200);
+    }
+    await user.click(doneButton());
+    await pass(100);
+    expect(storedText()).toContain('mine');
+    expect(editorOpen()).toBe(false);
+  });
+
   it('typing on does not make the notice any newer', async () => {
     const user = await holdWords();
     await user.click(box());

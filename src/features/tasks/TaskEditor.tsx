@@ -451,6 +451,9 @@ export function TaskEditor({ task }: { task: Task }) {
   const shown: SaveStatus = held.length > 0 && (status.kind === 'idle' || status.kind === 'saved' || status.kind === 'discarded') ? { kind: 'conflict' } : status;
 
   // A field's second starts when the notice first names it, and a field no longer held starts again if it comes back.
+  // This runs after every commit, with no dependencies, because `held` is read from the session as this renders. If React
+  // renders and then bails out, it drops that render's effects but keeps their dependencies, so a hold met first by such a
+  // render would never start its second. Running again changes nothing: a second under way or over is never started again.
   const heldKey = held.join();
   useEffect(() => {
     const timers = holdTimers.current;
@@ -470,7 +473,7 @@ export function TaskEditor({ task }: { task: Task }) {
         );
       }
     }
-  }, [heldKey, session]);
+  });
   // Off this screen the notice is not being read, so an editor opened again gives it its second again.
   useEffect(() => {
     const timers = holdTimers.current;
