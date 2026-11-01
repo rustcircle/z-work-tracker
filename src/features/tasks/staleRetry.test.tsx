@@ -14,6 +14,9 @@ import type { MockState } from '../../mocks/ipcMock';
 /** Longer than the five retries added up: 2 + 4 + 8 + 16 + 32 seconds. */
 const ALL_RETRIES_MS = 70_000;
 
+/** Text another device saved while this one's editor was away. */
+const elsewhere = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'From another device' }] }] };
+
 let state: MockState;
 let storeDown: boolean;
 let attempts: number;
@@ -153,7 +156,6 @@ describe('a save that failed as the editor closed', () => {
   });
 
   describe('when newer text arrives from elsewhere meanwhile', () => {
-    const elsewhere = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'From another device' }] }] };
     async function newerElsewhere(words: string) {
       const user = await closeOnAFailedSave(words);
       const guide = state.tasks.find((t) => t.id === 't-guide');
@@ -240,6 +242,45 @@ describe('a save that failed as the editor closed', () => {
     await user.click(screen.getByRole('button', { name: 'Edit Logo concepts' }));
     await pass(100);
     expect(attempts).toBe(tries);
+  });
+
+  describe('words that meet newer text before the editor is back', () => {
+    /** Another device's text lands in the store, and this page hears of it. */
+    async function arrivesElsewhere(): Promise<void> {
+      const guide = state.tasks.find((t) => t.id === 't-guide');
+      if (guide) guide.description = elsewhere;
+      await act(() => emit('state-changed'));
+      await pass(100);
+    }
+    const saveState = () => within(form()).getByTestId('save-state');
+
+    it('P1: retries used up, newer text arrives, reopening still sends nothing and says so', async () => {
+      const user = await closeOnAFailedSave(' failed words');
+      await pass(ALL_RETRIES_MS);
+      await arrivesElsewhere();
+      storeDown = false;
+      await toggleEditor(user);
+      await pass(2000);
+      expect(saved()).toContain('From another device');
+      expect(saved()).not.toContain('failed words');
+      expect(box()).toHaveTextContent('failed words');
+      expect(saveState()).toHaveAttribute('data-kind', 'conflict');
+      expect(saveState()).toHaveTextContent('changed elsewhere');
+    });
+
+    it('P2: reopening inside the retry delay sends nothing either, now or when the retry comes due', async () => {
+      const user = await closeOnAFailedSave(' failed words');
+      await arrivesElsewhere();
+      storeDown = false;
+      await toggleEditor(user);
+      await pass(1500);
+      expect(saved()).toContain('From another device');
+      expect(saveState()).toHaveAttribute('data-kind', 'conflict');
+      await pass(ALL_RETRIES_MS);
+      expect(saved()).toContain('From another device');
+      expect(saved()).not.toContain('failed words');
+      expect(saveState()).toHaveAttribute('data-kind', 'conflict');
+    });
   });
 
   it('a save that fails after reopening shows in the new editor, and keeps retrying through it', async () => {

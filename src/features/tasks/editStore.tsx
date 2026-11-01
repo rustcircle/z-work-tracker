@@ -129,6 +129,9 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     } else if (s.closed) {
       // Reopened with something unsaved: that stays, and the rest catches up with the stored task.
       const fresh = init();
+      // Newer text may have arrived while nobody was looking, and the retry that would have noticed it may be
+      // used up or still waiting. Decide here too, before the reopened editor's first save can replace it.
+      if (s.dirty.description && !s.conflict && JSON.stringify(fresh.base) !== JSON.stringify(s.base)) s.conflict = true;
       if (!s.dirty.name) s.name = fresh.name;
       if (!s.dirty.description) s.description = fresh.description;
       if (!s.dirty.project) s.projectId = fresh.projectId;
