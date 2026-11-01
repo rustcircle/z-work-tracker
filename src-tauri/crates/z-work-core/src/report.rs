@@ -51,7 +51,8 @@ const ANALYSIS_SETTINGS: [&str; 5] = [
 ];
 
 impl ExportSource {
-    /// A copy holding the selected task-days and nothing else, not even the other records' names.
+    /// A copy holding the selected task-days and nothing else, not even the other records' names. A
+    /// selected task keeps its description whole, so Excel's Subtasks column shows its full list.
     /// Ids are checked against the store, and totals are worked out from there as usual.
     pub fn narrowed(&self, tz: Tz, entries: &[SelectedEntry]) -> Result<Self, CoreError> {
         if entries.is_empty() {
@@ -859,9 +860,73 @@ pub(crate) mod tests {
             assert!(crate::csv::build(&src, &none).is_err());
         }
 
+        /// Gives `Write` a ticked subtask worked on 2 March alone, so never on a day selected below.
+        fn add_subtask_of_another_day(src: &mut ExportSource, t: &str) {
+            src.data.tasks.get_mut(t).unwrap().description = serde_json::json!({"type":"doc","content":[
+                {"type":"taskList","content":[
+                    {"type":"taskItem","attrs":{"checked":true,"subtaskId":"sub-other-day"},"content":[
+                        {"type":"paragraph","content":[{"type":"text","text":"Subtask of another day"}]}
+                    ]}
+                ]}
+            ]});
+            src.data.segments.get_mut("b").unwrap().subtask_id = Some("sub-other-day".into());
+        }
+
+        #[test]
+        fn a_selected_excel_row_lists_every_subtask_and_the_about_sheet_says_so() {
+            let (mut src, t, _) = world();
+            add_subtask_of_another_day(&mut src, &t);
+            let request = ExportRequest {
+                day_zone: "UTC".into(),
+                my_zone: "UTC".into(),
+                client_zone: None,
+                include_earnings: true,
+                segment_shifts: BTreeMap::new(),
+                analytics: Vec::new(),
+                selection: Some(vec![entry(&t, "2026-03-01")]),
+            };
+            let only = src.narrowed(UTC, &[entry(&t, "2026-03-01")]).unwrap();
+            assert_eq!(only.rows(UTC)[0].subtasks, "[x] Subtask of another day");
+
+            let dir = tempfile::tempdir().unwrap();
+            let zip = dir.path().join("x.xlsx");
+            std::fs::write(&zip, crate::xlsx::build(&src, &request).unwrap()).unwrap();
+            let out = std::process::Command::new("unzip")
+                .arg("-p")
+                .arg(&zip)
+                .arg("xl/sharedStrings.xml")
+                .output()
+                .unwrap();
+            let strings = String::from_utf8_lossy(&out.stdout);
+            assert!(strings.contains("[x] Subtask of another day"));
+            assert!(strings.contains("Time and money on every sheet cover those entries only."));
+            assert!(strings.contains("full subtask list and ticks as of the export"));
+            assert!(strings.contains("subtasks worked on days outside the selection"));
+            assert!(!strings.contains("Every sheet"));
+        }
+
+        /// The dialog and README say only Excel has this column. If CSV gains it, they must change.
+        #[test]
+        fn a_selected_csv_names_no_subtask() {
+            let (mut src, t, _) = world();
+            add_subtask_of_another_day(&mut src, &t);
+            let request = ExportRequest {
+                day_zone: "UTC".into(),
+                my_zone: "UTC".into(),
+                client_zone: None,
+                include_earnings: true,
+                segment_shifts: BTreeMap::new(),
+                analytics: Vec::new(),
+                selection: Some(vec![entry(&t, "2026-03-01")]),
+            };
+            let csv = crate::csv::build(&src, &request).unwrap();
+            assert!(!csv.contains("Subtask of another day"));
+        }
+
         #[test]
         fn the_workbook_builds_from_a_selection_with_its_own_analytics() {
             let (mut src, t, other) = world();
+            add_subtask_of_another_day(&mut src, &t);
             // What `scripts/verify_selection.py` looks for: names that must and must not get in.
             let stamp = crate::model::Stamp::default();
             for (id, name) in [("tag-shown", "Shown tag"), ("tag-hidden", "Hidden tag")] {

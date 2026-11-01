@@ -694,10 +694,13 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<Vec<u8>, 
         sheet.set_name("About this selection").map_err(err)?;
         used.push("About this selection".to_owned());
         sheet
-            .write_string(0, 0, format!("This export holds a selection of {count} task-day entries from the Timeline. Every sheet and total covers those only."))
+            .write_string(0, 0, format!("This export holds a selection of {count} task-day entries from the Timeline. Time and money on every sheet cover those entries only."))
             .map_err(err)?;
         sheet
-            .write_string(1, 0, "The analysis sheets run from the first to the last selected day and count only the selected entries. Averages per calendar day still count the days between them. Shift figures count the shifts of selected days, and an effective hourly rate on a fixed fee is over the selected time.")
+            .write_string(1, 0, "The Subtasks column on the first sheet shows each task's full subtask list and ticks as of the export, which can include subtasks worked on days outside the selection.")
+            .map_err(err)?;
+        sheet
+            .write_string(2, 0, "The analysis sheets run from the first to the last selected day and count only the selected entries. Averages per calendar day still count the days between them. Shift figures count the shifts of selected days, and an effective hourly rate on a fixed fee is over the selected time.")
             .map_err(err)?;
         selection_sheets = crate::analytics::selection_sheets(source, &request.day_zone)?;
         &selection_sheets

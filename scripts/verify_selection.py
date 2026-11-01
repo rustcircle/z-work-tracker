@@ -2,7 +2,7 @@
 """Reads an export of a selection with openpyxl and the raw zip, to show nothing else got in.
 
 Selected: Alpha's task `Write` on 1 March only, 10 minutes rounded Up to 15, at 60 an hour, tagged
-`Shown tag`. 1 March 2026 is a Sunday.
+`Shown tag`. 1 March 2026 is a Sunday. `Write` has a ticked subtask worked on 2 March alone.
 Not selected: `Write` on 2 and 3 March; `Secret` (tagged `Hidden tag`) on 1 March; `LeakTask` in
 `LeakProject` at 99.99 an hour on 1 March. `Weekday shift` runs on no selected day. The UI also sent a
 sheet named `Leak`, which must be ignored.
@@ -46,6 +46,10 @@ check("it says it is a selection", "About this selection" in values.sheetnames)
 about = " ".join(str(c) for r in values["About this selection"].iter_rows(values_only=True) for c in r if c)
 check("the note no longer says analytics are left out", "left out" not in about)
 check("the note says it is a selection", "selection of 1 task-day" in about, about[:80])
+check("the note limits its claim to time and money", "Time and money on every sheet cover those entries only." in about)
+check("the note no longer says every sheet covers only those entries", "Every sheet" not in about)
+check("the note says the Subtasks column is the full list as of the export", "full subtask list and ticks as of the export" in about)
+check("the note says that can include days outside the selection", "subtasks worked on days outside the selection" in about)
 for sheet in values.worksheets:
     if sheet.title in wanted:
         check(f"{sheet.title}'s title says selected", "Selected entries" in str(sheet["A1"].value), str(sheet["A1"].value)[:60])
@@ -77,6 +81,16 @@ check("no cell holds an unselected hour", not any(near(c, duration(3600)) for _,
 labor = values.worksheets[0]
 rows = [r for r in labor.iter_rows(values_only=True) if any("Write" == c for c in r)]
 check("one row for the selected task-day", len(rows) == 1, str(len(rows)))
+headers = [c.value for c in labor[2]]
+check("the first sheet's columns are unchanged", headers == ["Project", "Day", "Time", "Task name", "Subtasks"], str(headers))
+
+# The one allowance for unselected data, which the About sheet discloses: a selected task's Subtasks
+# cell holds its full list, so a subtask worked on a day left out appears there. It is this one cell
+# and no other, the text carries no time or money, and the scans above still cover all the rest.
+OTHER_DAY = "Subtask of another day"
+check("the selected row's Subtasks cell is the full list with its tick", len(rows) == 1 and rows[0][4] == f"[x] {OTHER_DAY}", str(rows[0][4]) if rows else "")
+holding = [(s.title, c.coordinate) for s in values.worksheets for row in s.iter_rows() for c in row if isinstance(c.value, str) and OTHER_DAY in c.value]
+check("that subtask is in that cell alone", len(holding) == 1 and holding[0][0] == labor.title and holding[0][1].startswith("E"), str(holding))
 
 earnings = values["Earnings"]
 money = [c for r in earnings.iter_rows(values_only=True) for c in r if isinstance(c, (int, float)) and not isinstance(c, bool)]

@@ -109,7 +109,7 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
         />
         {bySelection && selectedCount > 0 && (
           <p className="field-hint" data-testid="selection-scope-note">
-            Only the {selectedCount} {selectedCount === 1 ? 'task' : 'tasks'} you selected on the Timeline go into the file, each for the day you selected it on. {kind === 'xlsx' ? 'The analysis sheets count those entries only, and an "About this selection" sheet says what the file is. ' : kind === 'csv' ? 'A final "selection" row says so. ' : 'The timesheet says so. '}
+            Only the {selectedCount} {selectedCount === 1 ? 'task' : 'tasks'} you selected on the Timeline go into the file, each for the day you selected it on. {kind === 'xlsx' ? 'The analysis sheets count those entries only, and an "About this selection" sheet says what the file is. The Subtasks column shows each task\'s full subtask list and ticks as of the export, which can include subtasks worked on days outside the selection; time and money cover the selection only. ' : kind === 'csv' ? 'A final "selection" row says so. ' : 'The timesheet says so. '}
             Totals are worked out from those rows only, rounded per task and day exactly as on the Timeline. A task still running is counted up to the moment of export.
           </p>
         )}

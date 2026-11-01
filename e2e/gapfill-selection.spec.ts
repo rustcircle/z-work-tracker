@@ -141,6 +141,7 @@ test.describe('selecting Timeline entries', () => {
     const dialog = page.getByRole('dialog', { name: 'Export' });
     await expect(dialog.getByRole('radio', { name: 'Selected (1)' })).toBeChecked();
     await expect(dialog.getByTestId('selection-scope-note')).toContainText('analysis sheets count those entries only');
+    await expect(dialog.getByTestId('selection-scope-note')).toContainText('full subtask list and ticks as of the export');
     await dialog.getByRole('button', { name: 'Export Excel' }).click();
     await expect(dialog.getByTestId('export-result')).toBeVisible();
     const sent = await exportsOf(page);

@@ -753,6 +753,14 @@ mod tests {
             "2026-03-01T11:00:00Z",
             "2026-03-01T12:00:00Z",
         );
+        // The dialog and README say only Excel has a Subtasks column. If this prints one, they must change.
+        s.tasks.get_mut(&t).unwrap().description = serde_json::json!({"type":"doc","content":[
+            {"type":"taskList","content":[
+                {"type":"taskItem","attrs":{"checked":true},"content":[
+                    {"type":"paragraph","content":[{"type":"text","text":"Subtask of another day"}]}
+                ]}
+            ]}
+        ]});
         let src = source(s, "2026-04-01T00:00:00Z");
         let request = PdfRequest {
             selection: Some(vec![crate::report::SelectedEntry {
@@ -764,6 +772,7 @@ mod tests {
         let t = text(&src, &request);
         assert!(t.contains("Selection of 1 entries"));
         assert!(!t.contains("Secret"));
+        assert!(!t.contains("Subtask of another day"));
         assert!(!t.contains("2026-03-02"));
         let bytes = build(&src, &request, None).unwrap().bytes;
         assert!(!contains(&bytes, b"Secret"));

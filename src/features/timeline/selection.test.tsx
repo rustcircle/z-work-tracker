@@ -274,7 +274,15 @@ describe('exporting a selection', () => {
     await user.click(within(bar() as HTMLElement).getByRole('button', { name: 'Export selected' }));
     const dialog = await screen.findByRole('dialog', { name: 'Export' });
     expect(within(dialog).getByRole('radio', { name: 'Selected (2)' })).toBeChecked();
-    expect(within(dialog).getByTestId('selection-scope-note')).toHaveTextContent(/analysis sheets count those entries only/);
+    const note = within(dialog).getByTestId('selection-scope-note');
+    expect(note).toHaveTextContent(/analysis sheets count those entries only/);
+    expect(note).toHaveTextContent(/full subtask list and ticks as of the export, which can include subtasks worked on days outside the selection; time and money cover the selection only/);
+    // Only Excel has a Subtasks column, so only Excel gets that sentence.
+    for (const format of ['CSV (.csv)', 'PDF timesheet (.pdf)']) {
+      await user.click(within(dialog).getByRole('radio', { name: format }));
+      expect(within(dialog).getByTestId('selection-scope-note')).not.toHaveTextContent(/subtask/i);
+    }
+    await user.click(within(dialog).getByRole('radio', { name: 'Excel (.xlsx)' }));
     await user.click(within(dialog).getByRole('button', { name: 'Export Excel' }));
     await within(dialog).findByTestId('export-result');
     const req = state.exports[0]?.request;
