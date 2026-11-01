@@ -1,6 +1,9 @@
 // The rule, through the real editor and the mock backend: an automatic save never silently overwrites text
 // the user has not seen, and the user's own unsaved words never vanish silently. QC-n names the gate finding
 // each case came from.
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import { emit } from '@tauri-apps/api/event';
 import { clearMocks } from '@tauri-apps/api/mocks';
 import { act, cleanup, screen, within } from '@testing-library/react';
@@ -1086,6 +1089,77 @@ describe('a stash the disk will not take', () => {
     expect(kind()).toBe('saved');
     expect(storedText()).toContain('mine');
     expect(saveState()).not.toHaveTextContent('disk');
+  });
+});
+
+describe('an edit the backend refuses for what it holds', () => {
+  const tries = () => vi.mocked(api.patchTask).mock.calls.length;
+
+  /** A name too long to store, in an open editor: refused, and not tried again by itself. */
+  async function refusedName(): Promise<User> {
+    const user = await openEditor();
+    await user.type(nameBox(), 'x'.repeat(250));
+    await pass(1000);
+    expect(kind()).toBe('failed');
+    const sent = tries();
+    await pass(ALL_RETRIES_MS);
+    expect(tries()).toBe(sent);
+    return user;
+  }
+
+  it('goes again when it changes', async () => {
+    const user = await refusedName();
+    const sent = tries();
+    await user.keyboard('y');
+    await pass(1000);
+    expect(tries()).toBeGreaterThan(sent);
+  });
+
+  it('goes again when its field is left', async () => {
+    const user = await refusedName();
+    const sent = tries();
+    await user.click(box());
+    await pass(100);
+    expect(tries()).toBeGreaterThan(sent);
+  });
+
+  it('goes again when Done is pressed', async () => {
+    const user = await refusedName();
+    within(form()).getByRole('button', { name: 'Done' }).focus();
+    await pass(100);
+    const sent = tries();
+    await user.keyboard('{Enter}');
+    await pass(100);
+    expect(tries()).toBeGreaterThan(sent);
+    expect(editorOpen()).toBe(true);
+  });
+
+  it('goes again when the editor reopens', async () => {
+    const user = await refusedName();
+    await toggle(user);
+    await pass(100);
+    const sent = tries();
+    await pass(ALL_RETRIES_MS);
+    expect(tries()).toBe(sent);
+    await toggle(user);
+    await pass(1000);
+    expect(tries()).toBeGreaterThan(sent);
+  });
+
+  it('goes again when the window hides or the app quits', async () => {
+    await refusedName();
+    const sent = tries();
+    await act(() => emit('flush-edits'));
+    await pass(100);
+    expect(tries()).toBeGreaterThan(sent);
+  });
+
+  it('the README says when it goes again, and no fewer times than that', () => {
+    const readme = readFileSync(path.resolve(import.meta.dirname, '../../../README.md'), 'utf8');
+    const line = readme.split('\n').find((l) => l.startsWith('- A save that keeps failing')) ?? '';
+    const refused = line.split("isn't retried")[1] ?? '';
+    expect(refused).not.toContain('only');
+    for (const when of ['change it', 'leave its field', 'press **Done**', 'the editor reopens', 'the window hides', 'the app quits']) expect(refused).toContain(when);
   });
 });
 
