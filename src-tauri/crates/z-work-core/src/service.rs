@@ -4046,7 +4046,7 @@ mod tests {
     fn stashing_the_same_words_again_keeps_the_time_they_were_stashed_first() {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
-        let (mut s, t) = running(dir.path(), &clock);
+        let (s, t) = running(dir.path(), &clock);
         let shown = s.file().data.tasks[&t].description.clone();
         s.stash_draft(&t, &doc("Typed"), &shown).unwrap();
         let first = crate::drafts::read(dir.path())[&t].at;
