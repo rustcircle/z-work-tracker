@@ -167,6 +167,18 @@ describe('pointer selection', () => {
 });
 
 describe('keyboard selection', () => {
+  it('Esc clears from the selection bar too', async () => {
+    const user = await open();
+    const row = screen.getAllByTestId('entry').find((r) => r.hasAttribute('data-row-id')) as HTMLElement;
+    act(() => row.focus());
+    await user.keyboard(' ');
+    expect(bar()).not.toBeNull();
+    act(() => within(bar() as HTMLElement).getByRole('button', { name: 'Clear' }).focus());
+    await user.keyboard('{Escape}');
+    expect(bar()).toBeNull();
+    expect(selectedRows()).toHaveLength(0);
+  });
+
   it('has one tab stop, arrows move it, Space selects, Ctrl+Space toggles, Shift+Arrow extends, Esc clears', async () => {
     const user = await open();
     const all = (): HTMLElement[] => screen.getAllByTestId('entry').filter((r) => r.hasAttribute('data-row-id'));

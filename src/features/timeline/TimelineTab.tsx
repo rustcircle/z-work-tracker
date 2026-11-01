@@ -174,7 +174,7 @@ export function TimelineTab() {
           {sel.live}
         </div>
       )}
-      {sel && sel.count > 0 && <SelectionBar count={sel.count} hidden={sel.hidden} totals={selTotals} hide={hide} onExport={nav.openExport} onClear={sel.clear} />}
+      {sel && sel.count > 0 && <SelectionBar count={sel.count} hidden={sel.hidden} totals={selTotals} hide={hide} onExport={nav.openExport} onClear={sel.clear} onKeyDown={sel.gridKeyDown} />}
     </div>
   );
 }

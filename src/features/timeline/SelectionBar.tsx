@@ -1,3 +1,5 @@
+import type { KeyboardEvent } from 'react';
+
 import type { Numerators } from '../../lib/billing';
 import { IconCheck, IconDownload } from '../../components/icons';
 import { amountText, formatDuration } from '../../components/format';
@@ -12,10 +14,10 @@ export interface SelectionTotals {
  * Sticks to the bottom of the Timeline while something is selected: how many, the Billable total (the same
  * rounded figures as the rows, masked while earnings are hidden), and the two things to do with it.
  */
-export function SelectionBar({ count, hidden, totals, hide, onExport, onClear }: { count: number; hidden: number; totals: SelectionTotals; hide: boolean; onExport: () => void; onClear: () => void }) {
+export function SelectionBar({ count, hidden, totals, hide, onExport, onClear, onKeyDown }: { count: number; hidden: number; totals: SelectionTotals; hide: boolean; onExport: () => void; onClear: () => void; onKeyDown?: (e: KeyboardEvent<HTMLElement>) => void }) {
   const money = amountText(totals.billable, hide);
   return (
-    <section className="selection-bar" aria-label="Selection" data-testid="selection-bar">
+    <section className="selection-bar" aria-label="Selection" data-testid="selection-bar" onKeyDown={onKeyDown}>
       <div className="selection-text">
         <strong data-testid="selection-count">
           <IconCheck /> {count} {count === 1 ? 'task' : 'tasks'} selected
