@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+
 import { useAppState } from '../app/store';
 import { api } from '../lib/api';
 import { AwayBanner, AwayDialog } from '../features/away/AwayDialog';
@@ -7,7 +9,7 @@ import { IconClose, IconInfo, IconWarn } from './icons';
 import { useCommands } from './useCommands';
 
 /** Errors, always-visible warnings, and dismissible notices from the backend. */
-export function Banners() {
+export function Banners({ children }: { children?: ReactNode }) {
   const { snapshot, error, clearError } = useAppState();
   const { act } = useCommands();
   return (
@@ -21,6 +23,7 @@ export function Banners() {
           </button>
         </div>
       )}
+      {children}
       {snapshot.warnings.map((w) => (
         <div key={w} className="banner banner-warning" role="status" data-testid="warning">
           <IconWarn />

@@ -212,6 +212,7 @@ describe('a save that failed as the editor closed', () => {
       await pass(ALL_RETRIES_MS);
       expect(guide?.name).toBe('Brand guidelines v2');
       expect(saved()).toContain('From another device');
+      expect(screen.getByRole('alert')).toHaveTextContent('changed elsewhere');
     });
   });
 
@@ -314,15 +315,15 @@ describe('a save that failed as the editor closed', () => {
       return user;
     }
 
-    it('warns that held words can be lost if the app closes first, in the banner and in the editor', async () => {
-      // Replay at the next launch drops a draft that is older than the stored text, so held words do not survive a restart.
+    it('says what becomes of held words if the app closes first, in the banner and in the editor', async () => {
+      // The next launch shows a draft that met newer text in a notice, rather than putting it over that text.
       const user = await closeOnAFailedSave(' failed words');
       await arrivesElsewhere();
       storeDown = false;
       await pass(ALL_RETRIES_MS);
-      expect(screen.getByRole('alert')).toHaveTextContent('If the app closes first, your edit may be lost');
+      expect(screen.getByRole('alert')).toHaveTextContent('If the app closes first, your words come back as a notice at the next launch');
       await toggleEditor(user);
-      expect(saveState()).toHaveTextContent('If the app closes first, they may be lost');
+      expect(saveState()).toHaveTextContent('If the app closes first, they come back as a notice at the next launch');
     });
 
     it('Discard my words gives the newer text back and forgets the held words', async () => {

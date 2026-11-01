@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import type {
+  PatchReply,
+  TaskExpected,
   AuditEntry,
   BackupInfo,
   CorrectionInput,
@@ -42,8 +44,8 @@ export const api = {
   deleteProject: (id: string) => invoke<Snapshot>('delete_project', { id }),
   createTask: (input: TaskInput) => invoke<WithId>('create_task', { input }),
   updateTask: (id: string, input: TaskInput) => invoke<Snapshot>('update_task', { id, input }),
-  /** Edits only the fields given, so an autosave never reverts another device's newer edit. */
-  patchTask: (id: string, patch: TaskPatch) => invoke<Snapshot>('patch_task', { id, patch }),
+  /** Edits only the fields given, and with `expected` only those still holding what the editor showed, so an autosave never replaces another device's newer edit. */
+  patchTask: (id: string, patch: TaskPatch, expected?: TaskExpected) => invoke<PatchReply>('patch_task', expected ? { id, patch, expected } : { id, patch }),
   deleteDraft: (id: string) => invoke<Snapshot>('delete_draft', { id }),
   startTask: (id: string) => invoke<TransitionResult>('start_task', { id }),
   resumeTask: (id: string) => invoke<TransitionResult>('resume_task', { id }),
@@ -112,7 +114,8 @@ export const api = {
   revertShiftVersion: (versionId: string) => invoke<Snapshot>('revert_shift_version', { versionId }),
   requestRemotePause: (taskId: string) => invoke<Snapshot>('request_remote_pause', { taskId }),
   /** A durable local draft of what is being typed. Cheap; never syncs. */
-  stashDraft: (taskId: string, description: RichDoc) => invoke<void>('stash_draft', { taskId, description }),
+  /** `expected` is the stored description the words were typed over: only that may be replaced at the next launch. */
+  stashDraft: (taskId: string, description: RichDoc, expected: RichDoc) => invoke<void>('stash_draft', { taskId, description, expected }),
   clearDraft: (taskId: string) => invoke<void>('clear_draft', { taskId }),
   setSetupStep: (step: number) => invoke<Snapshot>('set_setup_step', { step }),
   finishSetup: () => invoke<Snapshot>('finish_setup'),

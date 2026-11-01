@@ -93,8 +93,8 @@ test.describe('tags on the new-task form', () => {
     await f.getByRole('checkbox', { name: 'Concept' }).uncheck();
     await expect.poll(async () => (await calls(page, 'patch_task')).length).toBe(2);
     expect(await calls(page, 'patch_task')).toEqual([
-      { id: 't-guide', patch: { tags: ['tag-concept'] } },
-      { id: 't-guide', patch: { tags: [] } },
+      { id: 't-guide', patch: { tags: ['tag-concept'] }, expected: { tags: ['tag-concept', 'tag-revision'] } },
+      { id: 't-guide', patch: { tags: [] }, expected: { tags: ['tag-concept'] } },
     ]);
     await expect(card(page, 'Brand guidelines').getByTestId('tag-chip')).toHaveCount(0);
     expect(await page.evaluate(() => window.__mock.tasks.find((t) => t.id === 't-guide')?.tags)).toEqual([]);

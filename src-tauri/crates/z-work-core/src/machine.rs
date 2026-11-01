@@ -1517,7 +1517,62 @@ pub(crate) mod tests {
         assert_eq!(parsed.description, Some(Value::Null), "null clears it");
     }
 
-    /// Runs a patch of the description with an expected value on a task holding `stored`.
+    /// The same table runs against the IPC mock, in src/mocks/patchTaskParity.test.ts.
+    #[test]
+    fn patch_task_follows_the_table_it_shares_with_the_mock() {
+        const TABLE: &str = include_str!("../../../../fixtures/patch-task-parity.json");
+        let c = ctx("2026-01-02T09:00:00Z");
+        let (mut s, a, t) = base();
+        s.seed_tags();
+        let project =
+            |s: &mut Shared, name: &str| s.create_project(&c, &project_input(name)).unwrap();
+        let (b, other) = (project(&mut s, "B"), project(&mut s, "C"));
+        let archived = project(&mut s, "Archived");
+        s.projects.get_mut(&archived).unwrap().archived = true;
+        let table = TABLE
+            .replace("@ARCHIVED", &archived)
+            .replace("@A", &a)
+            .replace("@B", &b)
+            .replace("@C", &other);
+        let table: Value = serde_json::from_str(&table).unwrap();
+        let stored = &table["stored"];
+        {
+            let task = s.tasks.get_mut(&t).unwrap();
+            task.name = stored["name"].as_str().unwrap().to_owned();
+            task.description = stored["description"].clone();
+            task.tags = serde_json::from_value(stored["tags"].clone()).unwrap();
+        }
+        let holds = |task: &Task, field: &str, want: &Value| match field {
+            "name" => task.name == want.as_str().unwrap(),
+            "projectId" => task.project_id == want.as_str().unwrap(),
+            "description" => task.description == *want,
+            "tags" => serde_json::to_value(&task.tags).unwrap() == *want,
+            other => panic!("unknown field {other}"),
+        };
+        for case in table["cases"].as_array().unwrap() {
+            let what = case["name"].as_str().unwrap();
+            let mut s = s.clone();
+            let patch: TaskPatch = serde_json::from_value(case["patch"].clone()).unwrap();
+            let expected: TaskExpected = case
+                .get("expected")
+                .map_or_else(TaskExpected::default, |e| {
+                    serde_json::from_value(e.clone()).unwrap()
+                });
+            match s.patch_task(&c, &t, &patch, &expected) {
+                Ok(out) => {
+                    assert!(case.get("error").is_none(), "{what}: should have failed");
+                    let conflicts = serde_json::to_value(&out.conflicts).unwrap();
+                    let want = case.get("conflicts").cloned().unwrap_or(json!([]));
+                    assert_eq!(conflicts, want, "{what}");
+                }
+                Err(e) => assert_eq!(json!(e.code()), case["error"], "{what}: {e}"),
+            }
+            for (field, want) in case["after"].as_object().unwrap() {
+                assert!(holds(&s.tasks[&t], field, want), "{what}: {field}");
+            }
+        }
+    }
+
     fn cas_doc(text: &str) -> Value {
         json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]})
     }

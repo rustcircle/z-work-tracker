@@ -8,6 +8,7 @@ import { BillingTab } from '../features/billing/BillingTab';
 import { ProjectsTab } from '../features/projects/ProjectsTab';
 import { SettingsTab } from '../features/settings/SettingsTab';
 import { EditStoreProvider } from '../features/tasks/editStore';
+import { HeldBanner } from '../features/tasks/HeldBanner';
 import { TaskRail } from '../features/tasks/TaskRail';
 import { TaskFilterProvider } from '../features/tasks/TaskFilterBar';
 import { SelectionProvider, useSelection } from '../features/timeline/selection';
@@ -178,7 +179,9 @@ function ShellBody() {
             Export{selection && selection.count > 0 ? ` (${selection.count} selected)` : ''}
           </Button>
         </header>
-        <Banners />
+        <Banners>
+          <HeldBanner />
+        </Banners>
         <div className="app-body">
           <TaskRail />
           <main className="main">

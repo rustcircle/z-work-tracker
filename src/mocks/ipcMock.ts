@@ -49,6 +49,8 @@ import type {
   TagInput,
   Task,
   TaskInput,
+  PatchReply,
+  TaskExpected,
   TaskPatch,
   TaskState,
   Template,
@@ -154,10 +156,10 @@ export interface MockState {
   pauseRequests: PauseRequest[];
   /** Durable local drafts by task id (`stash_draft`). They never sync. */
   drafts: Record<string, RichDoc>;
-  /** Randomness for replacing a clashing colour, in [0, 1). Defaults to a fixed seed so runs repeat. */
-  random?: () => number;
   /** Moves with every snapshot built, so one built earlier reads as older, as the backend's count of changes does. */
   revision: number;
+  /** Randomness for replacing a clashing colour, in [0, 1). Defaults to a fixed seed so runs repeat. */
+  random?: () => number;
   nextId: number;
   /** Launch-scoped, like the Rust service: false until the first task of this launch has started. */
   warm: boolean;
@@ -213,9 +215,9 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     micaAvailable: false,
     pauseRequests: [],
     drafts: {},
+    revision: 0,
     nextId: 1,
     warm: false,
-    revision: 0,
     lastWorked: null,
   };
 }
@@ -530,6 +532,17 @@ function resolveColor(s: MockState, wanted: string, taken: readonly string[], un
   return { color: distinctColor(taken, s.random ?? defaultRandom), replacedFrom: color };
 }
 
+/** The same JSON, whatever the order of its keys. */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null || Array.isArray(a) !== Array.isArray(b)) return false;
+  const [ka, kb] = [Object.keys(a), Object.keys(b)];
+  return ka.length === kb.length && ka.every((k) => sameJson((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
+
+/** Tags are a set: their order is no change. */
+const sameTags = (a: string[], b: string[]): boolean => a.length === b.length && a.every((t) => b.includes(t));
+
 function snapshot(s: MockState): Snapshot {
   const withTasks = new Set(s.tasks.map((t) => t.projectId));
   const input = pieceInput(s);
@@ -572,6 +585,7 @@ function snapshot(s: MockState): Snapshot {
     });
   const tags = s.tags.filter((t) => !t.deleted);
   return structuredClone({
+    revision: (s.revision += 1),
     now: toIso(s.now),
     deviceId: DEVICE_ID,
     deviceName: 'Mock PC',
@@ -585,7 +599,6 @@ function snapshot(s: MockState): Snapshot {
       feeCurrency: p.feeCurrency ?? null,
       figures: figures.get(p.id) ?? { exactSecs: 0, pauseSecs: 0, billableSecs: 0, thinkingSecs: 0, effectiveHourlyCents: null, timeValueCents: {}, budget: null },
     })),
-    revision: (s.revision += 1),
     tasks: s.tasks.map((t) => {
       const tt = totals.get(t.id);
       return {
@@ -1248,22 +1261,38 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     }
     case 'patch_task': {
       const patch = a.patch as TaskPatch;
+      const expected = (a.expected ?? {}) as TaskExpected;
       const t = task(s, a.id as string);
-      const patchName = patch.name === undefined ? undefined : cleanTaskName(patch.name);
-      if (patch.tags !== undefined) checkTagIds(s, patch.tags);
-      if (patch.projectId !== undefined && patch.projectId !== t.projectId) {
-        const project = s.projects.find((p) => p.id === patch.projectId);
+      // Like the backend: a field with an expected value goes only if the store still holds that value, or already
+      // holds what is being saved. A refused value isn't validated: it is going nowhere.
+      const conflicts: PatchReply['conflicts'] = [];
+      const refuse = (field: PatchReply['conflicts'][number], moved: boolean, already: boolean): boolean => {
+        if (!moved || already) return false;
+        conflicts.push(field);
+        return true;
+      };
+      const name = patch.name === undefined || refuse('name', expected.name !== undefined && expected.name !== t.name, patch.name.trim() === t.name) ? undefined : cleanTaskName(patch.name);
+      const projectId = patch.projectId === undefined || refuse('project', expected.projectId !== undefined && expected.projectId !== t.projectId, patch.projectId === t.projectId) ? undefined : patch.projectId;
+      const description =
+        patch.description === undefined || refuse('description', expected.description !== undefined && !sameJson(expected.description, t.description), sameJson(assignSubtaskIds(patch.description, t.description, () => 'new'), t.description))
+          ? undefined
+          : patch.description;
+      const tags = patch.tags === undefined || refuse('tags', expected.tags !== undefined && !sameTags(expected.tags, t.tags ?? []), sameTags(patch.tags, t.tags ?? [])) ? undefined : patch.tags;
+      if (tags !== undefined) checkTagIds(s, tags);
+      if (projectId !== undefined && projectId !== t.projectId) {
+        const project = s.projects.find((p) => p.id === projectId);
         if (!project) throw err('not_found', 'project not found');
         if (project.archived) throw err('validation', 'this project is archived; restore it first');
-        t.projectId = patch.projectId;
+        t.projectId = projectId;
       }
-      if (patchName !== undefined) t.name = patchName;
-      if (patch.description !== undefined) {
-        t.description = assignSubtaskIds(patch.description, t.description, () => newId(s, 'sub'));
+      if (name !== undefined) t.name = name;
+      if (description !== undefined) {
+        t.description = assignSubtaskIds(description, t.description, () => newId(s, 'sub'));
         clearMissingActive(t);
       }
-      if (patch.tags !== undefined) t.tags = patch.tags;
-      return snapshot(s);
+      if (tags !== undefined) t.tags = tags;
+      const reply: PatchReply = { snapshot: snapshot(s), conflicts, stored: { name: t.name, projectId: t.projectId, description: t.description, tags: t.tags ?? [] } };
+      return reply;
     }
     case 'delete_draft': {
       if (task(s, a.id as string).state !== 'draft') throw err('conflict', 'only a draft can be deleted');

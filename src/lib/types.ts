@@ -577,6 +577,28 @@ export interface TaskPatch {
   tags?: string[];
 }
 
+/**
+ * For each field of a patch, what the editor sending it last showed or saved. The backend refuses the field if it
+ * holds something else by then, unless that is what is being saved. A field left out here is written regardless.
+ */
+export type TaskExpected = TaskPatch;
+
+/** What the store holds in the fields an editor can change. */
+export interface StoredFields {
+  name: string;
+  projectId: string;
+  description: RichDoc;
+  tags: string[];
+}
+
+/** The answer to a patch: all from one hold of the store's lock. */
+export interface PatchReply {
+  snapshot: Snapshot;
+  /** The fields refused because the store has moved on. The rest of the patch went. */
+  conflicts: ('name' | 'project' | 'description' | 'tags')[];
+  stored: StoredFields;
+}
+
 export interface ShiftInput {
   shiftId?: string | null;
   effectiveFrom: string;

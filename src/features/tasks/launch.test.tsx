@@ -339,7 +339,7 @@ describe('editing a task at any time', () => {
       const before = structuredClone(taskNamed(name));
       await user.type(input, ' (renamed)');
       await waitFor(() => expect(calls('patch_task')).toHaveLength(1), { timeout: 2000 });
-      expect(calls('patch_task')[0]).toEqual({ id: before.id, patch: { name: `${name} (renamed)` } });
+      expect(calls('patch_task')[0]).toEqual({ id: before.id, patch: { name: `${name} (renamed)` }, expected: { name } });
       await waitFor(() => expect(within(form).getByTestId('save-state')).toHaveTextContent('Saved'));
       expect(taskNamed(`${name} (renamed)`).state).toBe(taskState);
       expect(await screen.findByRole('heading', { name: `${name} (renamed)` })).toBeVisible();

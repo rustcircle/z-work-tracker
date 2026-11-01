@@ -3,11 +3,12 @@
 // its editor without losing what was typed. A draft with unsaved changes also outlives closing the
 // editor, so there is only ever one draft per task: a retry always sends its latest text, and reopening
 // shows what failed to save. The store also fans out "save now" requests: from the backend's flush
-// event (window hiding, app quitting) and from the page becoming hidden.
+// event (window hiding, app quitting) and from the page becoming hidden, and keeps a list of the
+// values held back whose editor is not on screen, so a notice can say so for as long as that lasts.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { events } from '../../lib/api';
-import type { RichDoc, Task } from '../../lib/types';
+import type { RichDoc, StoredFields, Task } from '../../lib/types';
 
 export type EditField = 'name' | 'project' | 'description';
 
@@ -15,43 +16,35 @@ export type EditField = 'name' | 'project' | 'description';
 export const SAVED_FIELDS = ['name', 'project', 'description', 'tags'] as const;
 export type SavedField = (typeof SAVED_FIELDS)[number];
 
-/** What the stored task holds in the fields an editor can change. */
-export interface StoredFields {
-  name: string;
-  projectId: string;
-  description: RichDoc;
-  tags: string[];
-}
-
 export function storedFields(t: Task): StoredFields {
   return { name: t.name, projectId: t.projectId, description: t.description, tags: t.tags };
 }
 
-/** Whether a field's stored value is no longer the one an unsaved edit started from. Tags are a set: order is no change. */
-export function movedOn(field: SavedField, base: StoredFields, stored: StoredFields): boolean {
+/** Whether two sets of values agree on a field. Tags are a set: order is no change. */
+export function sameValue(field: SavedField, a: StoredFields, b: StoredFields): boolean {
   switch (field) {
     case 'name':
-      return base.name !== stored.name;
+      return a.name === b.name;
     case 'project':
-      return base.projectId !== stored.projectId;
+      return a.projectId === b.projectId;
     case 'description':
-      return JSON.stringify(base.description) !== JSON.stringify(stored.description);
+      return JSON.stringify(a.description) === JSON.stringify(b.description);
     case 'tags':
-      return base.tags.length !== stored.tags.length || base.tags.some((id) => !stored.tags.includes(id));
+      return a.tags.length === b.tags.length && a.tags.every((id) => b.tags.includes(id));
   }
 }
 
-/** `base` with one field taken from `from`. */
-export function rebase(base: StoredFields, field: SavedField, from: StoredFields): StoredFields {
+/** `expected` with one field taken from `from`. */
+export function settle(expected: StoredFields, field: SavedField, from: StoredFields): StoredFields {
   switch (field) {
     case 'name':
-      return { ...base, name: from.name };
+      return { ...expected, name: from.name };
     case 'project':
-      return { ...base, projectId: from.projectId };
+      return { ...expected, projectId: from.projectId };
     case 'description':
-      return { ...base, description: from.description };
+      return { ...expected, description: from.description };
     case 'tags':
-      return { ...base, tags: from.tags };
+      return { ...expected, tags: from.tags };
   }
 }
 
@@ -86,10 +79,19 @@ export interface EditSession {
   draftChain: Promise<void>;
   /** The editor was closed with changes still unsaved. */
   closed: boolean;
-  /** The stored values the unsaved ones were edited from, to notice newer ones arriving from elsewhere. */
-  base: StoredFields;
-  /** Unsaved values that met a newer stored one. They stay here, shown, and aren't sent until the user chooses to. */
+  /**
+   * What this editor last showed or saved for each field: the backend refuses a save if it holds anything else.
+   * It moves only with a successful save, an explicit choice or a newer value shown in a clean field, never at a keystroke.
+   */
+  expected: StoredFields;
+  /** Unsaved values the backend refused. They stay here, shown, and aren't sent until Done or Discard ends the hold. */
   conflict: Record<SavedField, boolean>;
+  /** Held values Done has chosen to send regardless, for one save only. No retry repeats that on its own. */
+  overriding: Record<SavedField, boolean>;
+  /** A save is on its way, so what is stored may already include it. */
+  saving: boolean;
+  /** An editor is on screen for this draft. */
+  shown: boolean;
   /** The editor showing this draft now, for the outcome of a save that started under an earlier one. */
   report: (status: SaveStatus) => void;
   /** Saves through that editor. */
@@ -116,8 +118,11 @@ export function newSession(task: Task, report: (status: SaveStatus) => void): Ed
     timer: null,
     draftChain: Promise.resolve(),
     closed: false,
-    base: storedFields(task),
+    expected: storedFields(task),
     conflict: { name: false, project: false, description: false, tags: false },
+    overriding: { name: false, project: false, description: false, tags: false },
+    saving: false,
+    shown: false,
     report,
     retry: () => Promise.resolve(true),
   };
@@ -136,6 +141,10 @@ interface EditStoreApi {
   saved: (id: string, s: EditSession) => void;
   /** Drops a draft whose task no longer exists. */
   forget: (id: string, s: EditSession) => void;
+  /** The fields held back, by task, while no editor is on screen to say so. */
+  heldAway: ReadonlyMap<string, readonly SavedField[]>;
+  /** Tells the store a draft's holds or its editor may have changed. */
+  noteHeld: (id: string, s: EditSession) => void;
   /** The draft for a task, created from `init` the first time. Mutated in place by the editor. */
   session: (id: string, init: () => EditSession) => EditSession;
   register: (id: string, flush: () => Promise<unknown>) => () => void;
@@ -152,6 +161,7 @@ export function useEditStore(): EditStoreApi {
 
 export function EditStoreProvider({ children }: { children: ReactNode }) {
   const [editing, setEditing] = useState<ReadonlySet<string>>(new Set());
+  const [heldAway, setHeldAway] = useState<ReadonlyMap<string, readonly SavedField[]>>(new Map());
   const sessions = useRef(new Map<string, EditSession>());
   const flushers = useRef(new Map<string, () => Promise<unknown>>());
   /** Focus requested before the editor existed. */
@@ -184,11 +194,27 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
       flushers.current.delete(id);
     }
   }, []);
+  const noteHeld = useCallback((id: string, s: EditSession) => {
+    const fields = s.shown ? [] : heldFields(s);
+    setHeldAway((was) => {
+      if ((was.get(id) ?? []).join() === fields.join()) return was;
+      const next = new Map(was);
+      if (fields.length > 0) next.set(id, fields);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   const forget = useCallback((id: string, s: EditSession) => {
     if (sessions.current.get(id) === s) {
       sessions.current.delete(id);
       flushers.current.delete(id);
     }
+    setHeldAway((was) => {
+      if (!was.has(id)) return was;
+      const next = new Map(was);
+      next.delete(id);
+      return next;
+    });
   }, []);
   const session = useCallback((id: string, init: () => EditSession) => {
     let s = sessions.current.get(id);
@@ -201,9 +227,14 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     } else if (s.closed) {
       // Reopened with something unsaved: that stays, and the rest catches up with the stored task.
       const fresh = init();
-      // Newer values may have arrived while nobody was looking, and the retry that would have noticed them may be
-      // used up or still waiting. Decide here too, before the reopened editor's first save can replace them.
-      for (const f of SAVED_FIELDS) if (s.dirty[f] && !s.conflict[f] && movedOn(f, s.base, fresh.base)) s.conflict[f] = true;
+      // Newer values may have arrived while nobody was looking, and the retry that would have met them may be used up
+      // or still waiting, or the store may be refusing saves. The snapshot at hand can say so now. A save on its way
+      // says for itself, and a stored value equal to the draft is no conflict.
+      const draft: StoredFields = { name: s.name.trim(), projectId: s.projectId ?? s.expected.projectId, description: s.description, tags: s.tags ?? s.expected.tags };
+      for (const f of SAVED_FIELDS) {
+        if (!s.dirty[f]) s.expected = settle(s.expected, f, fresh.expected);
+        else if (!s.conflict[f] && !s.saving && !sameValue(f, s.expected, fresh.expected) && !sameValue(f, draft, fresh.expected)) s.conflict[f] = true;
+      }
       if (!s.dirty.name) s.name = fresh.name;
       if (!s.dirty.description) s.description = fresh.description;
       if (!s.dirty.project) s.projectId = fresh.projectId;
@@ -238,6 +269,6 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     };
   }, [flushAll]);
 
-  const api = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, forget, session, register, flushAll }), [editing, open, close, saved, forget, session, register, flushAll]);
+  const api = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, forget, heldAway, noteHeld, session, register, flushAll }), [editing, open, close, saved, forget, heldAway, noteHeld, session, register, flushAll]);
   return <Ctx.Provider value={api}>{children}</Ctx.Provider>;
 }

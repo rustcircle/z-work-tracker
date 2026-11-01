@@ -99,7 +99,7 @@ export function TaskForm({ continueFrom, onDone }: { continueFrom?: Task; onDone
         if (id !== null) {
           const updated = await api.updateTask(id, input);
           // An empty list leaves the stored tags alone, so clearing them takes a patch.
-          return createdWithTags.current && tags.length === 0 ? api.patchTask(id, { tags: [] }) : updated;
+          return createdWithTags.current && tags.length === 0 ? (await api.patchTask(id, { tags: [] })).snapshot : updated;
         }
         const r = await api.createTask(input);
         id = r.id;

@@ -150,18 +150,18 @@ describe('tags on a card and in the inline editor', () => {
 
     await user.click(within(form).getByRole('checkbox', { name: 'Revision' }));
     await waitFor(() => expect(calls('patch_task')).toHaveLength(1), { timeout: 2000 });
-    expect(calls('patch_task')[0]).toEqual({ id: 't-guide', patch: { tags: ['tag-concept'] } });
+    expect(calls('patch_task')[0]).toEqual({ id: 't-guide', patch: { tags: ['tag-concept'] }, expected: { tags: ['tag-concept', 'tag-revision'] } });
     await waitFor(() => expect(within(form).getByTestId('save-state')).toHaveTextContent('Saved'));
 
     await user.click(within(form).getByRole('checkbox', { name: 'Concept' }));
     await waitFor(() => expect(calls('patch_task')).toHaveLength(2), { timeout: 2000 });
-    expect(calls('patch_task')[1]).toEqual({ id: 't-guide', patch: { tags: [] } });
+    expect(calls('patch_task')[1]).toEqual({ id: 't-guide', patch: { tags: [] }, expected: { tags: ['tag-concept'] } });
     expect(state.tasks.find((t) => t.id === 't-guide')?.tags).toEqual([]);
     await waitFor(() => expect(within(screen.getByRole('article', { name: 'Brand guidelines' })).queryByRole('list', { name: 'Tags' })).toBeNull());
 
     await user.click(within(form).getByRole('checkbox', { name: 'Admin' }));
     await waitFor(() => expect(calls('patch_task')).toHaveLength(3), { timeout: 2000 });
-    expect(calls('patch_task')[2]).toEqual({ id: 't-guide', patch: { tags: ['tag-admin'] } });
+    expect(calls('patch_task')[2]).toEqual({ id: 't-guide', patch: { tags: ['tag-admin'] }, expected: { tags: [] } });
     await waitFor(() => expect(within(screen.getByRole('article', { name: 'Brand guidelines' })).getByTestId('tag-chip')).toHaveTextContent('Admin'));
   });
 
