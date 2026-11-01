@@ -6,7 +6,7 @@ A desktop app for Windows 11 that accounts for labor hours by project and task. 
 
 It runs locally. It makes no network calls and sends no telemetry. Data leaves the machine only if you choose a OneDrive or Google Drive folder for sync.
 
-Status: phase 2 build. It has been run and tested on macOS, and the Windows installer has been built, but the only thing to run on Windows so far is the CI test gates: **the app itself has never run on real Windows**. See [Known limitations](#known-limitations).
+Status: phase 2 build. It has been run and tested on macOS, and the Windows installer has been built, but the only things to run on Windows so far are the CI test gates and the GitHub build, which signed the installer and checked the signatures on the runner: **the app itself has never run on real Windows**. See [Known limitations](#known-limitations).
 
 ![Timeline](docs/images/timeline-light.png)
 
@@ -523,7 +523,7 @@ This is the route for your own PCs, and only those. A self-signed certificate is
 
 Smart App Control, on a PC where it is switched on, is a further check. Microsoft says it runs an app only if its own service recognises it or it is signed by a certificate authority in the Microsoft Trusted Root Program, which a self-signed certificate is not: <https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview>. Microsoft doesn't describe trusting a certificate yourself as a way round that, so the steps below may not be enough there. Settings > Windows Security > App and Browser Control shows whether it is on.
 
-**What has been tested.** None of the PowerShell here has run, because this project has no Windows machine to test on. The signing itself has run from macOS with a throwaway certificate; see [signing from macOS](#signing-from-macos).
+**What has been tested.** The PowerShell for creating the certificate (step 1) has been run, and the two GitHub secrets made from it exist. How the certificate then works on a PC, and installing or running the app on a real Windows desktop, are untested. Signing has run from macOS with a throwaway certificate (see [signing from macOS](#signing-from-macos)) and on GitHub with this one (see [Windows installer from GitHub](#windows-installer-from-github)).
 
 **1. Create the certificate, once, on one PC.** It can sign code and nothing else, and lasts 5 years. In PowerShell:
 
@@ -607,11 +607,11 @@ pnpm package:windows
 unset WINDOWS_CERT_PASSWORD
 ```
 
-It reports the signatures of the installer and of what's inside it, and fails if any is missing or can't be checked. **What has been tested:** this was run with a throwaway test certificate that has since been deleted, and `osslsigncode verify` accepted the installer and, unpacked from it, `zWorkTracker.exe`, `uninstall.exe` and `WebView2Loader.dll`, each with a DigiCert timestamp. PFX files using the encryption Windows may export (3DES or AES-256) opened fine. **Not tested:** Windows itself accepting those signatures.
+It reports the signatures of the installer and of what's inside it, and fails if any is missing or can't be checked. **What has been tested:** this was run with a throwaway test certificate that has since been deleted, and `osslsigncode verify` accepted the installer and, unpacked from it, `zWorkTracker.exe`, `uninstall.exe` and `WebView2Loader.dll`, each with a DigiCert timestamp. PFX files using the encryption Windows may export (3DES or AES-256) opened fine. **Not tested:** Windows itself accepting those signatures, which `osslsigncode` made. The build on GitHub signs with `signtool`, and `signtool` checked its signatures on a Windows runner; see [Windows installer from GitHub](#windows-installer-from-github).
 
 ### Windows installer from GitHub
 
-`.github/workflows/windows-build.yml` builds on `windows-latest`, by manual run or a `v*` tag. That build uses Rust's MSVC target, and the build from macOS uses MinGW; the bundling config is the same, but only the MinGW build has been produced so far. Its one run on GitHub stopped at the test gates, so the packaging job has never run. It needs no secrets: without them it builds, warns, and names the artifact `z-work-tracker-windows-UNSIGNED`.
+`.github/workflows/windows-build.yml` builds on `windows-latest`, by manual run or a `v*` tag. That build uses Rust's MSVC target, and the build from macOS uses MinGW; the bundling config is the same. [Run 41358005617](https://github.com/rustcircle/z-work-tracker/actions/runs/41358005617), started by hand on `main` at `88d22de`, passed its gates and built the installer on the MSVC target, signed with the self-signed certificate. On the runner, which had been set to trust that certificate, `signtool verify` accepted the installer and, unpacked from it, `zWorkTracker.exe` and `uninstall.exe`. The artifact was named `z-work-tracker-windows-self-signed`. How a PC treats that certificate and installer is untested, and so is installing or running the app on a real Windows desktop. The workflow needs no secrets: without them it builds, warns, and names the artifact `z-work-tracker-windows-UNSIGNED`. That run had the secrets, so the build without them hasn't run on GitHub.
 
 ### Windows code signing
 
@@ -642,7 +642,7 @@ The job runs only on a GitHub-hosted Windows runner, because SignPath won't sign
 
 **On GitHub,** add the same names as secrets of the `windows-signing` environment, with the PFX as base64 in `WINDOWS_CERT_PFX_BASE64`. The workflow writes the PFX to a temporary file, removes it after the build whatever happened, and prints no secret. It unpacks the installer and runs `signtool verify /pa` on it and on the exe and uninstaller inside, and fails if any signature, timestamp or signer is wrong. For a self-signed certificate it first trusts the public part on that runner, which is thrown away afterwards, since the check can't pass otherwise.
 
-Never commit real values. `.env` is ignored by git, and so are certificate and key files. Note that scripts read variables from the environment, so export them or load `.env` first. Signing has been run with a throwaway certificate from macOS only; on Windows and GitHub it hasn't been run with any certificate.
+Never commit real values. `.env` is ignored by git, and so are certificate and key files. Note that scripts read variables from the environment, so export them or load `.env` first. Signing has been run with a throwaway certificate from macOS, and with the self-signed certificate on GitHub's Windows runner.
 
 ### Manual Windows test checklist
 
@@ -689,7 +689,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 
 **Built for one PC at a time.** Use the app on one PC at a time. Sync carries your work from one PC to the next, but it doesn't make two PCs safe to edit side by side. If you switch PCs before sync has finished, for example because PC A goes offline before its folder has uploaded, and you edit the same field on both, the later save wins and the other text disappears from both PCs with no notice. Neither PC can warn you, because neither has seen the other's text when it saves. So let sync finish before you switch. The app can only say it wrote to the sync folder, so check that OneDrive or Google Drive has finished uploading.
 
-**Not verified on real Windows.** What has run on Windows is the CI test gates, on `windows-latest`. A green run covers the type check, lint, unit tests, and the Rust format, lint and tests, which run on Windows itself. It also covers the Playwright tests, which run against the IPC mock and so don't drive the real backend. It says nothing about the installer or the app on a real desktop. The app itself has never run there. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, signing, Segoe UI rendering and shutdown handling. See the [checklist](#manual-windows-test-checklist).
+**Not verified on real Windows.** What has run on Windows is the CI test gates and the GitHub build, on `windows-latest`. A green gates run covers the type check, lint, unit tests, and the Rust format, lint and tests, which run on Windows itself. It also covers the Playwright tests, which run against the IPC mock and so don't drive the real backend. It says nothing about the installer or the app on a real desktop. The build made the installer, signed it with the self-signed certificate and checked the signatures with `signtool` on the runner. The app itself has never run on a real desktop. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, a PC trusting the certificate and accepting the signatures, Segoe UI rendering and shutdown handling. See the [checklist](#manual-windows-test-checklist).
 
 **Verified only on macOS or against a mock.**
 
