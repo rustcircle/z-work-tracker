@@ -147,6 +147,18 @@ export function TaskEditor({ task }: { task: Task }) {
     draftTimer.current = window.setTimeout(flushDraft, DRAFT_MS);
   };
 
+  /** What was waiting to be stashed isn't wanted any more. */
+  const dropPendingStash = useCallback((): void => {
+    if (draftTimer.current !== null) window.clearTimeout(draftTimer.current);
+    draftTimer.current = null;
+    draftDoc.current = null;
+  }, []);
+
+  /** A stash can fail with nothing said, and held or unsent words count on it to outlast the app closing. */
+  const stashAgain = useCallback((): void => {
+    session.draftChain = session.draftChain.then(() => api.stashDraft(task.id, session.description, session.expected.description)).catch(() => undefined);
+  }, [session, task.id]);
+
   const doSave = useCallback(async (): Promise<boolean> => {
     const s = session;
     if (!hasUnsaved(s) && !s.dirty.name) return true;
@@ -205,13 +217,14 @@ export function TaskEditor({ task }: { task: Task }) {
       // A task deleted elsewhere can never take this save. Trying again would only repeat the error.
       const fresh = await api.getSnapshot().catch(() => null);
       if (fresh && !fresh.tasks.some((t) => t.id === task.id)) {
+        // These words go in a notice, and a stash of them left to land after that would tell of them again.
+        dropPendingStash();
         adopt(fresh);
         taskGone(task.id, s);
         return false;
       }
       s.failures += 1;
-      // The stash may have failed the same way, and it is all that outlasts the app closing.
-      if (s.dirty.description) s.draftChain = s.draftChain.then(() => api.stashDraft(task.id, s.description, s.expected.description)).catch(() => undefined);
+      if (s.dirty.description) stashAgain();
       const willRetry = s.failures <= MAX_RETRIES && SAVED_FIELDS.some((f) => s.dirty[f] && !s.conflict[f]);
       s.report({ kind: 'failed', willRetry });
       if (willRetry) schedule(RETRY_BASE_MS * 2 ** (s.failures - 1));
@@ -219,13 +232,12 @@ export function TaskEditor({ task }: { task: Task }) {
     }
     s.failures = 0;
     if (out.reply) latest.current = { ...latest.current, ...out.reply.stored };
+    if (send.description && s.conflict.description) stashAgain();
     // A sent field not changed since is done with. What was held stays unsaved, and so does anything typed meanwhile.
     for (const f of SAVED_FIELDS) if (send[f] && !s.conflict[f] && s.edits[f] === sentEdits[f]) s.dirty[f] = false;
     // The description is saved for real, so the stashed copy, and any waiting to be written, is no longer needed.
     if (send.description && !s.dirty.description) {
-      if (draftTimer.current !== null) window.clearTimeout(draftTimer.current);
-      draftTimer.current = null;
-      draftDoc.current = null;
+      dropPendingStash();
       s.draftChain = s.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
     }
     if (SAVED_FIELDS.some((f) => s.dirty[f] && !s.conflict[f] && s.edits[f] !== sentEdits[f])) {
@@ -238,7 +250,7 @@ export function TaskEditor({ task }: { task: Task }) {
     return true;
   // `schedule` is declared below and only reads the session.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [act, adopt, taskGone, savedInStore, session, task.id]);
+  }, [act, adopt, dropPendingStash, stashAgain, taskGone, savedInStore, session, task.id]);
 
   const flush = useCallback((): Promise<boolean> => {
     clearTimer();
@@ -366,11 +378,7 @@ export function TaskEditor({ task }: { task: Task }) {
           session.description = now.description;
           descRef.current?.replace(now.description);
           // The held words' draft goes too, or the next launch would find them and tell of them.
-          if (draftTimer.current !== null) {
-            window.clearTimeout(draftTimer.current);
-            draftTimer.current = null;
-          }
-          draftDoc.current = null;
+          dropPendingStash();
           session.draftChain = session.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
           break;
       }

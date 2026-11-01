@@ -78,6 +78,20 @@ async function openEditor(): Promise<User> {
 const toggle = (u: User) => u.click(screen.getByRole('button', { name: /^Edit Brand guidelines/ }));
 const done = (u: User) => u.click(screen.getByRole('button', { name: 'Done' }));
 
+/** The next save waits at the backend's door until the returned function is called. */
+function gateNextSave(): () => void {
+  const impl = vi.mocked(api.patchTask).getMockImplementation();
+  if (!impl) throw new Error('patchTask is not spied on');
+  let land: () => void = () => undefined;
+  vi.mocked(api.patchTask).mockImplementationOnce(
+    (...args) =>
+      new Promise((resolve, reject) => {
+        land = () => void impl(...args).then(resolve, reject);
+      }),
+  );
+  return () => land();
+}
+
 /** Words typed, newer text in, and the autosave has met it: the notice is on screen. */
 async function holdWords(): Promise<User> {
   const user = await openEditor();
@@ -597,6 +611,38 @@ describe('an edit to a task deleted elsewhere', () => {
   });
 });
 
+describe('found in review of the fixes', () => {
+  const noticesShown = () => screen.queryAllByTestId('notice').map((n) => n.textContent ?? '');
+
+  it('a stash that failed is written again when the save is refused, as the notice promises the words come back', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    vi.spyOn(api, 'stashDraft').mockRejectedValueOnce({ code: 'io', message: 'the drafts file is locked' });
+    await user.keyboard(' mine');
+    await pass(400);
+    expect(state.drafts['t-guide']).toBeUndefined();
+    await arrive();
+    await pass(1000);
+    expect(kind()).toBe('conflict');
+    expect(saveState()).toHaveTextContent('they come back as a notice at the next launch');
+    expect(JSON.stringify(state.drafts['t-guide'])).toContain('mine');
+  });
+
+  it('a key typed while a save finds the task gone leaves no stash, so dismissed words stay dismissed', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' one');
+    const land = gateNextSave();
+    await pass(700);
+    await user.keyboard(' two');
+    state.tasks = state.tasks.filter((t) => t.id !== 't-guide');
+    await act(async () => land());
+    await pass(2000);
+    expect(noticesShown()[0]).toContain('one two');
+    expect(state.drafts['t-guide']).toBeUndefined();
+  });
+});
+
 describe('QC-5: a save', () => {
   it('reads nothing back: no get_snapshot of its own', async () => {
     const user = await openEditor();
@@ -860,15 +906,7 @@ describe('QC-F: a refused save that lands after the field was given up', () => {
     await arrive(() => {
       guide().name = 'Renamed elsewhere';
     });
-    const impl = vi.mocked(api.patchTask).getMockImplementation();
-    if (!impl) throw new Error('patchTask is not spied on');
-    let release: () => void = () => undefined;
-    vi.mocked(api.patchTask).mockImplementationOnce(
-      (...args) =>
-        new Promise((resolve, reject) => {
-          release = () => void impl(...args).then(resolve, reject);
-        }),
-    );
+    const release = gateNextSave();
     await pass(700);
     expect(vi.mocked(api.patchTask)).toHaveBeenCalled();
     return { user, land: () => act(async () => release()) };
@@ -947,15 +985,7 @@ describe('QC-G: a press on Done dragged off the button', () => {
       guide().description = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Newer still' }] }] };
     });
     // The blur of moving to the button sends the words. The reply comes only after the key.
-    const impl = vi.mocked(api.patchTask).getMockImplementation();
-    if (!impl) throw new Error('patchTask is not spied on');
-    let release: () => void = () => undefined;
-    vi.mocked(api.patchTask).mockImplementationOnce(
-      (...args) =>
-        new Promise((resolve, reject) => {
-          release = () => void impl(...args).then(resolve, reject);
-        }),
-    );
+    const release = gateNextSave();
     await pressEnterOnDone(user);
     await act(async () => release());
     await pass(2000);
@@ -976,20 +1006,6 @@ describe('QC-G: a press on Done dragged off the button', () => {
 });
 
 describe('found in review', () => {
-  /** The next save waits at the backend's door until `land` is called. */
-  function gateNextSave(): () => void {
-    const impl = vi.mocked(api.patchTask).getMockImplementation();
-    if (!impl) throw new Error('patchTask is not spied on');
-    let land: () => void = () => undefined;
-    vi.mocked(api.patchTask).mockImplementationOnce(
-      (...args) =>
-        new Promise((resolve, reject) => {
-          land = () => void impl(...args).then(resolve, reject);
-        }),
-    );
-    return () => land();
-  }
-
   it('a field saved while another is typed in is done with, so a newer value for it just shows', async () => {
     const user = await openEditor();
     const land = gateNextSave();
