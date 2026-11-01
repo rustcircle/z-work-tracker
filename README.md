@@ -438,6 +438,8 @@ e2e/                       Playwright specs
 scripts/                   Native smoke, Excel check, packaging, signing
 ```
 
+The app icon has two sources on purpose: `app-icon.svg` for large sizes and `app-icon-small.svg`, a variant with heavier strokes, for 16 to 32 px, where the large drawing is hard to read.
+
 Billing and time zone rules exist in both Rust (for exports and the tray) and TS (for the live UI). `fixtures/*.json` runs against both.
 
 ### Data model and schema migration
@@ -640,6 +642,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 - A restore with sync on merges newer records back, and the app warns about that.
 - The PDF prints characters outside Windows-1252 as `?`.
 - A correction made on another device before a summary syncs lands on billed time; the summary keeps its frozen numbers.
+- In a selected Excel export, a part cut from a segment that crosses midnight shows the whole segment's split in the Shift column, including time on the day left out. Its Exact and amounts cover the selected part only.
 - Description edits on an existing task are stashed in a small local file about 300 ms after each change, and recovered at the next launch, once, with a notice, if newer than what was saved. The new-task form isn't covered, and nothing typed in the last 300 ms is.
 - Map zone boundaries are approximate near borders, and the highlight is clipped to country outlines. The list is the exact choice.
 - Time zone rules run from 2000 to 2045; earlier times use the first known offset.
