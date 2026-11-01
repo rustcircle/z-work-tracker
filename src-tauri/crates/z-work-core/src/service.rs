@@ -63,6 +63,9 @@ pub struct Service {
     kept_file_stuck: bool,
     /// The user has been told that their kept words may not outlast this run.
     told_kept_at_risk: bool,
+    /// The file of drafts couldn't be read or moved aside at this launch. What it holds is for the next launch to put
+    /// back, and a draft is one lot of words for a task, so this run writes nothing over it, even once it can be read.
+    drafts_file_stuck: bool,
     /// When this launch began. Nothing it had to write can have reached another device by then.
     opened: Ts,
     /// Drafts put back at this launch, as stored, until something else replaces them.
@@ -142,6 +145,7 @@ impl Service {
             kept_out: BTreeMap::new(),
             kept_file_stuck: false,
             told_kept_at_risk: false,
+            drafts_file_stuck: false,
             opened: now,
             recovered: BTreeMap::new(),
         };
@@ -165,7 +169,9 @@ impl Service {
         } else {
             kept_drafts
         };
-        let _ = crate::drafts::write(&svc.paths.dir, &stay);
+        if !svc.drafts_file_stuck {
+            let _ = crate::drafts::write(&svc.paths.dir, &stay);
+        }
         Ok(svc)
     }
 
@@ -546,8 +552,7 @@ impl Service {
         base: &Value,
     ) -> Result<(), CoreError> {
         crate::validate::check_description(description)?;
-        let dir = &self.paths.dir;
-        let mut all = crate::drafts::read(dir);
+        let mut all = self.drafts_to_change()?;
         // The page writes a stash again in case it failed, and that makes its words no newer than they were.
         let at = all
             .get(task_id)
@@ -561,16 +566,27 @@ impl Service {
                 base: base.clone(),
             },
         );
-        crate::drafts::write(dir, &all)
+        crate::drafts::write(&self.paths.dir, &all)
     }
 
     pub fn clear_draft(&self, task_id: &str) -> Result<(), CoreError> {
-        let dir = &self.paths.dir;
-        let mut all = crate::drafts::read(dir);
+        let mut all = self.drafts_to_change()?;
         if all.remove(task_id).is_some() {
-            crate::drafts::write(dir, &all)?;
+            crate::drafts::write(&self.paths.dir, &all)?;
         }
         Ok(())
+    }
+
+    /// The drafts on disk, for a stash or a clear to write back changed. Other tasks' words are in there, some of them
+    /// perhaps the only copy, so what can't be read comes back as an error, and that file stays as it is.
+    fn drafts_to_change(&self) -> Result<BTreeMap<String, Draft>, CoreError> {
+        if self.drafts_file_stuck {
+            return Err(CoreError::StoreUnavailable(
+                "the file of drafts couldn't be read at this launch".to_owned(),
+            ));
+        }
+        crate::drafts::read(&self.paths.dir)?
+            .ok_or_else(|| CoreError::StoreUnavailable("the file of drafts is damaged".to_owned()))
     }
 
     /// Puts back words a shutdown left unsaved, where that replaces nothing the user has not seen: the
@@ -578,8 +594,7 @@ impl Service {
     /// text. Any other stored text stays, and the words go in a notice instead. Returns those drafts,
     /// which stay on disk until the words are safe in a file of their own.
     fn replay_drafts(&mut self) -> BTreeMap<String, Draft> {
-        let dir = self.paths.dir.clone();
-        let all = crate::drafts::read(&dir);
+        let all = self.load_drafts();
         let device = self.file.device_id.clone();
         let mut restored = Vec::new();
         let mut kept = Vec::new();
@@ -644,6 +659,31 @@ impl Service {
             stay.insert(task_id, draft);
         }
         stay
+    }
+
+    /// The drafts the last run left, or none if their file can't be read, which gets said.
+    fn load_drafts(&mut self) -> BTreeMap<String, Draft> {
+        let read = crate::drafts::read(&self.paths.dir);
+        let Ok(Some(all)) = read else {
+            // A damaged file goes aside. One that can't be read may only be in use, so it stays for the next launch.
+            let aside = match read {
+                Ok(None) => crate::drafts::set_aside_drafts(&self.paths.dir, self.now()).ok(),
+                _ => None,
+            };
+            let end = aside.as_ref().map_or_else(
+                || "It is left as it is, for the next launch to try again. Restart the app when you can, as until then what you type has no second copy in case the app closes before it saves.".to_owned(),
+                |name| format!("It is now {name} in the data folder."),
+            );
+            self.drafts_file_stuck = aside.is_none();
+            self.notify(
+                "warning",
+                format!(
+                    "Words typed before the app last closed can't be put back, because the file holding them can't be read. {end}"
+                ),
+            );
+            return BTreeMap::new();
+        };
+        all
     }
 
     /// Words kept at an earlier launch and not yet dismissed.
@@ -3254,7 +3294,7 @@ mod tests {
         assert!(notices[0].message.contains("changed elsewhere"));
         // The notice is the only place left for them, so they outlast a launch nobody read it in.
         assert_eq!(kept_words(here.path()), ["Typed here"]);
-        assert!(crate::drafts::read(here.path()).is_empty());
+        assert!(drafts_on_disk(here.path()).is_empty());
         s.on_exit().unwrap();
         drop(s);
         clock.advance(60);
@@ -3368,7 +3408,7 @@ mod tests {
         let id = s.snapshot().notices[0].id.clone();
         s.dismiss_notice(&id);
         assert_eq!(
-            crate::drafts::read(here.path())[&t].description,
+            drafts_on_disk(here.path())[&t].description,
             doc("Typed later")
         );
     }
@@ -3400,12 +3440,12 @@ mod tests {
             .collect()
     }
 
-    /// What the files of kept words moved aside hold.
-    fn kept_files_aside(dir: &Path) -> Vec<String> {
+    /// What the files of a kind moved aside hold.
+    fn files_aside(dir: &Path, stem: &str) -> Vec<String> {
         let mut aside: Vec<String> = std::fs::read_dir(dir)
             .unwrap()
             .map(|e| e.unwrap().path())
-            .filter(|p| p.to_string_lossy().contains("z-work-kept-words.corrupt-"))
+            .filter(|p| p.to_string_lossy().contains(&format!("{stem}.corrupt-")))
             .map(|p| std::fs::read_to_string(p).unwrap())
             .collect();
         aside.sort();
@@ -3836,7 +3876,10 @@ mod tests {
             std::fs::write(&path, damaged).unwrap();
             drop(open(dir.path(), &clock));
         }
-        assert_eq!(kept_files_aside(dir.path()), ["{ first", "{ second"]);
+        assert_eq!(
+            files_aside(dir.path(), "z-work-kept-words"),
+            ["{ first", "{ second"]
+        );
     }
 
     #[test]
@@ -3854,16 +3897,14 @@ mod tests {
             1,
             "the notice shows them all the same"
         );
-        assert!(!crate::drafts::read(dir.path()).is_empty());
+        assert!(!drafts_on_disk(dir.path()).is_empty());
         std::fs::remove_dir(&blocker).unwrap();
         s.stash_draft("gone 2", &doc("Typed there"), &Value::Null)
             .unwrap();
         s.keep_unsaved_words("gone 2", "Other name", None, Some(&doc("Typed there")));
         assert_eq!(kept_words(dir.path()).len(), 2);
         assert_eq!(
-            crate::drafts::read(dir.path())
-                .into_keys()
-                .collect::<Vec<_>>(),
+            drafts_on_disk(dir.path()).into_keys().collect::<Vec<_>>(),
             ["gone"],
         );
     }
@@ -3988,7 +4029,7 @@ mod tests {
         let s = open(here.path(), &clock);
         assert_eq!(kept_notices(&s).len(), 1);
         assert_eq!(told_to_copy(&s), 1);
-        assert!(!crate::drafts::read(here.path()).is_empty());
+        assert!(!drafts_on_disk(here.path()).is_empty());
         assert!(kept_words(here.path()).is_empty());
         drop(s);
         std::fs::remove_dir(&blocker).unwrap();
@@ -3996,7 +4037,7 @@ mod tests {
         assert_eq!(kept_notices(&s).len(), 1);
         assert_eq!(told_to_copy(&s), 0);
         assert_eq!(kept_words(here.path()), ["Typed here"]);
-        assert!(crate::drafts::read(here.path()).is_empty());
+        assert!(drafts_on_disk(here.path()).is_empty());
     }
 
     #[test]
@@ -4007,7 +4048,7 @@ mod tests {
         let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
         let shown = s.file().data.tasks[&t].description.clone();
         s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
-        let draft = crate::drafts::read(here.path());
+        let draft = drafts_on_disk(here.path());
         clock.advance(3);
         edited_elsewhere(&mut s, &mut other, &t, "From another device");
         s.on_exit().unwrap();
@@ -4018,7 +4059,7 @@ mod tests {
         let s = open(here.path(), &clock);
         assert_eq!(kept_notices(&s).len(), 1);
         assert_eq!(kept_words(here.path()), ["Typed here"]);
-        assert!(crate::drafts::read(here.path()).is_empty());
+        assert!(drafts_on_disk(here.path()).is_empty());
     }
 
     #[test]
@@ -4034,10 +4075,181 @@ mod tests {
         assert!(notices[0].message.contains("can't be read"));
         assert!(notices[0].message.contains("z-work-kept-words.corrupt-"));
         assert!(!path.exists());
-        assert_eq!(kept_files_aside(dir.path()), ["{ not the words"]);
+        assert_eq!(
+            files_aside(dir.path(), "z-work-kept-words"),
+            ["{ not the words"]
+        );
         drop(s);
         let s = open(dir.path(), &clock);
         assert!(s.snapshot().notices.is_empty(), "told once");
+    }
+
+    /// A task with words stashed on it, and the app closed before they were saved.
+    fn words_stashed_and_closed(dir: &Path, clock: &ManualClock) -> String {
+        let mut s = open(dir, clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        let shown = s.file().data.tasks[&t].description.clone();
+        clock.advance(5);
+        s.stash_draft(&t, &doc("Held words"), &shown).unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        t
+    }
+
+    /// The drafts in their file.
+    fn drafts_on_disk(dir: &Path) -> BTreeMap<String, Draft> {
+        crate::drafts::read(dir).unwrap().unwrap()
+    }
+
+    /// Takes away the rights to read a file, like something else having it open. False for a user who can
+    /// read anything regardless, who can't run the test.
+    #[cfg(unix)]
+    fn make_unreadable(path: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::read(path).is_err()
+    }
+
+    #[cfg(unix)]
+    fn make_readable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_drafts_file_that_cannot_be_read_at_a_launch_is_said_and_left_for_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let t = words_stashed_and_closed(dir.path(), &clock);
+        let path = dir.path().join("z-work-drafts.json");
+        let bytes = std::fs::read(&path).unwrap();
+        if !make_unreadable(&path) {
+            return;
+        }
+        let s = open(dir.path(), &clock);
+        let notices = s.snapshot().notices;
+        assert!(path.exists(), "deleted unread");
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].level, "warning");
+        assert!(notices[0].message.contains("can't be read"));
+        assert!(notices[0].message.contains("next launch"));
+        assert_ne!(s.file().data.tasks[&t].description, doc("Held words"));
+        drop(s);
+        make_readable(&path);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "written over");
+        clock.advance(60);
+        let s = open(dir.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Held words"));
+        assert!(!path.exists(), "done with once the words are back");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stash_or_a_clear_while_the_drafts_file_cannot_be_read_leaves_what_it_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let held = s.create_task(&tinput("Held", &p)).unwrap();
+        let other = s.create_task(&tinput("Other", &p)).unwrap();
+        s.stash_draft(&held, &doc("Held words"), &Value::Null)
+            .unwrap();
+        let path = dir.path().join("z-work-drafts.json");
+        let bytes = std::fs::read(&path).unwrap();
+        if !make_unreadable(&path) {
+            return;
+        }
+        assert!(s.stash_draft(&other, &doc("Typed"), &Value::Null).is_err());
+        assert!(s.clear_draft(&held).is_err());
+        make_readable(&path);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "written over");
+        // That was only for as long as it lasted.
+        s.stash_draft(&other, &doc("Typed"), &Value::Null).unwrap();
+        let mut both = [held, other];
+        both.sort();
+        assert_eq!(
+            drafts_on_disk(dir.path()).into_keys().collect::<Vec<_>>(),
+            both
+        );
+    }
+
+    #[test]
+    fn a_drafts_file_a_launch_could_not_read_is_not_written_over_in_that_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let t = words_stashed_and_closed(dir.path(), &clock);
+        // A folder in its place can't be read, like a file something else has open.
+        let path = dir.path().join("z-work-drafts.json");
+        let aside = dir.path().join("in use");
+        std::fs::rename(&path, &aside).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let s = open(dir.path(), &clock);
+        let notices = s.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].message.contains("can't be read"));
+        assert!(path.is_dir(), "not moved");
+        // Whatever had it lets go, with the app running. What is in it hasn't been put back or shown to anyone, and a
+        // draft holds one lot of words for a task, so words typed on that task now must not take its place.
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&aside, &path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let stored = s.file().data.tasks[&t].description.clone();
+        assert!(
+            s.stash_draft(&t, &doc("Typed in this run"), &stored)
+                .is_err()
+        );
+        assert!(s.clear_draft(&t).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Held words"));
+    }
+
+    #[test]
+    fn a_drafts_file_that_is_damaged_is_told_of_and_not_written_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        drop(open(dir.path(), &clock));
+        let path = dir.path().join("z-work-drafts.json");
+        std::fs::write(&path, b"{ not the drafts").unwrap();
+        let s = open(dir.path(), &clock);
+        let notices = s.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].level, "warning");
+        assert!(notices[0].message.contains("can't be read"));
+        assert!(notices[0].message.contains("z-work-drafts.corrupt-"));
+        assert!(!path.exists());
+        assert_eq!(
+            files_aside(dir.path(), "z-work-drafts"),
+            ["{ not the drafts"]
+        );
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert!(s.snapshot().notices.is_empty(), "told once");
+    }
+
+    #[test]
+    fn a_drafts_file_damaged_during_a_run_is_not_written_over_and_goes_aside_at_the_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        let path = dir.path().join("z-work-drafts.json");
+        std::fs::write(&path, b"{ not the drafts").unwrap();
+        assert!(s.stash_draft(&t, &doc("Typed"), &Value::Null).is_err());
+        assert!(s.clear_draft(&t).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{ not the drafts");
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert_eq!(
+            files_aside(dir.path(), "z-work-drafts"),
+            ["{ not the drafts"]
+        );
+        assert_eq!(s.snapshot().notices.len(), 1);
     }
 
     /// Stamps run ahead of the clock when saves come faster than one a second or another device's clock is
@@ -4049,13 +4261,13 @@ mod tests {
         let (s, t) = running(dir.path(), &clock);
         let shown = s.file().data.tasks[&t].description.clone();
         s.stash_draft(&t, &doc("Typed"), &shown).unwrap();
-        let first = crate::drafts::read(dir.path())[&t].at;
+        let first = drafts_on_disk(dir.path())[&t].at;
         clock.advance(5);
         s.stash_draft(&t, &doc("Typed"), &shown).unwrap();
-        assert_eq!(crate::drafts::read(dir.path())[&t].at, first);
+        assert_eq!(drafts_on_disk(dir.path())[&t].at, first);
         clock.advance(5);
         s.stash_draft(&t, &doc("Typed on"), &shown).unwrap();
-        assert!(crate::drafts::read(dir.path())[&t].at > first);
+        assert!(drafts_on_disk(dir.path())[&t].at > first);
     }
 
     #[test]
@@ -4350,7 +4562,7 @@ mod tests {
         std::fs::create_dir(&blocked).unwrap();
         clock.advance(5);
         assert!(Service::open(dir.path(), Arc::new(clock.clone()), "pc").is_err());
-        assert!(!crate::drafts::read(dir.path()).is_empty());
+        assert!(!drafts_on_disk(dir.path()).is_empty());
         std::fs::remove_dir(&blocked).unwrap();
         let s = open(dir.path(), &clock);
         assert_eq!(s.file().data.tasks[&t].description, doc("Typed"));

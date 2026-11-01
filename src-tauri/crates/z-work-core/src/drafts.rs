@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -29,13 +30,25 @@ pub struct Draft {
     pub base: Value,
 }
 
-/// A damaged or missing file is simply no drafts: this is only ever a second copy.
-#[must_use]
-pub fn read(dir: &Path) -> BTreeMap<String, Draft> {
-    fs::read(dir.join(FILE))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+/// A file of words: empty if there is none, or `None` if it is damaged. An error says it couldn't be read at all,
+/// which may only mean something else has it open.
+fn read_file<T: DeserializeOwned + Default>(path: &Path) -> std::io::Result<Option<T>> {
+    let mut bytes = Vec::new();
+    let read = persist::with_local_retry(|| {
+        bytes = fs::read(path)?;
+        Ok(())
+    });
+    match read {
+        Ok(()) => Ok(serde_json::from_slice(&bytes).ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(T::default())),
+        Err(e) => Err(e),
+    }
+}
+
+/// The drafts, or `None` for a file that is damaged. For words held back or failing to save a draft is the only
+/// copy, so whatever can't read this file must leave it alone.
+pub fn read(dir: &Path) -> std::io::Result<Option<BTreeMap<String, Draft>>> {
+    read_file(&dir.join(FILE))
 }
 
 pub fn write(dir: &Path, drafts: &BTreeMap<String, Draft>) -> Result<(), CoreError> {
@@ -48,7 +61,8 @@ pub fn write(dir: &Path, drafts: &BTreeMap<String, Draft>) -> Result<(), CoreErr
         }
     }
     let bytes = serde_json::to_vec(drafts)?;
-    persist::write_atomic(&path, &dir.join(format!("{FILE}.tmp")), &bytes)?;
+    let tmp = dir.join(format!("{FILE}.tmp"));
+    persist::with_local_retry(|| persist::write_atomic(&path, &tmp, &bytes))?;
     Ok(())
 }
 
@@ -74,19 +88,9 @@ pub struct Kept {
     pub because: KeptBecause,
 }
 
-/// The words kept, or `None` for a file that is damaged. An error says it couldn't be read at all, which may
-/// only mean something else has it open. Unlike a draft, this is the only copy, so none of it is shrugged off.
+/// The words kept, or `None` for a file that is damaged.
 pub fn read_kept(dir: &Path) -> std::io::Result<Option<Vec<Kept>>> {
-    let mut bytes = Vec::new();
-    let read = persist::with_local_retry(|| {
-        bytes = fs::read(dir.join(KEPT_FILE))?;
-        Ok(())
-    });
-    match read {
-        Ok(()) => Ok(serde_json::from_slice(&bytes).ok()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(Vec::new())),
-        Err(e) => Err(e),
-    }
+    read_file(&dir.join(KEPT_FILE))
 }
 
 pub fn write_kept(dir: &Path, kept: &[&Kept]) -> Result<(), CoreError> {
@@ -104,11 +108,20 @@ pub fn write_kept(dir: &Path, kept: &[&Kept]) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// Moves a damaged file out of the way of the next write. Returns its new name.
+/// Moves a damaged file of drafts out of the way of the next write. Returns its new name.
+pub fn set_aside_drafts(dir: &Path, now: Ts) -> std::io::Result<String> {
+    set_aside(dir, "z-work-drafts", FILE, now)
+}
+
+/// Moves a damaged file of kept words out of the way of the next write. Returns its new name.
 pub fn set_aside_kept(dir: &Path, now: Ts) -> std::io::Result<String> {
-    let moved = persist::set_aside(dir, "z-work-kept-words", &dir.join(KEPT_FILE), now)?;
+    set_aside(dir, "z-work-kept-words", KEPT_FILE, now)
+}
+
+fn set_aside(dir: &Path, stem: &str, file: &str, now: Ts) -> std::io::Result<String> {
+    let moved = persist::set_aside(dir, stem, &dir.join(file), now)?;
     Ok(moved.file_name().map_or_else(
-        || KEPT_FILE.to_owned(),
+        || file.to_owned(),
         |name| name.to_string_lossy().into_owned(),
     ))
 }
