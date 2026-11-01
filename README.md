@@ -587,7 +587,7 @@ $thumbprint = "<the thumbprint>"
 Remove-Item "Cert:\LocalMachine\Root\$thumbprint", "Cert:\LocalMachine\TrustedPublisher\$thumbprint"
 ```
 
-On the PC that made it, also run `Remove-Item "Cert:\CurrentUser\My\$thumbprint" -DeleteKey`. Delete the `.pfx` and its backups, delete the GitHub secrets with `gh secret delete`, then start again from step 1 and rebuild.
+On the PC that made it, also run `Remove-Item "Cert:\CurrentUser\My\$thumbprint" -DeleteKey`. Delete the `.pfx` and its backups, delete the two GitHub secrets, then start again from step 1 and rebuild. They are environment secrets, so the commands name the environment: `gh secret delete WINDOWS_CERT_PFX_BASE64 --env windows-signing --repo rustcircle/z-work-tracker`, and the same for `WINDOWS_CERT_PASSWORD`.
 
 **When it expires,** or a few months before, start again from step 1 with a new certificate and repeat step 3 on each PC. Replace the GitHub secrets. Builds already installed keep verifying while the old certificate stays trusted, thanks to their timestamps, so keep it trusted until they've been replaced by a newer build. Then remove it as above. New builds can't be signed with an expired certificate: the workflow stops with that message.
 
