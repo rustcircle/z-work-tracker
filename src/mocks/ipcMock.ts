@@ -11,6 +11,7 @@ import { assignSubtaskIds, resetSubtasks, subtaskItems } from '../lib/subtasks';
 import { isZone, parseIso, toIso } from '../lib/tz';
 import { summaryCsv } from './summaryCsv';
 import { capAtPauseRequest, computePieces, effective, projectFigures, summaryPreview, taskTotals, unconfirmedSecs, type MockSegment, type PieceInput } from './pieces';
+import { sameJson } from '../lib/sameJson';
 import type {
   AuditEntry,
   BackupInfo,
@@ -530,14 +531,6 @@ function resolveColor(s: MockState, wanted: string, taken: readonly string[], un
   const color = cleanColor(wanted);
   if (unchanged || !taken.some((t) => t.toLowerCase() === color)) return { color, replacedFrom: null };
   return { color: distinctColor(taken, s.random ?? defaultRandom), replacedFrom: color };
-}
-
-/** The same JSON, whatever the order of its keys. */
-function sameJson(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null || Array.isArray(a) !== Array.isArray(b)) return false;
-  const [ka, kb] = [Object.keys(a), Object.keys(b)];
-  return ka.length === kb.length && ka.every((k) => sameJson((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
 }
 
 /** Tags are a set: their order is no change. */

@@ -157,7 +157,7 @@ export function TaskEditor({ task }: { task: Task }) {
       if (heldFields(s).length > 0) s.report({ kind: 'conflict' });
       return true;
     }
-    const sentRev = s.rev;
+    const sentEdits = { ...s.edits };
     s.report({ kind: 'saving' });
     const patch: TaskPatch = {
       ...(send.name ? { name: trimmed } : {}),
@@ -180,8 +180,9 @@ export function TaskEditor({ task }: { task: Task }) {
       // Before the snapshot is adopted, so nothing rendered from it can take this save for a newer value.
       for (const f of SAVED_FIELDS) {
         if (!send[f]) continue;
+        // A field given up while this was on its way isn't expecting anything of it, and shows what the store holds next.
         if (reply.conflicts.includes(f)) s.conflict[f] = true;
-        else s.expected = settle(s.expected, f, reply.stored);
+        else if (s.dirty[f]) s.expected = settle(s.expected, f, reply.stored);
         s.overriding[f] = false;
       }
       return reply.snapshot;
@@ -212,19 +213,21 @@ export function TaskEditor({ task }: { task: Task }) {
     }
     s.failures = 0;
     if (out.reply) latest.current = { ...latest.current, ...out.reply.stored };
-    if (s.rev === sentRev) {
-      // The description is saved for real, so the stashed copy is no longer needed. Anything typed since
-      // (the revision moved on) keeps its draft.
-      if (send.description && !s.conflict.description && draftDoc.current === null && draftTimer.current === null) {
-        s.draftChain = s.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
-      }
-      // What was held stays unsaved; the rest is done.
-      s.dirty = { name: s.dirty.name && (!send.name || s.conflict.name), project: s.dirty.project && (!send.project || s.conflict.project), description: s.dirty.description && (!send.description || s.conflict.description), tags: s.dirty.tags && (!send.tags || s.conflict.tags) };
-      s.report(heldFields(s).length > 0 ? { kind: 'conflict' } : { kind: 'saved' });
-      savedInStore(task.id, s);
-    } else {
+    // A sent field not changed since is done with. What was held stays unsaved, and so does anything typed meanwhile.
+    for (const f of SAVED_FIELDS) if (send[f] && !s.conflict[f] && s.edits[f] === sentEdits[f]) s.dirty[f] = false;
+    // The description is saved for real, so the stashed copy, and any waiting to be written, is no longer needed.
+    if (send.description && !s.dirty.description) {
+      if (draftTimer.current !== null) window.clearTimeout(draftTimer.current);
+      draftTimer.current = null;
+      draftDoc.current = null;
+      s.draftChain = s.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
+    }
+    if (SAVED_FIELDS.some((f) => s.dirty[f] && !s.conflict[f] && s.edits[f] !== sentEdits[f])) {
       // Typing went on during this save, and the next one goes from what this one stored.
       schedule();
+    } else {
+      s.report(heldFields(s).length > 0 ? { kind: 'conflict' } : { kind: 'saved' });
+      savedInStore(task.id, s);
     }
     return true;
   // `schedule` is declared below and only reads the session.
@@ -249,7 +252,7 @@ export function TaskEditor({ task }: { task: Task }) {
 
   function touch(field: SavedField): void {
     session.dirty[field] = true;
-    session.rev += 1;
+    session.edits[field] += 1;
     session.failures = 0;
     setStatus((prev) => (prev.kind === 'saving' ? prev : { kind: 'idle' }));
   }

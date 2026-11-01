@@ -8,6 +8,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { events } from '../../lib/api';
+import { sameJson } from '../../lib/sameJson';
 import type { RichDoc, StoredFields, Task } from '../../lib/types';
 
 export type EditField = 'name' | 'project' | 'description';
@@ -28,7 +29,7 @@ export function sameValue(field: SavedField, a: StoredFields, b: StoredFields): 
     case 'project':
       return a.projectId === b.projectId;
     case 'description':
-      return JSON.stringify(a.description) === JSON.stringify(b.description);
+      return sameJson(a.description, b.description);
     case 'tags':
       return a.tags.length === b.tags.length && a.tags.every((id) => b.tags.includes(id));
   }
@@ -67,8 +68,8 @@ export interface EditSession {
   dirty: { name: boolean; project: boolean; description: boolean; tags: boolean };
   /** The field that had focus, so a rebuilt editor can give it back. */
   focus: EditField | null;
-  /** Bumped by every change. Lives here, because saves outlive an editor rebuilt mid-save. */
-  rev: number;
+  /** Edits per field, to tell a sent value from one changed since. Lives here, because saves outlive an editor rebuilt mid-save. */
+  edits: Record<SavedField, number>;
   /** Saves run one at a time, in order, across rebuilds. Resolves false when the save failed. */
   queue: Promise<boolean>;
   /** Failed saves in a row, for the retry delay. */
@@ -112,7 +113,7 @@ export function newSession(task: Task, report: (status: SaveStatus) => void): Ed
     tags: null,
     dirty: { name: false, project: false, description: false, tags: false },
     focus: null,
-    rev: 0,
+    edits: { name: 0, project: 0, description: 0, tags: 0 },
     queue: Promise.resolve(true),
     failures: 0,
     timer: null,

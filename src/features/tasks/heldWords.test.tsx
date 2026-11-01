@@ -635,3 +635,102 @@ describe('what the notices say', () => {
     expect(saveState()).toHaveTextContent('Typing on does not send them');
   });
 });
+
+describe('found in review', () => {
+  /** The next save waits at the backend's door until `land` is called. */
+  function gateNextSave(): () => void {
+    const impl = vi.mocked(api.patchTask).getMockImplementation();
+    if (!impl) throw new Error('patchTask is not spied on');
+    let land: () => void = () => undefined;
+    vi.mocked(api.patchTask).mockImplementationOnce(
+      (...args) =>
+        new Promise((resolve, reject) => {
+          land = () => void impl(...args).then(resolve, reject);
+        }),
+    );
+    return () => land();
+  }
+
+  it('a field saved while another is typed in is done with, so a newer value for it just shows', async () => {
+    const user = await openEditor();
+    const land = gateNextSave();
+    await user.type(nameBox(), ' v2');
+    await user.click(box());
+    await pass(10);
+    await user.keyboard(' x');
+    await act(async () => land());
+    await pass(10);
+    await arrive(() => {
+      guide().name = 'Renamed elsewhere';
+    });
+    expect(nameBox()).toHaveValue('Renamed elsewhere');
+    await pass(2000);
+    expect(guide().name).toBe('Renamed elsewhere');
+    expect(storedText()).toContain(' x');
+    expect(kind()).toBe('saved');
+  });
+
+  it('a click alone saves nothing, even where the editor adds a paragraph of its own', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+    state = demoState();
+    guide().description = { type: 'doc', content: [{ type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'One' }] }] }] }] };
+    bootApp(state);
+    await user.click(await screen.findByRole('button', { name: 'Edit Brand guidelines' }));
+    await user.click(box());
+    await pass(2000);
+    await user.tab();
+    await pass(2000);
+    expect(countOf('patch_task')).toBe(0);
+    expect(countOf('stash_draft')).toBe(0);
+  });
+
+  it('no draft outlives the save that holds its words, however the saves queued', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    const land = gateNextSave();
+    await user.keyboard(' one');
+    await pass(700);
+    await user.keyboard(' two');
+    await pass(700);
+    await user.keyboard(' three');
+    await act(async () => land());
+    await pass(2000);
+    expect(storedText()).toContain('one two three');
+    expect(kind()).toBe('saved');
+    expect(state.drafts['t-guide']).toBeUndefined();
+  });
+
+  it('Escape during a save of the name ends up showing what the store holds', async () => {
+    const user = await openEditor();
+    const land = gateNextSave();
+    await user.type(nameBox(), ' v2');
+    await pass(700);
+    await user.keyboard('{Escape}');
+    expect(nameBox()).toHaveValue('Brand guidelines');
+    await act(async () => land());
+    await pass(100);
+    expect(guide().name).toBe('Brand guidelines v2');
+    expect(nameBox()).toHaveValue('Brand guidelines v2');
+  });
+
+  it('the same words stored with their keys in another order are no conflict on reopening', async () => {
+    const sorted = (v: unknown): unknown =>
+      Array.isArray(v) ? v.map(sorted) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, sorted(x)])) : v;
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    storeDown = true;
+    await toggle(user);
+    await pass(500);
+    const words = state.drafts['t-guide'];
+    expect(JSON.stringify(words)).toContain('mine');
+    storeDown = false;
+    guide().description = sorted(words) as never;
+    await act(() => emit('state-changed'));
+    await pass(100);
+    await toggle(user);
+    expect(kind()).not.toBe('conflict');
+    await pass(2000);
+    expect(kind()).toBe('saved');
+  });
+});

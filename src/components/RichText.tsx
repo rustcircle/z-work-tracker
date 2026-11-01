@@ -133,7 +133,11 @@ export function RichEditor({
     content: docToEditorContent(value),
     injectCSS: false,
     editorProps: { attributes: { role: 'textbox', 'aria-multiline': 'true', 'aria-labelledby': labelId, class: 'rt-content' } },
-    onUpdate: ({ editor: e }) => handlers.current.onChange(e.isEmpty ? null : (e.getJSON() as RichDoc)),
+    // Only the user's edits count. Clicking into a document can make the editor add a paragraph of its own, and that
+    // must not read as something to save.
+    onUpdate: ({ editor: e, transaction }) => {
+      if (transaction.docChanged) handlers.current.onChange(e.isEmpty ? null : (e.getJSON() as RichDoc));
+    },
     onFocus: () => handlers.current.onFocus?.(),
     onBlur: () => handlers.current.onBlur?.(),
   });
