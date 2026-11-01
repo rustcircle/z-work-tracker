@@ -39,6 +39,11 @@ use crate::view::{
     TaskView,
 };
 
+/// How long after a launch an edit stamped by another device may still have been made without the words put back
+/// at that launch. Each device stamps by its own clock, which can be off, and the words take time to get there. Too
+/// long a time costs a notice that only needs dismissing, and too short a time costs the words.
+const WITHOUT_WORDS_PUT_BACK_SECS: i64 = 3600;
+
 pub struct Service {
     paths: Paths,
     file: LocalFile,
@@ -739,8 +744,9 @@ impl Service {
 
     /// Words put back at launch lose to an edit from elsewhere, or to the task being deleted there, when a
     /// sync brings that. It stands, as any other does, and the words go in a notice rather than vanish, if it
-    /// was done before this launch and so without them. From then on they are text like any other, which
-    /// another device may well go on from. A clock that is off moves that line by as much as it is off.
+    /// may have been done without them. Stamps can't say what the other device had seen, so that goes by time:
+    /// see [`WITHOUT_WORDS_PUT_BACK_SECS`]. After that they are text like any other, which another device may
+    /// well go on from.
     fn check_recovered(&mut self) {
         if self.recovered.is_empty() {
             return;
@@ -755,7 +761,8 @@ impl Service {
             } else {
                 (&task.deleted_stamp, KeptBecause::TaskGone)
             };
-            let without_them = stamp.by != device && stamp.at <= self.opened;
+            let without_them = stamp.by != device
+                && stamp.at.secs() <= self.opened.secs() + WITHOUT_WORDS_PUT_BACK_SECS;
             if task.is_live() && task.description == draft.description {
                 self.recovered.insert(task_id, draft);
             } else if without_them {
@@ -3631,6 +3638,68 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_before_the_launch_by_a_clock_that_runs_ahead_leaves_the_words_in_a_notice() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let ahead = ManualClock::at("2026-03-01T09:02:00Z");
+        let mut s = open(here.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        let mut other = open(there.path(), &ahead);
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        let shown = s.file().data.tasks[&t].description.clone();
+        clock.advance(2);
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(30);
+        ahead.advance(32);
+        // 30 seconds before the launch here, which that clock reads as 90 seconds after it.
+        other
+            .patch_task(
+                &t,
+                &TaskPatch {
+                    description: Some(doc("Typed elsewhere")),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected::default(),
+            )
+            .unwrap();
+        clock.advance(30);
+        let mut s = open(here.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Typed here"));
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert_eq!(s.file().data.tasks[&t].description, doc("Typed elsewhere"));
+        let words = kept_notices(&s);
+        assert_eq!(words.len(), 1, "{:?}", s.snapshot().notices);
+        assert!(words[0].contains("Typed here"));
+        assert_eq!(kept_words(here.path()).len(), 1);
+    }
+
+    #[test]
+    fn an_edit_just_after_the_launch_by_a_pc_without_the_words_leaves_them_in_a_notice() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        clock.advance(2);
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let mut s = open(here.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Typed here"));
+        clock.advance(10);
+        edited_elsewhere(&mut s, &mut other, &t, "Typed elsewhere");
+        assert_eq!(s.file().data.tasks[&t].description, doc("Typed elsewhere"));
+        let words = kept_notices(&s);
+        assert_eq!(words.len(), 1, "{:?}", s.snapshot().notices);
+        assert!(words[0].contains("Typed here"));
+    }
+
+    #[test]
     fn an_edit_made_after_the_launch_goes_on_from_words_put_back_and_tells_nothing() {
         let here = tempfile::tempdir().unwrap();
         let there = tempfile::tempdir().unwrap();
@@ -3663,7 +3732,7 @@ mod tests {
         let there = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, mut other, t) = words_put_back_and_synced(here.path(), there.path(), &clock);
-        clock.advance(60);
+        clock.advance(4 * 3600);
         other.delete_draft(&t).unwrap();
         s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
         assert!(!s.file().data.tasks[&t].is_live());
