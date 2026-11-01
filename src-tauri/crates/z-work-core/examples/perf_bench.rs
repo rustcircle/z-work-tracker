@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde_json::{Value, json};
+use z_work_core::machine::{TaskExpected, TaskPatch};
 use z_work_core::merge::merge;
 use z_work_core::model::{LocalFile, Segment, Shared, SyncProvider, SyncTarget, TaskState};
 use z_work_core::pdf::{self, PdfRequest};
@@ -327,6 +328,54 @@ fn main() -> Res<()> {
         time(20, || serde_json::to_vec(&snap).unwrap()),
     );
     digests.insert("snapshot".into(), fnv(&snap_json));
+    // An autosave, what the page used to pay and what it pays now: the old check read a whole snapshot
+    // first, and the expected value now travels with the save and is compared inside the write.
+    let task_id = snap.tasks[0].id.clone();
+    let mut typed = 0u32;
+    let mut next_doc = || {
+        typed += 1;
+        json!({ "type": "doc", "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": format!("Words {typed}") }] }] })
+    };
+    record(
+        "autosave, read first then write (before)",
+        time(10, || {
+            let shown = svc.snapshot();
+            let shown_bytes = serde_json::to_vec(&shown).unwrap();
+            svc.patch_task(
+                &task_id,
+                &TaskPatch {
+                    description: Some(next_doc()),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected::default(),
+            )
+            .unwrap();
+            let reply = svc.snapshot();
+            (shown_bytes, serde_json::to_vec(&reply).unwrap())
+        }),
+    );
+    record(
+        "autosave, compare in the write (after)",
+        time(10, || {
+            let expected = svc.file().data.tasks[&task_id].description.clone();
+            let out = svc
+                .patch_task(
+                    &task_id,
+                    &TaskPatch {
+                        description: Some(next_doc()),
+                        ..TaskPatch::default()
+                    },
+                    &TaskExpected {
+                        description: Some(expected),
+                        ..TaskExpected::default()
+                    },
+                )
+                .unwrap();
+            assert!(out.conflicts.is_empty());
+            let reply = svc.snapshot();
+            serde_json::to_vec(&json!({ "conflicts": out.conflicts, "stored": out.stored, "bytes": serde_json::to_vec(&reply).unwrap().len() })).unwrap()
+        }),
+    );
 
     record(
         "activity tick (lock + idle)",
