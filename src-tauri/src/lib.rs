@@ -20,7 +20,8 @@ use z_work_core::backup::BackupInfo;
 use z_work_core::catalog::{TagInput, TemplateInput};
 use z_work_core::detect::{RealEnv, detect, host_os};
 use z_work_core::machine::{
-    ProjectInput, RateInput, RoundingInput, ShiftInput, TaskInput, TaskPatch,
+    PatchOutcome, ProjectInput, RateInput, RoundingInput, ShiftInput, TaskExpected, TaskInput,
+    TaskPatch,
 };
 use z_work_core::model::{AuditEntry, GapDecision, SyncProvider, SyncTarget, Theme};
 use z_work_core::pdf::{self, PdfRequest};
@@ -133,20 +134,20 @@ impl Core {
     }
 
     /// The same for an autosaved text edit, which schedules a later sync.
-    fn edit(
+    fn edit<R>(
         &self,
         app: &AppHandle,
-        f: impl FnOnce(&mut Service) -> Result<(), CoreError>,
-    ) -> CmdResult<Snapshot> {
+        f: impl FnOnce(&mut Service) -> Result<R, CoreError>,
+    ) -> CmdResult<(R, Snapshot)> {
         let svc = self.svc()?;
-        let snap = {
+        let (out, snap) = {
             let mut s = guard(&svc);
-            f(&mut s)?;
-            s.snapshot()
+            let out = f(&mut s)?;
+            (out, s.snapshot())
         };
         self.tell_sync(SyncMsg::Edited);
         refresh_tray(app, self);
-        Ok(snap)
+        Ok((out, snap))
     }
 }
 
@@ -444,7 +445,16 @@ fn update_task(
     id: String,
     input: TaskInput,
 ) -> CmdResult<Snapshot> {
-    core.edit(&app, |s| s.update_task(&id, &input))
+    Ok(core.edit(&app, |s| s.update_task(&id, &input))?.1)
+}
+
+/// The snapshot and the outcome come from one hold of the store's lock.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PatchReply {
+    snapshot: Snapshot,
+    #[serde(flatten)]
+    outcome: PatchOutcome,
 }
 
 #[tauri::command(async)]
@@ -453,8 +463,11 @@ fn patch_task(
     core: CoreState<'_>,
     id: String,
     patch: TaskPatch,
-) -> CmdResult<Snapshot> {
-    core.edit(&app, |s| s.patch_task(&id, &patch))
+    expected: Option<TaskExpected>,
+) -> CmdResult<PatchReply> {
+    let expected = expected.unwrap_or_default();
+    let (outcome, snapshot) = core.edit(&app, |s| s.patch_task(&id, &patch, &expected))?;
+    Ok(PatchReply { snapshot, outcome })
 }
 
 #[tauri::command(async)]
@@ -830,8 +843,10 @@ fn stash_draft(
     core: CoreState<'_>,
     task_id: String,
     description: serde_json::Value,
+    expected: Option<serde_json::Value>,
 ) -> CmdResult<()> {
-    Ok(guard(&*core.svc()?).stash_draft(&task_id, &description)?)
+    let base = expected.unwrap_or(serde_json::Value::Null);
+    Ok(guard(&*core.svc()?).stash_draft(&task_id, &description, &base)?)
 }
 
 #[tauri::command(async)]

@@ -123,6 +123,55 @@ pub struct TaskPatch {
     pub tags: Option<Vec<String>>,
 }
 
+/// For each field of a patch, what the editor sending it last showed or last saved. A field left out
+/// here is written whatever the store holds, as before.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskExpected {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// `null` expects no description; leaving the key out expects nothing.
+    #[serde(default, deserialize_with = "present_value")]
+    pub description: Option<Value>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
+/// A field a patch can carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskField {
+    Name,
+    Project,
+    Description,
+    Tags,
+}
+
+/// What the store holds in the fields a patch can carry.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredFields {
+    pub name: String,
+    pub project_id: String,
+    pub description: Value,
+    pub tags: Vec<String>,
+}
+
+/// How a patch went: the fields refused because the store has moved on, and what it holds afterwards.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchOutcome {
+    pub conflicts: Vec<TaskField>,
+    pub stored: StoredFields,
+}
+
+/// Tags are a set: their order is no change.
+fn same_tags(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().all(|t| b.contains(t))
+}
+
 fn present_value<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
     Value::deserialize(d).map(Some)
 }
@@ -471,19 +520,43 @@ impl Shared {
     }
 
     /// Edits only the given fields, in any state. Never touches segments or the task's state.
+    ///
+    /// A field with an expected value is written only if the store still holds that value, or already
+    /// holds what is being saved. Otherwise it is refused and named in the outcome, and the rest of the
+    /// patch still goes. The comparison is by value and happens in the same step as the write, so
+    /// nothing can land between them, and edits to other fields never count against a save.
     pub fn patch_task(
         &mut self,
         ctx: &Ctx<'_>,
         id: &str,
         patch: &TaskPatch,
-    ) -> Result<(), CoreError> {
-        let previous = self.live_task(id)?.project_id.clone();
-        let name = patch
-            .name
-            .as_deref()
-            .map(|n| clean_text(n, "Task name", MAX_NAME))
-            .transpose()?;
+        expected: &TaskExpected,
+    ) -> Result<PatchOutcome, CoreError> {
+        let current = self.live_task(id)?;
+        let mut conflicts = Vec::new();
+        let name = match patch.name.as_deref() {
+            Some(n)
+                if expected.name.as_deref().is_some_and(|e| e != current.name)
+                    && n.trim() != current.name =>
+            {
+                conflicts.push(TaskField::Name);
+                None
+            }
+            Some(n) => Some(clean_text(n, "Task name", MAX_NAME)?),
+            None => None,
+        };
+        let previous = current.project_id.as_str();
         let project_id = match patch.project_id.as_deref() {
+            Some(p)
+                if p != previous
+                    && expected
+                        .project_id
+                        .as_deref()
+                        .is_some_and(|e| e != previous) =>
+            {
+                conflicts.push(TaskField::Project);
+                None
+            }
             Some(p) if p != previous => {
                 let project = self.live_project(p)?;
                 if project.archived {
@@ -495,12 +568,41 @@ impl Shared {
             }
             _ => None,
         };
-        if let Some(d) = &patch.description {
-            check_description(d)?;
-        }
-        if let Some(tags) = &patch.tags {
-            self.check_tag_ids(tags)?;
-        }
+        let description = match &patch.description {
+            Some(d)
+                if expected
+                    .description
+                    .as_ref()
+                    .is_some_and(|e| *e != current.description)
+                    && subtasks::assign_ids(d, Some(&current.description))
+                        != current.description =>
+            {
+                conflicts.push(TaskField::Description);
+                None
+            }
+            Some(d) => {
+                check_description(d)?;
+                Some(d)
+            }
+            None => None,
+        };
+        let tags = match &patch.tags {
+            Some(tags)
+                if expected
+                    .tags
+                    .as_deref()
+                    .is_some_and(|e| !same_tags(e, &current.tags))
+                    && !same_tags(tags, &current.tags) =>
+            {
+                conflicts.push(TaskField::Tags);
+                None
+            }
+            Some(tags) => {
+                self.check_tag_ids(tags)?;
+                Some(tags)
+            }
+            None => None,
+        };
         let t = self.tasks.get_mut(id).ok_or(CoreError::NotFound("task"))?;
         if let Some(name) = name
             && t.name != name
@@ -512,7 +614,7 @@ impl Shared {
             t.project_id = project_id;
             t.project_stamp = ctx.next(&t.project_stamp);
         }
-        if let Some(d) = &patch.description {
+        if let Some(d) = description {
             let d = subtasks::assign_ids(d, Some(&t.description));
             if t.description != d {
                 t.description = d;
@@ -520,13 +622,21 @@ impl Shared {
                 clear_missing_active(t, ctx);
             }
         }
-        if let Some(tags) = &patch.tags
+        if let Some(tags) = tags
             && t.tags != *tags
         {
             t.tags.clone_from(tags);
             t.tags_stamp = ctx.next(&t.tags_stamp);
         }
-        Ok(())
+        Ok(PatchOutcome {
+            conflicts,
+            stored: StoredFields {
+                name: t.name.clone(),
+                project_id: t.project_id.clone(),
+                description: t.description.clone(),
+                tags: t.tags.clone(),
+            },
+        })
     }
 
     pub fn delete_draft(&mut self, ctx: &Ctx<'_>, id: &str) -> Result<(), CoreError> {
@@ -1380,7 +1490,8 @@ pub(crate) mod tests {
             description: Some(Value::Null),
             ..TaskPatch::default()
         };
-        s.patch_task(&c, &t, &keep_name).unwrap();
+        s.patch_task(&c, &t, &keep_name, &TaskExpected::default())
+            .unwrap();
         let after = &s.tasks[&t];
         assert_eq!(after.description, Value::Null);
         assert_eq!(
@@ -1392,7 +1503,10 @@ pub(crate) mod tests {
             name: Some("  ".into()),
             ..TaskPatch::default()
         };
-        assert!(s.patch_task(&c, &t, &blank).is_err());
+        assert!(
+            s.patch_task(&c, &t, &blank, &TaskExpected::default())
+                .is_err()
+        );
         assert_eq!(s.tasks[&t].name, "Write");
         let parsed: TaskPatch = serde_json::from_str(r#"{"name":"N"}"#).unwrap();
         assert_eq!(
@@ -1401,6 +1515,293 @@ pub(crate) mod tests {
         );
         let parsed: TaskPatch = serde_json::from_str(r#"{"description":null}"#).unwrap();
         assert_eq!(parsed.description, Some(Value::Null), "null clears it");
+    }
+
+    /// Runs a patch of the description with an expected value on a task holding `stored`.
+    fn cas_doc(text: &str) -> Value {
+        json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]})
+    }
+
+    #[test]
+    fn a_patch_with_a_stale_expected_value_is_refused_field_by_field() {
+        let (mut s, p, t) = base();
+        let other = s
+            .create_project(&ctx("2026-01-01T09:00:00Z"), &project_input("Other"))
+            .unwrap();
+        let c = ctx("2026-01-02T09:00:00Z");
+        s.tasks.get_mut(&t).unwrap().name = "Newer name".into();
+        s.tasks.get_mut(&t).unwrap().description = cas_doc("Newer text");
+        let before = s.tasks[&t].clone();
+        let out = s
+            .patch_task(
+                &c,
+                &t,
+                &TaskPatch {
+                    name: Some("Mine".into()),
+                    project_id: Some(other.clone()),
+                    description: Some(cas_doc("My words")),
+                    tags: Some(vec!["tag-admin".into()]),
+                },
+                &TaskExpected {
+                    name: Some("Write".into()),
+                    project_id: Some(p.clone()),
+                    description: Some(before.description.clone()),
+                    tags: Some(before.tags.clone()),
+                },
+            )
+            .unwrap();
+        assert_eq!(out.conflicts, vec![TaskField::Name]);
+        assert_eq!(out.stored.name, "Newer name");
+        let after = &s.tasks[&t];
+        assert_eq!(after.name, "Newer name");
+        assert_eq!(after.name_stamp, before.name_stamp, "refused: no new clock");
+        assert_eq!(after.project_id, other, "the rest of the patch still goes");
+        assert_eq!(after.description, cas_doc("My words"));
+        assert_eq!(after.tags, vec!["tag-admin".to_owned()]);
+        assert_eq!(out.stored.project_id, other);
+        assert_eq!(out.stored.description, cas_doc("My words"));
+    }
+
+    #[test]
+    fn every_field_can_be_refused_and_gives_back_what_is_stored() {
+        let (mut s, p, t) = base();
+        let other = s
+            .create_project(&ctx("2026-01-01T09:00:00Z"), &project_input("Other"))
+            .unwrap();
+        let third = s
+            .create_project(&ctx("2026-01-01T09:00:00Z"), &project_input("Third"))
+            .unwrap();
+        let c = ctx("2026-01-02T09:00:00Z");
+        let t0 = s.tasks[&t].clone();
+        {
+            let task = s.tasks.get_mut(&t).unwrap();
+            task.name = "Newer".into();
+            task.project_id.clone_from(&other);
+            task.description = cas_doc("Newer text");
+            task.tags = vec!["tag-concept".into()];
+        }
+        let before = s.tasks[&t].clone();
+        let out = s
+            .patch_task(
+                &c,
+                &t,
+                &TaskPatch {
+                    name: Some("Mine".into()),
+                    project_id: Some(third),
+                    description: Some(cas_doc("Mine")),
+                    tags: Some(vec!["tag-admin".into()]),
+                },
+                &TaskExpected {
+                    name: Some(t0.name),
+                    project_id: Some(p),
+                    description: Some(t0.description),
+                    tags: Some(t0.tags),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            out.conflicts,
+            vec![
+                TaskField::Name,
+                TaskField::Project,
+                TaskField::Description,
+                TaskField::Tags
+            ]
+        );
+        assert_eq!(s.tasks[&t], before, "nothing moved, not even a clock");
+        assert_eq!(out.stored.name, "Newer");
+        assert_eq!(out.stored.project_id, other);
+        assert_eq!(out.stored.description, cas_doc("Newer text"));
+        assert_eq!(out.stored.tags, vec!["tag-concept".to_owned()]);
+    }
+
+    #[test]
+    fn a_stored_value_equal_to_what_is_being_saved_is_success() {
+        let (mut s, p, t) = base();
+        let other = s
+            .create_project(&ctx("2026-01-01T09:00:00Z"), &project_input("Other"))
+            .unwrap();
+        let c = ctx("2026-01-02T09:00:00Z");
+        {
+            let task = s.tasks.get_mut(&t).unwrap();
+            task.name = "Same".into();
+            task.project_id.clone_from(&other);
+            task.description = cas_doc("Same text");
+            task.tags = vec!["tag-admin".into(), "tag-concept".into()];
+        }
+        let before = s.tasks[&t].clone();
+        let out = s
+            .patch_task(
+                &c,
+                &t,
+                &TaskPatch {
+                    name: Some("  Same ".into()),
+                    project_id: Some(other),
+                    description: Some(cas_doc("Same text")),
+                    tags: Some(vec!["tag-concept".into(), "tag-admin".into()]),
+                },
+                &TaskExpected {
+                    name: Some("Old".into()),
+                    project_id: Some(p),
+                    description: Some(cas_doc("Old")),
+                    tags: Some(Vec::new()),
+                },
+            )
+            .unwrap();
+        assert_eq!(out.conflicts, Vec::new());
+        assert_eq!(s.tasks[&t].name_stamp, before.name_stamp);
+        assert_eq!(s.tasks[&t].description_stamp, before.description_stamp);
+    }
+
+    #[test]
+    fn a_list_saved_without_ids_equals_the_stored_one_that_has_them() {
+        let (mut s, _, t) = base();
+        let c = ctx("2026-01-02T09:00:00Z");
+        let list = |id: Option<&str>| json!({"type":"doc","content":[{"type":"taskList","content":[{"type":"taskItem","attrs":{"checked":false,"subtaskId":id},"content":[{"type":"paragraph","content":[{"type":"text","text":"One"}]}]}]}]});
+        s.tasks.get_mut(&t).unwrap().description = list(Some("st-1"));
+        let out = s
+            .patch_task(
+                &c,
+                &t,
+                &TaskPatch {
+                    description: Some(list(None)),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected {
+                    description: Some(cas_doc("Old")),
+                    ..TaskExpected::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(out.conflicts, Vec::new());
+        assert_eq!(out.stored.description, list(Some("st-1")));
+    }
+
+    #[test]
+    fn edits_to_other_fields_and_a_heartbeat_never_conflict() {
+        let (mut s, _, t) = base();
+        let start = ctx("2026-01-01T10:00:00Z");
+        s.start(&start, &t).unwrap();
+        // What the editor showed when it opened.
+        let shown = s.tasks[&t].description.clone();
+        s.tasks.get_mut(&t).unwrap().name = "Renamed elsewhere".into();
+        s.tasks.get_mut(&t).unwrap().tags = vec!["tag-admin".into()];
+        let out = s
+            .patch_task(
+                &ctx("2026-01-01T10:05:00Z"),
+                &t,
+                &TaskPatch {
+                    description: Some(cas_doc("My words")),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected {
+                    description: Some(shown),
+                    ..TaskExpected::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(out.conflicts, Vec::new());
+        assert_eq!(s.tasks[&t].description, cas_doc("My words"));
+        assert_eq!(s.tasks[&t].state, TaskState::Running);
+        assert_eq!(s.tasks[&t].name, "Renamed elsewhere");
+        assert_eq!(out.stored.name, "Renamed elsewhere");
+    }
+
+    #[test]
+    fn an_expected_value_can_be_no_description_at_all() {
+        let (mut s, _, t) = base();
+        let c = ctx("2026-01-02T09:00:00Z");
+        s.tasks.get_mut(&t).unwrap().description = Value::Null;
+        let parsed: TaskExpected = serde_json::from_str(r#"{"description":null}"#).unwrap();
+        assert_eq!(parsed.description, Some(Value::Null));
+        let patch = TaskPatch {
+            description: Some(cas_doc("Mine")),
+            ..TaskPatch::default()
+        };
+        assert_eq!(
+            s.patch_task(&c, &t, &patch, &parsed).unwrap().conflicts,
+            Vec::new()
+        );
+        assert_eq!(
+            s.patch_task(
+                &c,
+                &t,
+                &TaskPatch {
+                    description: Some(cas_doc("Later")),
+                    ..TaskPatch::default()
+                },
+                &parsed
+            )
+            .unwrap()
+            .conflicts,
+            vec![TaskField::Description]
+        );
+    }
+
+    #[test]
+    fn a_refused_value_is_not_validated_but_one_that_goes_is() {
+        let (mut s, _, t) = base();
+        let c = ctx("2026-01-02T09:00:00Z");
+        // A task can never become nameless, with or without an expected value.
+        let blank = TaskPatch {
+            name: Some("   ".into()),
+            ..TaskPatch::default()
+        };
+        assert!(
+            s.patch_task(
+                &c,
+                &t,
+                &blank,
+                &TaskExpected {
+                    name: Some("Write".into()),
+                    ..TaskExpected::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(s.tasks[&t].name, "Write");
+        let out = s
+            .patch_task(
+                &c,
+                &t,
+                &blank,
+                &TaskExpected {
+                    name: Some("Older".into()),
+                    ..TaskExpected::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(out.conflicts, vec![TaskField::Name]);
+        assert_eq!(s.tasks[&t].name, "Write");
+        // Nor unassigned: an unknown project is refused when it would go.
+        let nowhere = TaskPatch {
+            project_id: Some("no-such-project".into()),
+            ..TaskPatch::default()
+        };
+        assert!(
+            s.patch_task(&c, &t, &nowhere, &TaskExpected::default())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_missing_expected_value_keeps_the_last_writer_behaviour() {
+        let (mut s, _, t) = base();
+        let c = ctx("2026-01-02T09:00:00Z");
+        s.tasks.get_mut(&t).unwrap().description = cas_doc("Newer text");
+        let out = s
+            .patch_task(
+                &c,
+                &t,
+                &TaskPatch {
+                    description: Some(cas_doc("Mine")),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected::default(),
+            )
+            .unwrap();
+        assert_eq!(out.conflicts, Vec::new());
+        assert_eq!(s.tasks[&t].description, cas_doc("Mine"));
     }
 
     #[test]

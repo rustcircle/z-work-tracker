@@ -183,6 +183,9 @@ pub struct SetupView {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    /// The service's count of committed changes when this was built. Replies can arrive out of order,
+    /// and one with a lower count than another is older.
+    pub revision: u64,
     pub now: Ts,
     pub device_id: String,
     pub device_name: String,

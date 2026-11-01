@@ -14,8 +14,8 @@ use crate::detect::Detected;
 use crate::error::CoreError;
 use crate::idle::{IdleTracker, NewGap};
 use crate::machine::{
-    Ctx, PauseRequestDue, ProjectInput, RateInput, RequiredField, RoundingInput, ShiftInput,
-    TaskInput, TaskPatch, Transition, cold_required, doc_has_text,
+    Ctx, PatchOutcome, PauseRequestDue, ProjectInput, RateInput, RequiredField, RoundingInput,
+    ShiftInput, TaskExpected, TaskInput, TaskPatch, Transition, cold_required, doc_has_text,
 };
 use crate::merge::merge;
 use crate::model::{
@@ -313,8 +313,13 @@ impl Service {
     pub fn update_task(&mut self, id: &str, input: &TaskInput) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.update_task(c, id, input))
     }
-    pub fn patch_task(&mut self, id: &str, patch: &TaskPatch) -> Result<(), CoreError> {
-        self.mutate(|f, c| f.data.patch_task(c, id, patch))
+    pub fn patch_task(
+        &mut self,
+        id: &str,
+        patch: &TaskPatch,
+        expected: &TaskExpected,
+    ) -> Result<PatchOutcome, CoreError> {
+        self.mutate(|f, c| f.data.patch_task(c, id, patch, expected))
     }
     pub fn delete_draft(&mut self, id: &str) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.delete_draft(c, id))
@@ -503,8 +508,14 @@ impl Service {
         self.mutate(|f, c| f.data.request_remote_pause(c, task_id))
     }
 
-    /// Stores what is being typed, so a shutdown can't lose it. Validated like a real edit.
-    pub fn stash_draft(&self, task_id: &str, description: &Value) -> Result<(), CoreError> {
+    /// Stores what is being typed, so a shutdown can't lose it. Validated like a real edit. `base` is
+    /// the stored description the words were typed over: only if it is still there can they replace it.
+    pub fn stash_draft(
+        &self,
+        task_id: &str,
+        description: &Value,
+        base: &Value,
+    ) -> Result<(), CoreError> {
         crate::validate::check_description(description)?;
         let dir = &self.paths.dir;
         let mut all = crate::drafts::read(dir);
@@ -513,6 +524,7 @@ impl Service {
             crate::drafts::Draft {
                 description: description.clone(),
                 at: self.now(),
+                base: base.clone(),
             },
         );
         crate::drafts::write(dir, &all)
@@ -527,7 +539,10 @@ impl Service {
         Ok(())
     }
 
-    /// Applies drafts newer than what was saved. A damaged or stale one is dropped.
+    /// Puts back words a shutdown left unsaved, where that replaces nothing the user has not seen: the
+    /// description they were typed over is still stored, or what is stored is this device's own older
+    /// text. A draft older than this device's own later save is done with. Any other stored text came
+    /// from elsewhere meanwhile, so it stays, and the words are shown once in a notice instead.
     fn replay_drafts(&mut self) {
         let dir = self.paths.dir.clone();
         let all = crate::drafts::read(&dir);
@@ -536,6 +551,7 @@ impl Service {
         }
         let device = self.file.device_id.clone();
         let mut restored = Vec::new();
+        let mut kept_out = Vec::new();
         for (task_id, draft) in all {
             let Some(task) = self
                 .file
@@ -546,11 +562,13 @@ impl Service {
             else {
                 continue;
             };
-            let newer = draft.at > task.description_stamp.at;
-            if newer
-                && task.description != draft.description
-                && crate::validate::check_description(&draft.description).is_ok()
+            if task.description == draft.description
+                || crate::validate::check_description(&draft.description).is_err()
             {
+                continue;
+            }
+            let own = task.description_stamp.by == device;
+            if draft.base == task.description || (own && draft.at > task.description_stamp.at) {
                 let ctx = Ctx {
                     now: draft.at,
                     device: &device,
@@ -560,6 +578,11 @@ impl Service {
                 task.description_stamp = ctx.next(&task.description_stamp);
                 crate::machine::clear_missing_active(task, &ctx);
                 restored.push(task.name.clone());
+            } else if !(own && draft.at < task.description_stamp.at) {
+                let words = crate::subtasks::plain_text(&draft.description);
+                if !words.trim().is_empty() {
+                    kept_out.push((task.name.clone(), words));
+                }
             }
         }
         if !restored.is_empty() {
@@ -568,6 +591,14 @@ impl Service {
                 format!(
                     "Recovered an edit to {} that was typed just before the app closed.",
                     restored.join(", ")
+                ),
+            );
+        }
+        for (name, words) in kept_out {
+            self.notify(
+                "warning",
+                format!(
+                    "Your unsaved words on “{name}” were not put back, because its description changed elsewhere while they waited. The newer text is kept. Copy your words from here if you want them, as this notice is the only copy: {words}"
                 ),
             );
         }
@@ -1488,6 +1519,7 @@ impl Service {
             .collect();
 
         Snapshot {
+            revision: self.revision,
             now: self.now(),
             device_id: self.file.device_id.clone(),
             device_name: self.file.device_name.clone(),
@@ -2902,9 +2934,14 @@ mod tests {
         let t = s.create_task(&tinput("T", &p)).unwrap();
         let stale = s.create_task(&tinput("Stale", &p)).unwrap();
         clock.advance(5);
-        s.stash_draft(&t, &doc("Typed at the last moment")).unwrap();
-        s.stash_draft(&stale, &doc("Older than the save")).unwrap();
-        assert!(s.stash_draft(&t, &serde_json::json!("<b>no</b>")).is_err());
+        s.stash_draft(&t, &doc("Typed at the last moment"), &Value::Null)
+            .unwrap();
+        s.stash_draft(&stale, &doc("Older than the save"), &Value::Null)
+            .unwrap();
+        assert!(
+            s.stash_draft(&t, &serde_json::json!("<b>no</b>"), &Value::Null)
+                .is_err()
+        );
         clock.advance(5);
         s.update_task(
             &stale,
@@ -2935,6 +2972,256 @@ mod tests {
         assert!(s.snapshot().notices.is_empty(), "replayed once");
     }
 
+    /// Two devices, the task shared. Returns them with the task id.
+    fn two_devices(here: &Path, there: &Path, clock: &ManualClock) -> (Service, Service, String) {
+        let mut s = open(here, clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        let mut other = open(there, clock);
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        (s, other, t)
+    }
+
+    /// The description `other` holds, saved there and merged here.
+    fn edited_elsewhere(s: &mut Service, other: &mut Service, t: &str, text: &str) {
+        other
+            .patch_task(
+                t,
+                &TaskPatch {
+                    description: Some(doc(text)),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected::default(),
+            )
+            .unwrap();
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+    }
+
+    #[test]
+    fn a_draft_never_replaces_text_that_came_from_elsewhere_meanwhile() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        clock.advance(3);
+        other
+            .patch_task(
+                &t,
+                &TaskPatch {
+                    description: Some(doc("From another device")),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected::default(),
+            )
+            .unwrap();
+        // Typed after the other device saved, so the old rule (the newer stamp wins) would replace it.
+        clock.advance(2);
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        clock.advance(1);
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let mut s = open(here.path(), &clock);
+        assert_eq!(
+            s.file().data.tasks[&t].description,
+            doc("From another device")
+        );
+        let notices = s.snapshot().notices;
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].level, "warning");
+        assert!(notices[0].message.contains("Typed here"));
+        assert!(notices[0].message.contains("changed elsewhere"));
+        assert!(crate::drafts::read(here.path()).is_empty());
+        s.on_exit().unwrap();
+        drop(s);
+        let s = open(here.path(), &clock);
+        assert!(s.snapshot().notices.is_empty(), "shown once");
+    }
+
+    #[test]
+    fn a_draft_older_than_the_text_from_elsewhere_is_shown_too() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        clock.advance(2);
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        clock.advance(3);
+        edited_elsewhere(&mut s, &mut other, &t, "From another device");
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let s = open(here.path(), &clock);
+        assert_eq!(
+            s.file().data.tasks[&t].description,
+            doc("From another device")
+        );
+        assert!(
+            s.snapshot().notices[0].message.contains("Typed here"),
+            "words older than the newer text still may not vanish"
+        );
+    }
+
+    #[test]
+    fn a_draft_over_text_from_elsewhere_the_editor_was_showing_is_recovered() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        clock.advance(3);
+        edited_elsewhere(&mut s, &mut other, &t, "From another device");
+        clock.advance(2);
+        s.stash_draft(&t, &doc("Typed here"), &doc("From another device"))
+            .unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let s = open(here.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Typed here"));
+        assert!(
+            s.snapshot()
+                .notices
+                .iter()
+                .any(|n| n.message.contains("Recovered"))
+        );
+    }
+
+    #[test]
+    fn a_draft_typed_after_a_slow_save_of_this_device_is_recovered() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        let shown = s.file().data.tasks[&t].description.clone();
+        clock.advance(5);
+        s.patch_task(
+            &t,
+            &TaskPatch {
+                description: Some(doc("Saved")),
+                ..TaskPatch::default()
+            },
+            &TaskExpected::default(),
+        )
+        .unwrap();
+        // The save's reply hadn't come, so the draft still names the text before it.
+        clock.advance(1);
+        s.stash_draft(&t, &doc("Saved and more"), &shown).unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let s = open(dir.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Saved and more"));
+    }
+
+    #[test]
+    fn a_draft_with_no_text_that_met_newer_text_is_nothing_to_tell() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        s.stash_draft(&t, &Value::Null, &shown).unwrap();
+        clock.advance(3);
+        edited_elsewhere(&mut s, &mut other, &t, "From another device");
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let s = open(here.path(), &clock);
+        assert_eq!(
+            s.file().data.tasks[&t].description,
+            doc("From another device")
+        );
+        assert!(s.snapshot().notices.is_empty());
+    }
+
+    #[test]
+    fn a_merge_landing_between_the_read_and_the_save_is_refused_at_the_write() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        // The editor reads what is stored.
+        let task = s.snapshot().tasks.into_iter().find(|x| x.id == t).unwrap();
+        let revision = s.revision();
+        // A sync lands before the save does.
+        clock.advance(3);
+        edited_elsewhere(&mut s, &mut other, &t, "From another device");
+        assert!(s.revision() > revision, "a merge counts as a change");
+        clock.advance(2);
+        let out = s
+            .patch_task(
+                &t,
+                &TaskPatch {
+                    name: Some("Mine".into()),
+                    description: Some(doc("My words")),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected {
+                    name: Some(task.name),
+                    description: Some(task.description),
+                    ..TaskExpected::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(out.conflicts, vec![crate::machine::TaskField::Description]);
+        assert_eq!(out.stored.description, doc("From another device"));
+        assert_eq!(out.stored.name, "Mine", "the rest of the patch goes");
+        let stored = &s.file().data.tasks[&t];
+        assert_eq!(stored.description, doc("From another device"));
+        assert_eq!(stored.name, "Mine");
+        // And the refusal holds across a restart: what was written is what the reply said.
+        s.on_exit().unwrap();
+        drop(s);
+        let s = open(here.path(), &clock);
+        assert_eq!(
+            s.file().data.tasks[&t].description,
+            doc("From another device")
+        );
+    }
+
+    #[test]
+    fn a_merge_of_another_field_never_conflicts_and_the_snapshot_counts_changes() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let task = s.snapshot().tasks.into_iter().find(|x| x.id == t).unwrap();
+        let before = s.snapshot().revision;
+        clock.advance(3);
+        other
+            .patch_task(
+                &t,
+                &TaskPatch {
+                    name: Some("Renamed elsewhere".into()),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected::default(),
+            )
+            .unwrap();
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        let out = s
+            .patch_task(
+                &t,
+                &TaskPatch {
+                    description: Some(doc("My words")),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected {
+                    description: Some(task.description),
+                    ..TaskExpected::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(out.conflicts, Vec::new());
+        assert_eq!(out.stored.name, "Renamed elsewhere");
+        assert_eq!(out.stored.description, doc("My words"));
+        assert!(s.snapshot().revision > before);
+    }
+
     #[test]
     fn a_failed_save_at_launch_keeps_the_draft() {
         let dir = tempfile::tempdir().unwrap();
@@ -2943,7 +3230,7 @@ mod tests {
         let p = s.create_project(&pinput("P")).unwrap();
         let t = s.create_task(&tinput("T", &p)).unwrap();
         clock.advance(5);
-        s.stash_draft(&t, &doc("Typed")).unwrap();
+        s.stash_draft(&t, &doc("Typed"), &Value::Null).unwrap();
         s.on_exit().unwrap();
         drop(s);
         // The temporary file the save writes through is a folder, so the save fails.
@@ -2999,7 +3286,7 @@ mod tests {
         let p = s.create_project(&pinput("P")).unwrap();
         let t = s.create_task(&tinput("T", &p)).unwrap();
         clock.advance(5);
-        s.stash_draft(&t, &doc("Draft")).unwrap();
+        s.stash_draft(&t, &doc("Draft"), &Value::Null).unwrap();
         s.clear_draft(&t).unwrap();
         drop(s);
         clock.advance(5);

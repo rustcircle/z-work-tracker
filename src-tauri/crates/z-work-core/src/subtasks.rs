@@ -98,6 +98,31 @@ pub fn extract(doc: &Value) -> String {
     lines.join("\n")
 }
 
+/// All the text of a document, one line per block, for showing words that have nowhere else to go.
+#[must_use]
+pub fn plain_text(doc: &Value) -> String {
+    fn walk(node: &Value, lines: &mut Vec<String>) {
+        let inline = children(node).iter().any(|c| {
+            matches!(
+                c.get("type").and_then(Value::as_str),
+                Some("text" | "hardBreak")
+            )
+        });
+        if inline {
+            let mut line = String::new();
+            inline_text(node, &mut line);
+            lines.push(line);
+        } else {
+            for child in children(node) {
+                walk(child, lines);
+            }
+        }
+    }
+    let mut lines = Vec::new();
+    walk(doc, &mut lines);
+    lines.join("\n")
+}
+
 /// A task-list item, the unit that can carry its own tracked time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {

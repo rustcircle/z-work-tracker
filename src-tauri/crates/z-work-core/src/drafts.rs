@@ -19,6 +19,10 @@ const FILE: &str = "z-work-drafts.json";
 pub struct Draft {
     pub description: Value,
     pub at: Ts,
+    /// The stored description the words were typed over, as the editor showed it. Null for no
+    /// description, and in a draft written before this was kept.
+    #[serde(default)]
+    pub base: Value,
 }
 
 /// A damaged or missing file is simply no drafts: this is only ever a second copy.
