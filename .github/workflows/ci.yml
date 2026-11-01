@@ -66,7 +66,7 @@ jobs:
 
   # Known vulnerabilities in what the app ships. Packaging waits for this job, so:
   # - These fail it: npm advisories rated moderate or above (production dependencies), and RustSec
-  #   vulnerabilities rated medium or above or with no rating at all, and cargo-audit failing to compile.
+  #   vulnerabilities rated medium or above or with no rating at all, and cargo-audit failing to install for any reason but an outage.
   # - These don't: unmaintained, unsound and other informational notices, and low ratings. They stay in the log.
   # - An outage of the npm registry, crates.io or GitHub doesn't. That part goes unaudited, with a
   #   warning on the run, so read the warnings before trusting a green run for a release.
@@ -107,9 +107,13 @@ jobs:
           install_log="$RUNNER_TEMP/cargo-audit-install.log"
           if ! cargo install cargo-audit --version 0.22.2 --locked > "$install_log" 2>&1; then
             cat "$install_log"
-            # Not an outage: this would otherwise skip the audit on every run from now on.
-            if grep -q "could not compile" "$install_log"; then
-              echo "::error title=Rust audit broken::cargo-audit 0.22.2 no longer compiles on this toolchain. Update the pinned version."
+            # Only cargo's last error says why it gave up. Retries and a failing build's output come before it.
+            last_error="$(awk '/^error/ { text = ""; seen = 1 } seen { text = text $0 "\n" } END { printf "%s", text }' "$install_log")"
+            # An outage is a rate limit or 5xx from the registry, or a connection curl gave up on. Anything else,
+            # such as a yanked version, a newer rustc or a bad checksum, would skip the audit on every run from now on.
+            outage='^ *\[(6|7|16|18|28|35|52|55|56|92)\] |, got (429|5[0-9][0-9])$'
+            if ! grep -qE "$outage" <<< "$last_error"; then
+              echo "::error title=Rust audit broken::cargo-audit 0.22.2 could not be installed, and not because of an outage. Read the error above; the pinned version may need updating."
               exit 1
             fi
             echo "::warning title=Rust audit skipped::cargo-audit could not be downloaded, so Rust dependencies were not audited."
