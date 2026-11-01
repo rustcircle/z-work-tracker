@@ -9,7 +9,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 import { useAppState } from '../../app/store';
 import { api, events } from '../../lib/api';
-import { docPlainText } from '../../lib/docText';
+import { docHasText } from '../../lib/docText';
 import { sameJson } from '../../lib/sameJson';
 import type { RichDoc, StoredFields, Task } from '../../lib/types';
 
@@ -144,13 +144,6 @@ export function hasUnsaved(s: EditSession): boolean {
   return (s.dirty.name && s.name.trim() !== '') || s.dirty.project || s.dirty.description || s.dirty.tags;
 }
 
-/** What the user typed and no save has taken, as plain text. A project or tags are not words, and say nothing here. */
-function unsavedWords(s: EditSession): string {
-  const name = s.dirty.name ? s.name.trim() : '';
-  const description = s.dirty.description ? docPlainText(s.description) : '';
-  return [name, description].filter((w) => w !== '').join('\n');
-}
-
 type FieldsByTask = ReadonlyMap<string, readonly SavedField[]>;
 
 /** `was` with a task's fields replaced, the same object if nothing changed. */
@@ -234,7 +227,9 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
   const taskGone = useCallback(
     (id: string, s: EditSession) => {
       if (sessions.current.get(id) !== s) return;
-      const words = unsavedWords(s);
+      // A project or tags aren't words, and go with the task.
+      const newName = s.dirty.name && s.name.trim() !== '' ? s.name.trim() : null;
+      const description = s.dirty.description && docHasText(s.description) ? s.description : null;
       if (s.timer !== null) window.clearTimeout(s.timer);
       s.timer = null;
       s.dirty = { name: false, project: false, description: false, tags: false };
@@ -242,10 +237,11 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
       flushers.current.delete(id);
       setHeldAway((was) => withFields(was, id, []));
       setUnsentAway((was) => withFields(was, id, []));
-      // The stashed copy goes only once the notice has them. If that fails the next launch tells of them instead.
+      // Keeping words also ends their stash, once they are safe: the backend knows when that is.
       s.draftChain = s.draftChain
         .then(async () => {
-          if (words === '' || (await act(() => api.keepUnsavedWords(id, s.expected.name, words)))) await api.clearDraft(id);
+          if (newName === null && description === null) await api.clearDraft(id);
+          else await act(() => api.keepUnsavedWords(id, s.expected.name, newName, description));
         })
         .catch(() => undefined);
     },

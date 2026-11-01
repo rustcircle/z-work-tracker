@@ -49,7 +49,8 @@ pub struct Service {
     targets: BTreeMap<String, TargetStatus>,
     detected: Vec<Detected>,
     system_zone: String,
-    /// Bumped on every committed change, so the app knows when to schedule a sync.
+    /// Bumped on every committed change, so the app knows when to schedule a sync, and when the words kept
+    /// in notices change, so that no older reply on its way to the page can undo that.
     revision: u64,
     /// Words kept out of the store, by the id of the notice showing them.
     kept_out: BTreeMap<String, Kept>,
@@ -678,16 +679,28 @@ impl Service {
         }
     }
 
-    /// The words of an edit that no save can take, because its task no longer exists.
-    pub fn keep_unsaved_words(&mut self, task_id: &str, name: &str, words: &str) {
+    /// The words of an edit that no save can take, because its task no longer exists. Their stash goes once
+    /// their own file has them. Until then it is what the next launch can tell of them from.
+    pub fn keep_unsaved_words(
+        &mut self,
+        task_id: &str,
+        name: &str,
+        new_name: Option<&str>,
+        description: Option<&Value>,
+    ) {
+        let text = description.map(crate::subtasks::plain_text);
+        let words = [new_name, text.as_deref()].into_iter().flatten();
         self.notify_kept_out(Kept {
             task_id: task_id.to_owned(),
             name: name.to_owned(),
-            words: words.to_owned(),
+            words: words.collect::<Vec<_>>().join("\n"),
             at: self.now(),
             because: KeptBecause::TaskGone,
         });
-        let _ = self.save_kept();
+        self.revision += 1;
+        if self.save_kept().is_ok() {
+            let _ = self.clear_draft(task_id);
+        }
     }
 
     /// Tells of words the store won't take, in the only place left to read them.
@@ -1407,6 +1420,7 @@ impl Service {
         // Words kept out of the store end here, and nowhere else. If this write fails the notice just
         // comes back at the next launch.
         if self.kept_out.remove(id).is_some() {
+            self.revision += 1;
             let _ = self.save_kept();
         }
     }
@@ -3546,7 +3560,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let mut s = open(dir.path(), &clock);
-        s.keep_unsaved_words("gone", "Old name", "New name\nTyped here");
+        s.keep_unsaved_words(
+            "gone",
+            "Old name",
+            Some("New name"),
+            Some(&doc("Typed here")),
+        );
         let words = kept_notices(&s);
         assert_eq!(words.len(), 1);
         assert!(words[0].contains("“Old name”"));
@@ -3618,6 +3637,61 @@ mod tests {
         s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
         assert!(!s.file().data.tasks[&t].is_live());
         assert!(kept_notices(&s).is_empty());
+    }
+
+    #[test]
+    fn the_stash_of_words_kept_for_a_gone_task_goes_only_once_their_file_has_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.stash_draft("gone", &doc("Typed here"), &Value::Null)
+            .unwrap();
+        let blocker = dir.path().join("z-work-kept-words.json.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        s.keep_unsaved_words("gone", "Old name", None, Some(&doc("Typed here")));
+        assert_eq!(
+            kept_notices(&s).len(),
+            1,
+            "the notice shows them all the same"
+        );
+        assert!(!crate::drafts::read(dir.path()).is_empty());
+        std::fs::remove_dir(&blocker).unwrap();
+        s.stash_draft("gone 2", &doc("Typed there"), &Value::Null)
+            .unwrap();
+        s.keep_unsaved_words("gone 2", "Other name", None, Some(&doc("Typed there")));
+        assert_eq!(kept_words(dir.path()).len(), 2);
+        assert_eq!(
+            crate::drafts::read(dir.path())
+                .into_keys()
+                .collect::<Vec<_>>(),
+            ["gone"],
+        );
+    }
+
+    #[test]
+    fn words_kept_for_a_gone_task_keep_their_lines_and_a_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let lines = serde_json::json!({"type":"doc","content":[
+            {"type":"paragraph","content":[{"type":"text","text":"Line one"}]},
+            {"type":"paragraph","content":[{"type":"text","text":"Line two"}]},
+        ]});
+        s.keep_unsaved_words("gone", "Old name", Some("New name"), Some(&lines));
+        assert_eq!(kept_words(dir.path()), ["New name\nLine one\nLine two"]);
+    }
+
+    #[test]
+    fn keeping_and_dismissing_words_read_as_newer_so_no_older_reply_undoes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let before = s.snapshot().revision;
+        s.keep_unsaved_words("gone", "Old name", Some("New name"), None);
+        let kept = s.snapshot();
+        assert!(kept.revision > before);
+        s.dismiss_notice(&kept.notices[0].id);
+        assert!(s.snapshot().revision > kept.revision);
     }
 
     #[test]

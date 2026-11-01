@@ -860,11 +860,12 @@ fn keep_unsaved_words(
     core: CoreState<'_>,
     task_id: String,
     name: String,
-    words: String,
+    new_name: Option<String>,
+    description: Option<serde_json::Value>,
 ) -> CmdResult<Snapshot> {
     let svc = core.svc()?;
     let mut s = guard(&svc);
-    s.keep_unsaved_words(&task_id, &name, &words);
+    s.keep_unsaved_words(&task_id, &name, new_name.as_deref(), description.as_ref());
     Ok(s.snapshot())
 }
 

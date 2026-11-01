@@ -6,7 +6,7 @@ import { mockIPC } from '@tauri-apps/api/mocks';
 
 import { PROJECT_PALETTE, distinctColor } from '../lib/color';
 import { RateBook, isCurrency, taskDays } from '../lib/billing';
-import { docHasText } from '../lib/docText';
+import { docHasText, docPlainText } from '../lib/docText';
 import { assignSubtaskIds, resetSubtasks, subtaskItems } from '../lib/subtasks';
 import { isZone, parseIso, toIso } from '../lib/tz';
 import { summaryCsv } from './summaryCsv';
@@ -1102,9 +1102,12 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
     case 'clear_draft':
       delete s.drafts[a.taskId as string];
       return null;
-    case 'keep_unsaved_words':
-      s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'warning', message: `Your unsaved words on “${a.name as string}” were not saved, because the task no longer exists. Copy your words from here if you want them, as dismissing this notice ends them: ${a.words as string}` });
+    case 'keep_unsaved_words': {
+      const words = [a.newName as string | null, a.description ? docPlainText(a.description as RichDoc) : null].filter((w) => w !== null).join('\n');
+      s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'warning', message: `Your unsaved words on “${a.name as string}” were not saved, because the task no longer exists. Copy your words from here if you want them, as dismissing this notice ends them: ${words}` });
+      delete s.drafts[a.taskId as string];
       return snapshot(s);
+    }
     case 'set_setup_step':
       s.setupStep = Math.max(0, Math.trunc(a.step as number));
       return snapshot(s);
