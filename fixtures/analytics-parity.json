@@ -13154,7 +13154,7 @@
             [
               "Tasks in progress",
               null,
-              1,
+              0,
               null,
               "Neither",
               "tasks.inProgress"
@@ -14272,7 +14272,7 @@
             "id": "design",
             "name": "design",
             "projectId": "beta",
-            "state": "paused",
+            "state": "stopped",
             "stoppedAt": null,
             "tags": [
               "tag-a"

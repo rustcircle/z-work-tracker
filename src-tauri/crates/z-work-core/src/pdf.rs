@@ -642,6 +642,8 @@ mod tests {
             ("한국어 中文", 7),
             ("שלום Hebrew", 8),
             ("مرحبا Arabic", 9),
+            ("شلوم, عولم", 12),
+            ("אב 12 גד", 13),
             ("Launch 😀👍🏽 prep", 10),
             (
                 "Long name Ωμέγα Привет Ação that must be cut to fit its column on the page",

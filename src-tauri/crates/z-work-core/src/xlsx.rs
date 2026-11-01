@@ -360,16 +360,28 @@ fn write_details_sheet(
 
     let money = Format::new().set_num_format("#,##0.00");
     let mut row: u32 = 2;
-    for seg in source.segments() {
-        let shift_text = request
-            .segment_shifts
-            .get(&seg.segment_id)
-            // A selection cuts a segment at midnight, and each part keeps the shifts of the whole.
-            .or_else(|| {
-                let whole = seg.segment_id.split(':').next().unwrap_or_default();
-                request.segment_shifts.get(whole)
-            })
-            .map_or("", String::as_str);
+    let segments = source.segments();
+    // The UI's text covers whole segments, which a selection can cut, so a selection works out its own.
+    let own_shifts = source.only.as_ref().map(|_| {
+        let from = segments.iter().map(|s| s.start).min().unwrap_or_default();
+        let to = segments
+            .iter()
+            .map(|s| s.effective_end)
+            .max()
+            .unwrap_or_default();
+        crate::analytics::ShiftText::new(&source.data, from, to)
+    });
+    for seg in segments {
+        let own_text;
+        let shift_text = if let Some(own) = &own_shifts {
+            own_text = own.of(&source.data, seg.start, seg.effective_end);
+            own_text.as_str()
+        } else {
+            request
+                .segment_shifts
+                .get(&seg.segment_id)
+                .map_or("", String::as_str)
+        };
         let pieces = if request.include_earnings {
             split_by_rate(&source.data, &seg.project_id, seg.start, seg.effective_end)
         } else {

@@ -30,6 +30,9 @@ for needle in ["日本語の作業", "한국어 中文", "😀"]:
 # Right-to-left runs are stored reversed, in drawing order, and readers turn them back.
 for needle in ["שלום", "مرحبا"]:
     check(f"extracts {needle} as typed though the font lacks it", needle in text)
+# Readers differ on the order of several right-to-left words on a line, so each word is what's checked.
+for needle in ["شلوم", "عولم", "אב", "גד", "12"]:
+    check(f"extracts the word {needle}", needle in text)
 check("the warning is on the page", "as an empty box" in text)
 check("no question mark stands in for a character", "?" not in text)
 check("a long name is cut with an ellipsis", "…" in text)
@@ -52,7 +55,7 @@ if len(sys.argv) > 2:
     doc[0].render(scale=2).to_pil().save(sys.argv[2])
     print("rendered", sys.argv[2])
     seen = unicodedata.normalize("NFC", doc[0].get_textpage().get_text_range())
-    for needle in ["Ωμέγα αρχείο", "Отчёт за март", "日本語の作業", "😀", "שלום", "مرحبا"]:
+    for needle in ["Ωμέγα αρχείο", "Отчёт за март", "日本語の作業", "😀", "שלום", "مرحبا", "شلوم", "عولم", "אב", "גד"]:
         check(f"PDFium extracts {needle} as typed", needle in seen)
 
 if fails:

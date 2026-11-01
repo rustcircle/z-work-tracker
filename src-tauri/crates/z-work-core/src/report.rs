@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::billing::{TaskDay, day_of, split_by_day, task_days_of};
 use crate::error::CoreError;
-use crate::model::{GapDecision, RemoteDevice, Segment, Shared};
+use crate::model::{GapDecision, RemoteDevice, Segment, Shared, TaskState};
 use crate::pieces::{Piece, PieceKind, pieces};
 use crate::subtasks;
 use crate::time::Ts;
@@ -93,6 +93,16 @@ impl ExportSource {
                     task.stopped_at = v
                         .stopped_at
                         .filter(|at| keys.contains(&(k.clone(), day_of(*at, tz))));
+                    // Whether it's still running or paused is known only from its latest day. If that
+                    // was left out, the selection can't say, so it isn't counted as in progress.
+                    let latest = exists
+                        .range((k.clone(), NaiveDate::MIN)..=(k.clone(), NaiveDate::MAX))
+                        .next_back();
+                    if matches!(v.state, TaskState::Running | TaskState::Paused)
+                        && !latest.is_some_and(|key| keys.contains(key))
+                    {
+                        task.state = TaskState::Stopped;
+                    }
                     (k.clone(), task)
                 })
                 .collect(),

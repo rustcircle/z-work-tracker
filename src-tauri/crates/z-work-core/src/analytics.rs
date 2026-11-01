@@ -163,7 +163,8 @@ fn fmt_clock(minutes: f64) -> String {
 }
 
 /// Close to the screen's `localeCompare` without a collation library: case-insensitive, lower case
-/// first on a tie. Only the order of rows with exactly equal time depends on it.
+/// first on a tie. Accents aren't folded, so "Émile" sorts after "Frank". That only moves rows: shifts,
+/// which sort by name, and rows with exactly equal time.
 fn cmp_names(a: &str, b: &str) -> std::cmp::Ordering {
     a.to_lowercase()
         .cmp(&b.to_lowercase())
@@ -800,6 +801,53 @@ fn shifts_of(
     }
 }
 
+/// The shift column of a selected export's details: how each stretch splits across shift windows, by
+/// the same rules as the UI's `segmentShiftText`, for the selected part alone. Works from the windows
+/// of `[from, to)`, which should cover every stretch asked about.
+pub(crate) struct ShiftText {
+    windows: Vec<ShiftWindow>,
+    max_window: i64,
+}
+
+impl ShiftText {
+    pub(crate) fn new(data: &Shared, from: Ts, to: Ts) -> Self {
+        let windows = windows_for(data, from.secs(), to.secs());
+        let max_window = windows.iter().map(|w| w.end - w.start).max().unwrap_or(0);
+        Self {
+            windows,
+            max_window,
+        }
+    }
+
+    /// "Morning 1:00:00; Outside 0:30:00", or nothing when no shift is set up or no time passed.
+    pub(crate) fn of(&self, data: &Shared, start: Ts, end: Ts) -> String {
+        if end <= start || !data.shifts.values().any(|v| !v.deleted) {
+            return String::new();
+        }
+        let (start, end) = (start.secs(), end.secs());
+        let lo = self
+            .windows
+            .partition_point(|w| w.start < start - self.max_window);
+        let hi = self.windows.partition_point(|w| w.start < end);
+        let near = self.windows.get(lo..hi.max(lo)).unwrap_or(&[]);
+        let mut totals: Vec<(&str, i64)> = Vec::new();
+        for (s, e, owner) in attribute(start, end, near) {
+            let name = owner
+                .and_then(|i| near.get(i))
+                .map_or("Outside", |w| w.name.as_str());
+            match totals.iter_mut().find(|t| t.0 == name) {
+                Some(t) => t.1 += e - s,
+                None => totals.push((name, e - s)),
+            }
+        }
+        totals
+            .iter()
+            .map(|(name, secs)| format!("{name} {}", crate::report::hms(*secs)))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
 /// Seconds of logged time inside the client's working hours, Monday to Friday in the client's zone.
 fn client_overlap(data: &Shared, spans: &[Span], client: Tz, from: i64, to: i64) -> i64 {
     let setting = |key: &str, default: &str| {
@@ -945,6 +993,20 @@ impl Metrics<'_> {
         out
     }
 
+    /// A day holding only a billable pause has a row and no worked time. In a selection it still counts
+    /// as a project and a task, so every sheet adds up to the total. The Analysis tab leaves them out.
+    fn counted_ids<'s>(
+        &'s self,
+        worked: &'s BTreeMap<String, i64>,
+        of_row: impl Fn(&'s TaskDay) -> &'s str,
+    ) -> BTreeSet<&'s str> {
+        let mut ids: BTreeSet<&str> = worked.keys().map(String::as_str).collect();
+        if self.selected_days.is_some() {
+            ids.extend(self.rows.iter().map(of_row));
+        }
+        ids
+    }
+
     fn projects(&self) -> Vec<ProjectRow> {
         let billable = self.billable_by_project();
         let mut adj: BTreeMap<&str, i64> = BTreeMap::new();
@@ -956,24 +1018,23 @@ impl Metrics<'_> {
             );
         }
         let mut tasks: BTreeMap<&str, i64> = BTreeMap::new();
-        for t in self.agg.by_task.keys() {
+        for t in self.counted_ids(&self.agg.by_task, |r| r.task_id.as_str()) {
             if let Some(task) = self.data.tasks.get(t) {
                 bump(&mut tasks, task.project_id.as_str(), 1);
             }
         }
         let of = |m: &BTreeMap<&str, i64>, id: &str| m.get(id).copied().unwrap_or(0);
-        let total: i64 = self.agg.by_project.keys().map(|id| of(&billable, id)).sum();
-        let mut list: Vec<ProjectRow> = self
-            .agg
-            .by_project
+        let ids = self.counted_ids(&self.agg.by_project, |r| r.project_id.as_str());
+        let total: i64 = ids.iter().map(|id| of(&billable, id)).sum();
+        let mut list: Vec<ProjectRow> = ids
             .iter()
-            .filter_map(|(id, exact)| {
-                let p = self.data.projects.get(id)?;
+            .filter_map(|id| {
+                let p = self.data.projects.get(*id)?;
                 let secs = of(&billable, id);
                 Some(ProjectRow {
-                    id: id.clone(),
+                    id: (*id).to_owned(),
                     name: p.name.clone(),
-                    exact: *exact,
+                    exact: self.agg.by_project.get(*id).copied().unwrap_or(0),
                     billable: secs,
                     share: ratio(secs as f64, total as f64),
                     tasks: of(&tasks, id),
@@ -997,17 +1058,16 @@ impl Metrics<'_> {
             days.entry(r.task_id.as_str()).or_default().insert(r.day);
         }
         let mut list: Vec<TaskRow> = self
-            .agg
-            .by_task
+            .counted_ids(&self.agg.by_task, |r| r.task_id.as_str())
             .iter()
-            .filter_map(|(id, exact)| {
-                let t = self.data.tasks.get(id)?;
+            .filter_map(|id| {
+                let t = self.data.tasks.get(*id)?;
                 Some(TaskRow {
-                    id: id.clone(),
+                    id: (*id).to_owned(),
                     name: t.name.clone(),
-                    exact: *exact,
-                    billable: billable.get(id.as_str()).copied().unwrap_or(0),
-                    days: days.get(id.as_str()).map_or(0, BTreeSet::len),
+                    exact: self.agg.by_task.get(*id).copied().unwrap_or(0),
+                    billable: billable.get(*id).copied().unwrap_or(0),
+                    days: days.get(*id).map_or(0, BTreeSet::len),
                 })
             })
             .collect();
@@ -2866,6 +2926,101 @@ mod tests {
         for leak in ["From the UI", "Secret", "Earnings", "EUR", "USD"] {
             assert!(!all.contains(leak), "{leak}");
         }
+    }
+
+    #[test]
+    fn a_cut_segment_shows_the_shifts_of_its_selected_part_and_nothing_from_the_ui() {
+        // w3 runs 23:30 on 2 March to 00:40 on 3 March in New York. Only 3 March is selected, and a
+        // shift runs on 2 March alone, covering its half.
+        let mut data = world();
+        shift(
+            &mut data,
+            "v9",
+            "eve",
+            "LeakEvening",
+            "2020-01-01",
+            ("23:00", "23:59"),
+            &[1],
+            ZONE,
+            0,
+            false,
+        );
+        let full = source(data, "2027-02-01T00:00:00Z");
+        let mut sent = BTreeMap::new();
+        sent.insert(
+            "w3".to_owned(),
+            "LeakEvening 0:30:00; Outside 0:40:00".to_owned(),
+        );
+        let request = crate::report::ExportRequest {
+            day_zone: ZONE.into(),
+            my_zone: ZONE.into(),
+            client_zone: None,
+            include_earnings: true,
+            segment_shifts: sent,
+            analytics: Vec::new(),
+            selection: Some(vec![entry("write", "2026-03-03")]),
+        };
+        let bytes = xlsx::build(&full, &request).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("x.xlsx");
+        std::fs::write(&zip, &bytes).unwrap();
+        let out = std::process::Command::new("unzip")
+            .arg("-p")
+            .arg(&zip)
+            .output()
+            .unwrap();
+        let all = String::from_utf8_lossy(&out.stdout);
+        assert!(!all.contains("LeakEvening"), "a shift of the day left out");
+        assert!(all.contains("0:40:00"), "the selected part's own split");
+    }
+
+    #[test]
+    fn a_task_whose_latest_day_was_left_out_is_not_in_progress() {
+        let mut data = world();
+        data.tasks.get_mut("design").unwrap().state = TaskState::Running;
+        let full = source(data, "2027-02-01T00:00:00Z");
+        let tz = parse_zone(ZONE).unwrap();
+        let earlier = full.narrowed(tz, &[entry("design", "2026-03-03")]).unwrap();
+        let sheets = selection_sheets(&earlier, ZONE).unwrap();
+        assert_eq!(kpi(&sheets, "Tasks in progress", 2), json!(0));
+        let latest = full.narrowed(tz, &[entry("design", "2026-11-20")]).unwrap();
+        let sheets = selection_sheets(&latest, ZONE).unwrap();
+        assert_eq!(kpi(&sheets, "Tasks in progress", 2), json!(1));
+    }
+
+    #[test]
+    fn a_day_holding_only_a_billable_pause_still_adds_up_across_the_sheets() {
+        let mut data = world();
+        data.pauses.insert(
+            "p2".into(),
+            BillablePause {
+                id: "p2".into(),
+                task_id: "design".into(),
+                start: at("2026-03-25T14:00:00Z"),
+                end: at("2026-03-25T15:00:00Z"),
+                note: String::new(),
+                deleted: false,
+                stamp: stamp(),
+            },
+        );
+        let full = source(data, "2027-02-01T00:00:00Z");
+        let only = full
+            .narrowed(parse_zone(ZONE).unwrap(), &[entry("design", "2026-03-25")])
+            .unwrap();
+        let sheets = selection_sheets(&only, ZONE).unwrap();
+        assert_eq!(
+            kpi(&sheets, "Total time (Billable)", 1).as_f64(),
+            Some(3600.0)
+        );
+        let projects = &sheet(&sheets, "Projects").rows;
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0][2], json!(3600));
+        assert_eq!(projects[0][4], json!(1));
+        assert_eq!(
+            sheet(&sheets, "Earnings by project").rows[0][3],
+            json!(8050)
+        );
+        assert_eq!(sheet(&sheets, "Tags").rows[0][2], json!(3600));
     }
 
     #[test]

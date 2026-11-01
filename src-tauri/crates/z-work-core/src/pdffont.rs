@@ -41,7 +41,9 @@ fn is_rtl(c: char) -> bool {
 }
 
 /// PDF text is stored in the order it is drawn, and readers turn right-to-left runs back when text is
-/// copied. So each such run goes in reversed, spaces inside it included, and copies as typed.
+/// copied. So each such run goes in reversed and copies as typed. Spaces, digits and punctuation between
+/// two right-to-left characters belong to the run, and numbers inside it keep their own order. Readers
+/// differ on several words in a run: words copy whole, but pypdf and PDFium can give them in other orders.
 fn visual_order(mut chars: Vec<char>) -> Vec<char> {
     let mut i = 0;
     while i < chars.len() {
@@ -53,12 +55,15 @@ fn visual_order(mut chars: Vec<char>) -> Vec<char> {
         for (j, c) in chars.iter().enumerate().skip(i + 1) {
             if is_rtl(*c) {
                 end = j + 1;
-            } else if !c.is_whitespace() {
+            } else if c.is_alphabetic() {
                 break;
             }
         }
         if let Some(run) = chars.get_mut(i..end) {
             run.reverse();
+            for number in run.chunk_by_mut(|a, b| a.is_numeric() && b.is_numeric()) {
+                number.reverse();
+            }
         }
         i = end;
     }
@@ -102,9 +107,16 @@ impl Font {
         self.advance(self.glyph(c).unwrap_or(GlyphId(0)))
     }
 
+    /// CID 0 once all 65,535 are taken, which prints an empty box and copies as nothing.
     fn cid(&mut self, c: char) -> u16 {
-        let next = u16::try_from(self.used.len() + 1).unwrap_or(u16::MAX);
-        *self.used.entry(c).or_insert(next)
+        if let Some(cid) = self.used.get(&c) {
+            return *cid;
+        }
+        let Ok(next) = u16::try_from(self.used.len() + 1) else {
+            return 0;
+        };
+        self.used.insert(c, next);
+        next
     }
 
     /// Writes this font's objects from what the document used. Returns nothing to the caller but the
@@ -271,14 +283,16 @@ impl Fonts {
     pub(crate) fn encode(&mut self, weight: Weight, text: &str) -> Vec<u8> {
         let mut out = Vec::with_capacity(text.len() * 2);
         for c in visual_order(printed(text).collect()) {
-            if self.font(weight).glyph(c).is_none() {
-                self.missing.insert(c);
-            }
+            let has_glyph = self.font(weight).glyph(c).is_some();
             let font = match weight {
                 Weight::Regular => &mut self.regular,
                 Weight::Bold => &mut self.bold,
             };
-            out.extend(font.cid(c).to_be_bytes());
+            let cid = font.cid(c);
+            if !has_glyph || cid == 0 {
+                self.missing.insert(c);
+            }
+            out.extend(cid.to_be_bytes());
         }
         out
     }
@@ -343,7 +357,36 @@ mod tests {
         assert_eq!(order("abc"), "abc");
         assert_eq!(order("אב Hebrew"), "בא Hebrew");
         assert_eq!(order("x אב גד y"), "x דג בא y");
+        assert_eq!(order("אב, גד"), "דג ,בא");
+        assert_eq!(order("אב 12 גד"), "דג 12 בא");
+        assert_eq!(order("אב 12"), "בא 12");
         assert_eq!(order("סשׂ"), "\u{5c2}\u{5e9}\u{5e1}");
+    }
+
+    #[test]
+    fn more_characters_than_cids_are_reported_and_keep_the_file_whole() {
+        let mut f = Fonts::new().unwrap();
+        let many: String = (0x2_0000..0x3_ffff)
+            .filter_map(char::from_u32)
+            .take(70_000)
+            .collect();
+        let bytes = f.encode(Weight::Regular, &many);
+        assert_eq!(bytes.len(), 2 * 70_000);
+        let last = many.chars().last().unwrap();
+        assert!(f.missing().contains(&last));
+        assert_eq!(
+            bytes[bytes.len() - 2..],
+            [0, 0],
+            "the one past the end has no CID"
+        );
+        let mut pdf = Pdf::new();
+        let mut next = 10;
+        let mut alloc = || {
+            next += 1;
+            Ref::new(next)
+        };
+        f.embed(&mut pdf, Ref::new(1), Ref::new(2), &mut alloc)
+            .unwrap();
     }
 
     #[test]
