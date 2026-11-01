@@ -548,6 +548,8 @@ export function TaskEditor({ task }: { task: Task }) {
               heldAtPress.current = heldFields(session);
             }}
             onClick={(e) => {
+              // The second click of a double click comes too soon after the first to be a choice of what that one held.
+              if (e.detail > 1) return;
               // Only what was on screen as held before this press is the user's to send regardless. A keyboard press
               // has no pointer-down, and any blur of its own came with an earlier key. It reads no list either, as the
               // list of a press dragged off this button is still here, and `detail` is 0 for a click of no pointer.

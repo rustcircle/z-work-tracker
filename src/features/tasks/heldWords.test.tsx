@@ -672,6 +672,19 @@ describe('found in review of the fixes', () => {
     await pass(100);
     expect(unsent()).toHaveLength(0);
   });
+
+  it('the second click of a double click on Done chooses nothing', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    await arrive();
+    await user.dblClick(within(form()).getByRole('button', { name: 'Done' }));
+    await pass(2000);
+    expect(storedText()).toContain('From another');
+    expect(storedText()).not.toContain('mine');
+    expect(editorOpen()).toBe(true);
+    expect(kind()).toBe('conflict');
+  });
 });
 
 describe('QC-5: a save', () => {
