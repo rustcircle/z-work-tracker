@@ -56,7 +56,7 @@ In **Projects**, create a project with a unique name and a colour. A free colour
 
 ### Tasks and subtasks
 
-Each task has a name, a project and a rich-text description with bold, italic, headings, numbered and bulleted lists and task lists, which is where subtasks and steps go.
+Each task has a name, a project and a rich-text description with bold, italic, headings, numbered and bulleted lists and task lists, which is where subtasks and steps go. In a description, Enter starts a new paragraph (or the next list item) and Shift+Enter breaks the line inside the current one.
 
 ![The empty form on a cold launch](docs/images/launch-cold-form.png)
 
