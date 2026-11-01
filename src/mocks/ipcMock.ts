@@ -619,7 +619,9 @@ function snapshot(s: MockState): Snapshot {
     tags,
     templates: s.templates.filter((x) => !x.deleted),
     billing: { prefix: prefixOf(s), clashes: prefixClashes(s), summaries: s.summaries },
-    setup: { pending: !s.setupDone && !s.syncPromptDone, step: s.setupStep },
+    // The backend also skips a store that has data but no setup state; the mock's seeds always hold data,
+    // so the `legacy` first-run seed stands for that case instead.
+    setup: { pending: !s.setupDone && (s.setupStep > 0 || !s.syncPromptDone), step: s.setupStep },
     pauseRequests: s.pauseRequests,
     reminder: currentReminder(s),
     reminderSettings: {

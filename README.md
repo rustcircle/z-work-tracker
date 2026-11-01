@@ -40,6 +40,14 @@ The uninstaller asks **Also delete my time data**, unticked by default, so your 
 
 ## User guide
 
+### First-run setup
+
+A fresh store opens a full-page setup: Welcome; theme with a live preview; My zone and Client zone; time rules (15 minutes Up, with a plain table); a first project; work shifts from presets; sync, showing detected OneDrive and Google Drive folders with checkboxes where nothing is on without a tick; Start with Windows, off by default; and a summary. Every step has Back and Skip, and **Finish with defaults** ends it in one click. Each step saves through the normal settings, an interrupted setup resumes where it stopped, and no time is logged.
+
+On a second PC, where a detected folder already holds data, it offers to connect first and previews the counts. It then skips what the merged data answers and still asks what belongs to this device. If you already used the app, you won't see it. **Run setup again** in Settings changes settings only after you confirm and never touches your data. The old one-time sync and client zone prompts now appear only for someone who updated and still owes them.
+
+![The first setup page](docs/images/setup-welcome-light.png)
+
 ### Projects, price per hour and currency
 
 In **Projects**, create a project with a unique name and a colour. A free colour is suggested, and you can pick your own. A project with tasks can be archived but not deleted; one with no tasks can be deleted. Archived projects can be restored.
@@ -91,7 +99,7 @@ Closing the window with X hides it to the tray. **The app keeps running and a ru
 
 - Left-click the tray icon to show the window.
 - The menu has Show, the current task with its elapsed time, Pause or Resume, and Quit. On a cold launch, tray Resume opens the window with the form and starts nothing.
-- The tooltip shows the running task or "No task running". The icon changes while a task runs.
+- The tooltip shows the running task or "No task running". The icon changes shape while a task runs: an open stopwatch when idle, a filled one with a play mark when running.
 
 Only the tray's **Quit** really exits. On a real exit a running segment closes at that moment and the task is marked paused. Opening the app again while it runs brings up the existing window. **Start with Windows** is an optional setting, off by default.
 
@@ -116,7 +124,15 @@ Raw UTC timestamps stay as they were, whatever you answer. An absence in progres
 
 The main screen. It shows the period total at the top, then days with the newest first. Each day has an axis of its real length with blocks in project colours, then entries grouped into Night (00-06), Morning (06-12), Afternoon (12-18) and Evening (18-24). A segment crossing midnight is split across days and bands. Each day header shows Billable and Exact totals plus per-project totals with earnings.
 
-The running task ticks every second and shows two figures, labelled separately: **exact accrual**, which ticks continuously, and **billable now**, which steps at each increment. Both stop while paused.
+The running task's elapsed clock ticks every second. That is the only figure that does. Earnings everywhere show the **Billable** amount, which moves only when billable time steps at your increment, 15 minutes rounded Up by default. So with rounding Up the first increment shows as soon as work starts on that task-day, and with the increment Off the amount follows exact time. Paused time doesn't move it, and there is no countdown to the next step. The tick stops updating the screen while the window is hidden. Exact amounts appear only in Segment details of an Excel export, labelled, for reconciliation.
+
+**Selecting entries.** A click on a Timeline entry selects it; it doesn't open anything. Ctrl+click (Cmd on macOS) toggles an entry, and Shift+click selects the run from the last one you clicked, across days. By keyboard: Space selects, Ctrl+Space toggles, Shift+Arrow extends, Ctrl+A selects what's visible, and Esc clears. Details and editing keep their own buttons on the row, one click away. An entry stands for one task on one day, the same as a row in Excel, so selecting one row selects every row of that task-day, and a task spanning several days can be partly selected. The selection bar shows the count and total Billable, masked by Hide earnings, with Export selected and Clear. A selection survives scrolling and filter changes, and the bar says when a filter hides some of it.
+
+![A selection on the Timeline](docs/images/timeline-selection-light.png)
+
+**Filtering tasks.** The task list and the Timeline share one filter: text matched against the name and description, ignoring case and accents and including list items, combined with project and tags. It shows the match count and a clear button, and is forgotten when you quit. Analysis has the same text search among its filters.
+
+![The task filter](docs/images/task-filter-light.png)
 
 ![Live earnings](docs/images/timeline-live-earnings.png)
 
@@ -157,6 +173,8 @@ In **Settings**, define your own shifts with a name, colour, start and end time,
 
 Shifts appear as background bands on the Timeline and have their own Analysis charts: scheduled versus worked, time outside any shift, late start and early finish, and client-hours coverage.
 
+Each change to a shift is kept as a dated version. **Revert** removes one version after a confirmation that says which applies afterwards; a shift's only version can't be reverted, so retire or delete it instead.
+
 **Attribution rule:** work is cut at shift boundaries. Where shifts overlap, the time goes to the one that started earliest, ties by shift id, so totals never double-count. **Overtime precedence:** shift-scheduled hours when shifts exist, otherwise the daily target.
 
 ![Shift bands](docs/images/timeline-shift-bands.png)
@@ -193,9 +211,15 @@ A task-list item in a description can be made active. Exactly one is active at a
 
 Tags have a name and a colour, and four starter tags come with the app. A warm start copies them; a cold start requires at least one, while any tag exists. Analysis breaks time down by tag. A template stores a task's name, description, project and tags, and creates an independent draft with unticked subtasks.
 
+**New tag** next to the tag picker opens Settings at the Add tag form, focused. Tags aren't created inside the task form. **Back to task** stays up until you take it, and what you'd typed in the form is still there.
+
 ### Colours
 
 Projects and tags share a colour picker: a saturation and brightness area, a hue slider, R, G and B fields from 0 to 255 and a hex field, all kept in step, with a live preview. It works by keyboard in every theme, and also offers curated swatches and your recently used colours. Any colour is allowed. Chip text picks black or white for readability, and you get a gentle warning, never a refusal, if a colour is close to another project's or hard to see on the current theme. The backend stores six-digit lowercase hex, such as `#1a2b3c`, and refuses anything else.
+
+**One colour, one project.** Save a project with the exact colour of another active project and the app replaces it with a random colour that's clearly different from all active ones and readable in all four themes, then tells you, showing the new colour with a **Choose again** button. It never does this silently. Tags follow the same rule among tags. Archived projects don't count, and a colour you left unchanged is never replaced. Two PCs can choose the same colour while offline: after a sync both stay as saved, with a warning, because random choices on each PC would fight. The same generator supplies suggestions once the curated palette runs out.
+
+![The colour notice](docs/images/color-notice-light.png)
 
 ![The colour picker](docs/images/color-picker.png)
 
@@ -246,6 +270,10 @@ The Excel workbook has these sheets:
 3. **Earnings** (if included): per project and currency, with per-currency totals.
 4. **Analytics:** KPI summary, Bands, Projects, Weekdays, Shifts when configured, and earnings sheets if included. These follow the last Analysis view, or all logged history if Analysis was never opened.
 
+**Exporting a selection.** When entries are selected, the dialog's scope defaults to **Selected** instead of **All in period**. The backend gets only task ids and days, checks them, refuses an empty selection or an entry with no time, and recomputes everything itself, with rounding per task-day, so figures match the Timeline. Labor by project, Segment details, Earnings and Adjustments cover the selection only, with the first sheet's columns unchanged. The Analytics sheets are left out, since they describe the whole period, and a sheet named **About this selection** says what the file is. CSV ends with a `selection` row and the PDF timesheet prints a line saying the same. The selection clears after an export only if you ask.
+
+![Export scope](docs/images/export-scope-light.png)
+
 See [docs/sample-export.xlsx](docs/sample-export.xlsx) for a sample built from synthetic data.
 
 CSV has `record_type` rows: `segment` rows carry raw UTC, zone times and exact durations; `task_day` rows carry billable time. Filter by that column before summing. User text is protected against spreadsheet formula injection in CSV, and is always written as plain strings in Excel.
@@ -253,6 +281,8 @@ CSV has `record_type` rows: `segment` rows carry raw UTC, zone times and exact d
 ### Themes
 
 **Light** (default), **Solarized Light**, **Solarized Dark** and **Dark**, chosen in Settings per device. The OS theme isn't followed. Project colours stay as you chose them in every theme.
+
+**Mica**, under Appearance, lets the Windows 11 backdrop show faintly through the page background in Light and Dark. Solarized stays opaque, and so do panels with text. It's off by default, and on anything older than Windows 11 the switch is disabled and says why.
 
 ### Folder sync on OneDrive and Google Drive
 
@@ -275,7 +305,7 @@ Each PC writes only its own file, `<folder>/zWorkTracker/devices/<device-uuid>.j
 - Deleted items leave a marker so they don't come back. Archives don't either. A draft deleted on one PC but started on another stays, because logged work is never hidden.
 - Conflict copies and unknown files are ignored and never deleted. A damaged or newer-version file is skipped with a warning, and the last good data stays. A newer-version file is never overwritten.
 - An unreadable OneDrive Files On-Demand placeholder is retried later and isn't treated as damage.
-- If tasks run on two PCs at once, both are kept, a warning stays visible, and neither PC alters the other's segments. A task running on another PC can be stopped here, but its open segment is left for that PC to close. Until then it counts up to that PC's last known heartbeat.
+- If tasks run on two PCs at once, both are kept, a warning stays visible, and neither PC alters the other's segments. A task running on another PC can be stopped here, but its open segment is left for that PC to close. Until then it counts up to that PC's last known heartbeat. If the other PC seems stuck, **Pause it from here** records a synced, audited request. It never rewrites that device's segment: time counts up to the request on every PC, and the other PC closes its own segment when it next syncs, marked as paused by request.
 
 Two projects created offline with the same name on two PCs stay as two projects.
 
@@ -322,6 +352,7 @@ Definitions worth knowing:
 | **macOS** | `~/Library/Application Support/com.rustcircle.zworktracker/` |
 | **Main file** | `z-work-data.json`: versioned JSON with timestamps in UTC (`2026-03-08T07:00:00Z`) |
 | **Backup** | `z-work-data.json.bak`: the previous good version |
+| **Drafts** | `z-work-drafts.json`: descriptions being typed, local only, recovered once at launch |
 | **Heartbeat** | `z-work-heartbeat.json`: while a task runs, the last moment the app was alive. It holds one time |
 | **Dated backups** | `backups/`: one copy a day, plus safety copies made before a restore |
 | **Before a migration** | `z-work-data.v1.json`: the store as it was before an upgrade |
@@ -364,6 +395,9 @@ cargo test --workspace
 cargo check -p z-work-core --tests --locked --target x86_64-pc-windows-gnu        # test code compiles for Windows
 cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 
+# Read a sample selection back, and scan the raw file for anything unselected
+ZWT_SAMPLE_SELECTION_XLSX=/tmp/sel.xlsx cargo test --manifest-path src-tauri/Cargo.toml -p z-work-core the_workbook_builds
+uv run --no-project --with openpyxl scripts/verify_selection.py /tmp/sel.xlsx
 # Read a sample Excel file back with an independent reader
 ZWT_SAMPLE_XLSX=/tmp/sample.xlsx cargo test -p z-work-core builds_with_earnings
 cd .. && uv run --no-project --with openpyxl scripts/verify_xlsx.py /tmp/sample.xlsx
@@ -472,6 +506,39 @@ pnpm package:windows
 
 This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_0.1.0_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the files are signed. `WebView2Loader.dll` ships inside the installer next to the exe.
 
+### Trusting your own builds with a self-signed certificate
+
+This is only for your own PCs. A self-signed certificate is trusted only on PCs set up as below. It isn't public code signing and must not be described as signed for anyone else. **The private key must stay private**: the commands make it non-exportable, on the PC that signs. Norton and other security tools may still flag the file. These commands haven't been run for this project, because it has no Windows machine to test on.
+
+In Windows PowerShell, on the PC that signs:
+
+```powershell
+$cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Pedro Jorge (zWorkTracker)" `
+  -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy NonExportable -KeyUsage DigitalSignature `
+  -NotAfter (Get-Date).AddYears(3)
+Export-Certificate -Cert $cert -FilePath .\zWorkTracker-public.cer
+```
+
+On each PC that should trust it, signing PC included, import the public `.cer` only. Windows asks you to confirm the Root import:
+
+```powershell
+Import-Certificate -FilePath .\zWorkTracker-public.cer -CertStoreLocation Cert:\CurrentUser\Root
+Import-Certificate -FilePath .\zWorkTracker-public.cer -CertStoreLocation Cert:\CurrentUser\TrustedPublisher
+```
+
+Sign both the installer and, once installed, the installed `zWorkTracker.exe`, adjusting the paths to yours. A timestamp keeps the signature valid after the certificate expires:
+
+```powershell
+$cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Where-Object Subject -eq "CN=Pedro Jorge (zWorkTracker)"
+Set-AuthenticodeSignature -FilePath .\zWorkTracker_0.1.0_x64-setup.exe -Certificate $cert -HashAlgorithm SHA256 -TimestampServer http://timestamp.digicert.com
+Set-AuthenticodeSignature -FilePath "$env:LOCALAPPDATA\zWorkTracker\zWorkTracker.exe" -Certificate $cert -HashAlgorithm SHA256 -TimestampServer http://timestamp.digicert.com
+Get-AuthenticodeSignature .\zWorkTracker_0.1.0_x64-setup.exe, "$env:LOCALAPPDATA\zWorkTracker\zWorkTracker.exe" | Format-List Status, StatusMessage, SignerCertificate
+```
+
+`Status` should read `Valid` on a PC set up this way. Reinstalling replaces the installed exe with an unsigned copy, so sign it again afterwards.
+
+**If Norton flags it.** Don't add exclusions. Report it as a false positive through Norton's route: <https://support.norton.com/sp/en/us/home/current/solutions/kb20090410134005EN>.
+
 ### Windows installer from GitHub
 
 `.github/workflows/windows-build.yml` builds on `windows-latest`, by manual run or a `v*` tag. That build uses Rust's MSVC target, and the build from macOS uses MinGW; the bundling config is the same, but only the MinGW build has been produced so far. It hasn't been pushed or run yet.
@@ -563,25 +630,23 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 **Not done.**
 
 - OS shutdown relies on the app's exit event, which is unverified on Windows; if it doesn't fire, heartbeat recovery closes the segment within about 30 seconds of the real time.
-- Mica isn't used, so it can't wash out the themes.
-- Google Drive detection scans drive letters and common folder names and doesn't read the DriveFS registry. Use the picker otherwise.
+- Mica has never been seen on Windows 11: the code is only compile-checked for Windows, and the tests prove the colours and contrast, not the look. It's optional and off by default, and it applies to Light and Dark only.
+- Google Drive detection reads DriveFS's registry settings first, then scans drive letters and common folder names. The registry key names come from public descriptions and haven't been checked against a real install; if they're wrong, the scan and the picker still work.
+- macOS gets no lock signal. Windows is the target, and this wasn't small enough to be worth the risk.
 - The lock signal (`WTSQuerySessionInformationW`) has not been seen answering on a real locked Windows session; its logic is tested with injected events. On macOS there is no lock signal, so locks are noticed only through idle time.
 - Idle reading (`user-idle`) has not run on Windows. After a wake it could report idle time spanning the sleep; the code clamps that, tested with injected values only.
 - The reminder and budget notifications come from the system's notification service, not run on Windows.
 - A restore with sync on merges newer records back, and the app warns about that.
 - The PDF prints characters outside Windows-1252 as `?`.
-- Audit entries for billable pauses name no task, so a task's history matches them by time.
 - A correction made on another device before a summary syncs lands on billed time; the summary keeps its frozen numbers.
-- At a Windows shutdown or sign-out, an edit typed in the last moment before the autosave may be lost: the page gets no save signal on that path. Tray Quit and hiding the window do flush edits, after a 300 ms wait.
-- Shift analysis can't revert a single version; retire or delete instead.
-- Heatmap and calendar cells have no keyboard drill-down; their View data tables hold the same numbers.
+- Description edits on an existing task are stashed in a small local file about 300 ms after each change, and recovered at the next launch, once, with a notice, if newer than what was saved. The new-task form isn't covered, and nothing typed in the last 300 ms is.
 - Map zone boundaries are approximate near borders, and the highlight is clipped to country outlines. The list is the exact choice.
 - Time zone rules run from 2000 to 2045; earlier times use the first known offset.
 - Rate is fixed to the task's current project: moving a task to another project re-derives its earnings from that project's rates.
 
 ## Roadmap
 
-The approved phase 2 list is built, and is described in the [User guide](#user-guide). The performance pass is done; see [Performance](#performance).
+The approved phase 2 list is built, and is described in the [User guide](#user-guide). The performance pass is done; see [Performance](#performance). The gap-fill round is done apart from these: full Unicode in the PDF (it needs a bundled font, which hasn't been chosen or downloaded, so characters outside Windows-1252 still print as `?`) and the macOS lock signal.
 
 ## Third-party data licences
 

@@ -11,7 +11,7 @@ repository = "https://github.com/rustcircle/z-work-tracker"
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 chrono-tz = "0.10"
-rust_xlsxwriter = "0.90"
+rust_xlsxwriter = "0.102"
 pdf-writer = "0.15"
 png = "0.18"
 miniz_oxide = "0.9"

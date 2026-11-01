@@ -84,9 +84,15 @@ run(async () => {
   r.firstRunSyncPending = s.sync.promptPending;
   r.firstRunTargets = s.sync.targets.length;
   r.tzdb = s.tzdbVersion;
-  r.promptShown = /Not now/.test(document.body.innerText);
-  await inv('mark_sync_prompt_done');
-  await inv('mark_client_zone_prompt_done');
+  r.setupPending = s.setup.pending;
+  await until(() => document.querySelector('[data-testid="setup-wizard"]'), 'setup wizard');
+  r.oldPromptAlso = /Not now/.test(document.body.innerText);
+  document.querySelector('[data-testid="finish-defaults"]').click();
+  await until(() => !document.querySelector('[data-testid="setup-wizard"]'), 'setup wizard to finish');
+  await wait(400);
+  s = await inv('get_snapshot');
+  r.setupAfter = s.setup.pending;
+  r.syncAfterSetup = [s.sync.promptPending, s.sync.targets.length];
   const p = await inv('create_project', { input: { name: 'Smoke project', color: '#dc2626', billable: true, budgetHours: null, clientZone: null } });
   await inv('set_rate', { input: { projectId: p.id, rateCents: 3600, currency: 'USD', effectiveFrom: new Date(Date.now() - 86400000).toISOString().slice(0, 19) + 'Z', confirmRetroactive: true } });
   await inv('set_rounding', { input: { projectId: null, effectiveFrom: '2000-01-01', incrementMinutes: 15, method: 'up', confirmRetroactive: true }, today: new Date().toISOString().slice(0, 10) });
@@ -123,6 +129,17 @@ run(async () => {
   const request = { dayZone: 'America/New_York', myZone: 'Europe/Lisbon', clientZone: 'America/New_York', includeEarnings: true, segmentShifts: {}, analytics: [] };
   r.xlsx = await inv('export_xlsx', { request });
   r.csv = await inv('export_csv', { request });
+  // Gap-fill round on the real backend.
+  const nyDay = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+  r.selCsv = await inv('export_csv', { request: { ...request, selection: [{ taskId: t.id, day: nyDay }] } });
+  try { await inv('export_csv', { request: { ...request, selection: [] } }); r.emptySel = 'accepted'; } catch (e) { r.emptySel = e.code; }
+  const twin = await inv('create_project', { input: { name: 'Same colour', color: '#DC2626', billable: true } });
+  r.twin = [twin.replacedFrom, twin.color];
+  await inv('stash_draft', { taskId: t.id, description: ${JSON.stringify(LIST)} });
+  await inv('clear_draft', { taskId: t.id });
+  try { await inv('request_remote_pause', { taskId: t.id }); r.pauseHere = 'accepted'; } catch (e) { r.pauseHere = e.code; }
+  const micaSnap = await inv('set_mica', { on: false });
+  r.mica = [micaSnap.prefs.mica, micaSnap.prefs.micaAvailable];
   // Phase 2 on the real backend: time away, corrections, billing, PDF, tags, backups.
   await inv('smoke_observe', { idle: 3600 });
   await wait(1100);
@@ -194,7 +211,12 @@ run(async () => {
   const exit1 = await withTimeout(app.exited, 15000);
   check('tray-style quit really exits', exit1 !== 'timeout' && exit1.code === 0, JSON.stringify(exit1));
   check('nothing syncs silently on first launch', r1.firstRunSyncPending === true && r1.firstRunTargets === 0);
-  check('first-run sync prompt is on screen', r1.promptShown === true);
+  check('a fresh store shows the setup wizard and not the old prompt', r1.setupPending === true && r1.oldPromptAlso === false);
+  check('finishing setup with defaults enables no sync and is not asked again', r1.setupAfter === false && r1.syncAfterSetup?.[0] === false && r1.syncAfterSetup?.[1] === 0, JSON.stringify(r1.syncAfterSetup));
+  check('an exact colour clash is replaced and reported by the real backend', r1.twin?.[0] === '#DC2626' && /^#[0-9a-f]{6}$/i.test(r1.twin?.[1] ?? '') && r1.twin[1].toLowerCase() !== '#dc2626', JSON.stringify(r1.twin));
+  check('a selected CSV says so, and an empty selection is refused', /selection/.test(readFileSync(r1.selCsv ?? '', 'utf8')) && r1.emptySel === 'validation', r1.emptySel);
+  check('a task running here cannot be asked to pause from here', r1.pauseHere === 'conflict', r1.pauseHere);
+  check('Mica is off and unavailable off Windows', r1.mica?.[0] === false && r1.mica?.[1] === false, JSON.stringify(r1.mica));
   check('backend rejects unknown task and blank name', r1.badStart === 'not_found' && r1.blankName === 'validation', `${r1.badStart} ${r1.blankName}`);
   check('cold launch: a blank description cannot start, and the launch stays cold', r1.coldBlankStart === 'validation' && r1.coldBefore === false, r1.coldBlankStart);
   check('first start turns the launch warm, with a copy source', r1.warmAfterStart === true && r1.copySource === 'Smoke task');

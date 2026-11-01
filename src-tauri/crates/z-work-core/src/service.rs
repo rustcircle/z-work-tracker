@@ -555,6 +555,18 @@ impl Service {
         let _ = crate::drafts::write(&dir, &BTreeMap::new());
     }
 
+    /// A fresh store, or a setup already under way. Someone who updated with data, or has already
+    /// answered the sync prompt, is not asked.
+    fn setup_pending(&self) -> bool {
+        let prefs = &self.file.prefs;
+        if prefs.setup_done {
+            return false;
+        }
+        let data = &self.file.data;
+        prefs.setup_step > 0
+            || (!prefs.sync_prompt_done && data.projects.is_empty() && data.tasks.is_empty())
+    }
+
     pub fn set_setup_step(&mut self, step: u32) -> Result<(), CoreError> {
         self.mutate(|f, _| {
             f.prefs.setup_step = step;
@@ -953,6 +965,7 @@ impl Service {
             return Err(CoreError::Validation("choose a folder".into()));
         }
         self.mutate(|f, _| {
+            setup_under_way(&mut f.prefs);
             f.prefs.sync_prompt_done = true;
             if !f.prefs.sync_targets.iter().any(|t| t.root == target.root) {
                 f.prefs.sync_targets.push(target);
@@ -1094,6 +1107,7 @@ impl Service {
         pending: Option<PendingCopy>,
     ) -> Result<(), CoreError> {
         let result = self.mutate(|f, _| {
+            setup_under_way(&mut f.prefs);
             f.prefs.sync_prompt_done = true;
             if let Some(old) = replacing {
                 f.prefs.sync_targets.retain(|t| t.root != old);
@@ -1448,7 +1462,7 @@ impl Service {
                 mica_available: self.mica_available,
             },
             setup: SetupView {
-                pending: !self.file.prefs.setup_done && !self.file.prefs.sync_prompt_done,
+                pending: self.setup_pending(),
                 step: self.file.prefs.setup_step,
             },
             pause_requests: self.file.data.pause_requests.values().cloned().collect(),
@@ -1519,6 +1533,13 @@ fn name_device(e: CoreError, devices: BTreeMap<String, RemoteDevice>) -> CoreErr
                 .map_or_else(|| "another device".to_owned(), |d| d.name.clone()),
         ),
         other => other,
+    }
+}
+
+/// Connecting a folder answers the sync prompt, which must not end a setup that is under way.
+fn setup_under_way(prefs: &mut crate::model::LocalPrefs) {
+    if !prefs.setup_done && !prefs.sync_prompt_done {
+        prefs.setup_step = prefs.setup_step.max(1);
     }
 }
 
@@ -2773,6 +2794,29 @@ mod tests {
             !open(dir.path(), &clock).snapshot().setup.pending,
             "shown once"
         );
+    }
+
+    #[test]
+    fn connecting_a_folder_during_setup_does_not_end_it_and_a_user_with_data_is_not_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.add_sync_target(SyncTarget {
+            provider: SyncProvider::Custom,
+            root: "/somewhere".into(),
+        })
+        .unwrap();
+        assert!(
+            s.snapshot().setup.pending,
+            "the rest of the steps are still owed"
+        );
+        s.finish_setup().unwrap();
+        assert!(!s.snapshot().setup.pending);
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = open(dir.path(), &clock);
+        s.create_project(&pinput("Mine")).unwrap();
+        assert!(!s.snapshot().setup.pending, "data from before the wizard");
     }
 
     #[test]
