@@ -53,6 +53,8 @@ pub struct Service {
     revision: u64,
     /// Words kept out of the store, by the id of the notice showing them.
     kept_out: BTreeMap<String, Kept>,
+    /// When this launch began. Nothing it had to write can have reached another device by then.
+    opened: Ts,
     /// Drafts put back at this launch, as stored, until something else replaces them.
     recovered: BTreeMap<String, Draft>,
     /// False on every real launch, until the first task of this launch has started. Never saved.
@@ -128,6 +130,7 @@ impl Service {
             color_replaced: None,
             mica_available: false,
             kept_out: BTreeMap::new(),
+            opened: now,
             recovered: BTreeMap::new(),
         };
         svc.file.data.seed_tags();
@@ -703,27 +706,31 @@ impl Service {
         self.notify("warning", message);
     }
 
-    /// Words put back at launch lose to a later edit from elsewhere when the first sync brings it, or to
-    /// the task being deleted. That stands, as any other edit does, and the words go in a notice rather
-    /// than vanish.
+    /// Words put back at launch lose to an edit from elsewhere, or to the task being deleted there, when a
+    /// sync brings that. It stands, as any other does, and the words go in a notice rather than vanish, if it
+    /// was done before this launch and so without them. From then on they are text like any other, which
+    /// another device may well go on from. A clock that is off moves that line by as much as it is off.
     fn check_recovered(&mut self) {
         if self.recovered.is_empty() {
             return;
         }
         let device = self.file.device_id.clone();
         for (task_id, draft) in std::mem::take(&mut self.recovered) {
-            let task = self.file.data.tasks.get(&task_id).filter(|t| t.is_live());
-            let because = match task {
-                None => KeptBecause::TaskGone,
-                Some(task) if task.description == draft.description => {
-                    self.recovered.insert(task_id, draft);
-                    continue;
-                }
-                Some(task) if task.description_stamp.by != device => KeptBecause::ChangedElsewhere,
-                Some(_) => continue,
+            let Some(task) = self.file.data.tasks.get(&task_id) else {
+                continue;
             };
-            self.keep_draft(&task_id, &draft, because);
-            let _ = self.save_kept();
+            let (stamp, because) = if task.is_live() {
+                (&task.description_stamp, KeptBecause::ChangedElsewhere)
+            } else {
+                (&task.deleted_stamp, KeptBecause::TaskGone)
+            };
+            let without_them = stamp.by != device && stamp.at <= self.opened;
+            if task.is_live() && task.description == draft.description {
+                self.recovered.insert(task_id, draft);
+            } else if without_them {
+                self.keep_draft(&task_id, &draft, because);
+                let _ = self.save_kept();
+            }
         }
     }
 
@@ -3551,6 +3558,66 @@ mod tests {
         let id = s.snapshot().notices[0].id.clone();
         s.dismiss_notice(&id);
         assert!(kept_words(dir.path()).is_empty());
+    }
+
+    /// Words put back at launch, and the other device has them too.
+    fn words_put_back_and_synced(
+        here: &Path,
+        there: &Path,
+        clock: &ManualClock,
+    ) -> (Service, Service, String) {
+        let (mut s, mut other, t) = two_devices(here, there, clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        clock.advance(2);
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let mut s = open(here, clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Typed here"));
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        (s, other, t)
+    }
+
+    #[test]
+    fn an_edit_made_after_the_launch_goes_on_from_words_put_back_and_tells_nothing() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = words_put_back_and_synced(here.path(), there.path(), &clock);
+        clock.advance(4 * 3600);
+        edited_elsewhere(&mut s, &mut other, &t, "Typed here, and on from it");
+        assert!(kept_notices(&s).is_empty());
+        assert!(kept_words(here.path()).is_empty());
+    }
+
+    #[test]
+    fn a_task_deleted_after_the_launch_with_words_put_back_in_it_tells_nothing() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = words_put_back_and_synced(here.path(), there.path(), &clock);
+        clock.advance(60);
+        s.delete_draft(&t).unwrap();
+        clock.advance(60);
+        let p = s.file().data.tasks[&t].project_id.clone();
+        other.create_task(&tinput("Another", &p)).unwrap();
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert!(kept_notices(&s).is_empty());
+    }
+
+    #[test]
+    fn a_task_deleted_elsewhere_after_the_launch_with_words_put_back_in_it_tells_nothing() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = words_put_back_and_synced(here.path(), there.path(), &clock);
+        clock.advance(60);
+        other.delete_draft(&t).unwrap();
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert!(!s.file().data.tasks[&t].is_live());
+        assert!(kept_notices(&s).is_empty());
     }
 
     #[test]
