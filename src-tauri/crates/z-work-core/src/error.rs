@@ -33,6 +33,8 @@ pub enum CoreError {
     FutureVersion { found: u64, supported: u64 },
     #[error("could not build spreadsheet: {0}")]
     Xlsx(String),
+    #[error("could not build the PDF: {0}")]
+    Pdf(String),
     #[error("data store is not available: {0}")]
     StoreUnavailable(String),
 }
@@ -48,7 +50,7 @@ impl CoreError {
             Self::Conflict(_) => "conflict",
             Self::Overlap(_) => "overlap",
             Self::ColdStartRequired => "cold_start_required",
-            Self::Io(_) | Self::Json(_) | Self::Xlsx(_) => "io",
+            Self::Io(_) | Self::Json(_) | Self::Xlsx(_) | Self::Pdf(_) => "io",
             Self::FutureVersion { .. } => "future_version",
             Self::StoreUnavailable(_) => "store_unavailable",
         }

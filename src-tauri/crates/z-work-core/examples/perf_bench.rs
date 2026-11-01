@@ -380,13 +380,13 @@ fn main() -> Res<()> {
     );
     record(
         "export pdf",
-        time(5, || pdf::build(&source, &pdf_request, None).unwrap()),
+        time(5, || pdf::build(&source, &pdf_request, None).unwrap().bytes),
     );
     let xlsx_bytes = xlsx::build(&source, &request)?;
     results
         .borrow_mut()
         .insert("xlsxBytes".into(), json!(xlsx_bytes.len()));
-    let pdf_bytes = pdf::build(&source, &pdf_request, None)?;
+    let pdf_bytes = pdf::build(&source, &pdf_request, None)?.bytes;
     results
         .borrow_mut()
         .insert("pdfBytes".into(), json!(pdf_bytes.len()));

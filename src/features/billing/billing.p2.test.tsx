@@ -301,10 +301,14 @@ describe('PDF timesheet', () => {
   it('says the character limit, shows the saved path, and Cancelled for a cancelled save', async () => {
     const user = userEvent.setup();
     const dialog = await openPdf(user);
-    expect(dialog.getByText('Text outside Western European characters prints as ?')).toBeVisible();
+    expect(dialog.getByText(/Latin, Greek and Cyrillic print as typed/)).toBeVisible();
     await user.click(dialog.getByRole('button', { name: 'Export PDF' }));
     expect(await dialog.findByTestId('pdf-result')).toHaveTextContent('Saved to /mock/timesheet-2026-03-01-to-2026-03-31.pdf');
-    vi.spyOn(api, 'exportPdf').mockResolvedValue(null);
+    expect(dialog.queryByTestId('pdf-unprintable')).toBeNull();
+    vi.spyOn(api, 'exportPdf').mockResolvedValueOnce({ path: '/mock/t.pdf', unprintable: ['日', '本'] });
+    await user.click(dialog.getByRole('button', { name: 'Export PDF' }));
+    expect(await dialog.findByTestId('pdf-unprintable')).toHaveTextContent('2 characters print as an empty box in this PDF, as its font has no glyph: 日 本.');
+    vi.spyOn(api, 'exportPdf').mockResolvedValue({ path: null, unprintable: ['日'] });
     await user.click(dialog.getByRole('button', { name: 'Export PDF' }));
     await waitFor(() => expect(dialog.getByTestId('pdf-result')).toHaveTextContent(/^Cancelled$/));
   });

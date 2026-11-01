@@ -1062,7 +1062,9 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
       if (!isZone(req.zone)) throw err('validation', `unknown time zone: ${req.zone}`);
       checkSelection(s, req.selection, req.zone);
       s.pdfExports.push(req);
-      return `/mock/timesheet-${req.from}-to-${req.to}.pdf`;
+      // The bundled font covers Latin, Greek and Cyrillic. The title stands in for all the printed text.
+      const unprintable = [...new Set([...req.title].filter((c) => /[\u0590-\u08ff\u3000-\u9fff\uac00-\ud7af]|\p{Extended_Pictographic}/u.test(c)))];
+      return { path: `/mock/timesheet-${req.from}-to-${req.to}.pdf`, unprintable };
     }
     case 'revert_shift_version': {
       const v = s.shifts.find((x) => x.id === a.versionId && !x.deleted);

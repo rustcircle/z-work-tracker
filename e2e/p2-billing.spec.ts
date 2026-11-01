@@ -549,7 +549,7 @@ test.describe('PDF timesheet', () => {
 
   test('sends the exact request: project, period, the client zone by default, title, prices and no logo', async ({ page }) => {
     const dialog = await openPdf(page);
-    await expect(dialog.getByText('Text outside Western European characters prints as ?')).toBeVisible();
+    await expect(dialog.getByText(/Latin, Greek and Cyrillic print as typed/)).toBeVisible();
     await dialog.getByLabel('Project', { exact: true }).selectOption({ label: 'Brand refresh' });
     await expect(dialog.getByLabel('Days are cut in')).toHaveValue('America/New_York');
     await expect(dialog.getByLabel('Title')).toHaveValue('Timesheet: Brand refresh');
@@ -614,7 +614,7 @@ test.describe('PDF timesheet', () => {
     await page.evaluate(() => {
       const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: unknown, options?: unknown) => Promise<unknown> } }).__TAURI_INTERNALS__;
       const original = internals.invoke;
-      internals.invoke = (cmd, args, options) => (cmd === 'export_pdf' ? Promise.resolve(null) : original(cmd, args, options));
+      internals.invoke = (cmd, args, options) => (cmd === 'export_pdf' ? Promise.resolve({ path: null, unprintable: [] }) : original(cmd, args, options));
     });
     await dialog.getByRole('button', { name: 'Export PDF' }).click();
     await expect(dialog.getByTestId('pdf-result')).toHaveText('Cancelled');

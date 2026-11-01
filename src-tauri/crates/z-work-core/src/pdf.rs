@@ -1,14 +1,16 @@
-//! A client-ready timesheet PDF, generated locally. Pure Rust, no network. Uses the standard Helvetica
-//! fonts, so text outside Windows-1252 prints as `?`; nothing else about the file depends on the OS.
+//! A client-ready timesheet PDF, generated locally. Pure Rust, no network. Text is printed with a
+//! bundled font cut down to this document, so it is selectable and copyable, and nothing about the
+//! file depends on the OS. What the font lacks prints as an empty box and is reported: see `pdffont`.
 
 use std::collections::BTreeMap;
 
 use chrono_tz::Tz;
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::billing::{cents_from_numerator, money};
 use crate::error::CoreError;
+use crate::pdffont::{Fonts, Weight};
 use crate::report::{ExportSource, hms};
 use crate::validate::parse_zone;
 
@@ -92,47 +94,24 @@ pub fn decode_logo(bytes: &[u8]) -> Result<Logo, CoreError> {
     })
 }
 
-/// Encodes to Windows-1252. Anything else becomes `?`, so the document stays valid.
-fn winansi(text: &str) -> Vec<u8> {
-    text.chars()
-        .map(|c| match c {
-            '\u{20}'..='\u{7e}' | '\u{a0}'..='\u{ff}' => u8::try_from(c as u32).unwrap_or(b'?'),
-            '€' => 0x80,
-            '‘' => 0x91,
-            '’' => 0x92,
-            '“' => 0x93,
-            '”' => 0x94,
-            '–' => 0x96,
-            '—' => 0x97,
-            '…' => 0x85,
-            _ => b'?',
-        })
-        .collect()
-}
-
-/// Cuts text to about `max` width at a font size, by Helvetica's average character width.
-fn fit(text: &str, width: f32, size: f32) -> String {
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let max = (width / (size * 0.5)) as usize;
-    if text.chars().count() <= max {
-        return text.to_owned();
-    }
-    let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
-}
-
 struct Writer {
     pages: Vec<Content>,
     y: f32,
+    fonts: Fonts,
+    /// What was printed, as typed, so tests read the document's text the way a reader would.
+    #[cfg(test)]
+    shown: Vec<String>,
 }
 
 impl Writer {
-    fn new() -> Self {
-        Self {
+    fn new() -> Result<Self, CoreError> {
+        Ok(Self {
             pages: vec![Content::new()],
             y: HEIGHT - MARGIN,
-        }
+            fonts: Fonts::new()?,
+            #[cfg(test)]
+            shown: Vec::new(),
+        })
     }
     #[expect(
         clippy::expect_used,
@@ -143,14 +122,15 @@ impl Writer {
             .last_mut()
             .expect("invariant: starts with a page")
     }
-    fn text(&mut self, x: f32, y: f32, font: &[u8], size: f32, text: &str) {
-        let bytes = winansi(text);
+    fn text(&mut self, x: f32, y: f32, weight: Weight, size: f32, text: &str) {
+        #[cfg(test)]
+        self.shown.push(text.to_owned());
+        let bytes = self.fonts.encode(weight, text);
         let c = self.page();
-        c.begin_text();
-        c.set_font(Name(font), size);
-        c.next_line(x, y);
-        c.show(Str(&bytes));
-        c.end_text();
+        show(c, x, y, weight, size, &bytes);
+    }
+    fn fit(&self, weight: Weight, text: &str, width: f32, size: f32) -> String {
+        self.fonts.fit(weight, text, width, size)
     }
     fn line(&mut self, y: f32) {
         let c = self.page();
@@ -169,6 +149,18 @@ impl Writer {
     }
 }
 
+fn show(c: &mut Content, x: f32, y: f32, weight: Weight, size: f32, encoded: &[u8]) {
+    let font: &[u8] = match weight {
+        Weight::Regular => b"Reg",
+        Weight::Bold => b"Bold",
+    };
+    c.begin_text();
+    c.set_font(Name(font), size);
+    c.next_line(x, y);
+    c.show(Str(encoded));
+    c.end_text();
+}
+
 struct Row {
     day: String,
     project: String,
@@ -177,12 +169,65 @@ struct Row {
     amount: String,
 }
 
+/// A finished timesheet, and the characters in it that the font could not draw.
+#[derive(Clone, Debug)]
+pub struct Timesheet {
+    pub bytes: Vec<u8>,
+    pub unprintable: Vec<char>,
+}
+
+/// What the export tells the UI after saving.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfSaved {
+    /// `None` when the user cancelled the save.
+    pub path: Option<String>,
+    /// Each printed as an empty box. They still copy as typed.
+    pub unprintable: Vec<String>,
+}
+
+/// The line printed on a timesheet with characters the font lacks, and shown at export.
+#[must_use]
+pub fn unprintable_note(chars: &[char]) -> Option<String> {
+    const SHOWN: usize = 5;
+    if chars.is_empty() {
+        return None;
+    }
+    let mut codes: Vec<String> = chars
+        .iter()
+        .take(SHOWN)
+        .map(|c| format!("U+{:04X}", u32::from(*c)))
+        .collect();
+    if chars.len() > SHOWN {
+        codes.push(format!("and {} more", chars.len() - SHOWN));
+    }
+    let count = chars.len();
+    let (noun, verb) = if count == 1 {
+        ("character", "prints")
+    } else {
+        ("characters", "print")
+    };
+    Some(format!(
+        "{count} {noun} {verb} as an empty box, as this font has no glyph: {}.",
+        codes.join(", ")
+    ))
+}
+
 /// Builds the timesheet. With `include_prices` off, no price appears anywhere in the file.
 pub fn build(
     source: &ExportSource,
     request: &PdfRequest,
     logo: Option<&Logo>,
-) -> Result<Vec<u8>, CoreError> {
+) -> Result<Timesheet, CoreError> {
+    Ok(render(source, request, logo)?.0)
+}
+
+/// The timesheet, with its printed text in tests.
+fn render(
+    source: &ExportSource,
+    request: &PdfRequest,
+    logo: Option<&Logo>,
+) -> Result<(Timesheet, Writer), CoreError> {
     let tz: Tz = parse_zone(&request.zone)?;
     let narrowed;
     let source = match &request.selection {
@@ -227,7 +272,7 @@ pub fn build(
         });
     }
 
-    let mut w = Writer::new();
+    let mut w = Writer::new()?;
     let title = if request.title.trim().is_empty() {
         "Timesheet"
     } else {
@@ -237,17 +282,12 @@ pub fn build(
     if logo.is_some() {
         top -= 60.0;
     }
-    w.text(
-        MARGIN,
-        top - 18.0,
-        b"Bold",
-        18.0,
-        &fit(title, WIDTH - 2.0 * MARGIN, 18.0),
-    );
+    let fitted = w.fit(Weight::Bold, title, WIDTH - 2.0 * MARGIN, 18.0);
+    w.text(MARGIN, top - 18.0, Weight::Bold, 18.0, &fitted);
     w.text(
         MARGIN,
         top - 36.0,
-        b"Reg",
+        Weight::Regular,
         10.0,
         &format!(
             "Period {} to {}. Days and times in {}.",
@@ -258,7 +298,7 @@ pub fn build(
         w.text(
             MARGIN,
             top - 50.0,
-            b"Reg",
+            Weight::Regular,
             10.0,
             &format!("Selection of {count} entries. Totals cover those only."),
         );
@@ -274,12 +314,12 @@ pub fn build(
     );
     let header = |w: &mut Writer, prices: bool| {
         let y = w.y;
-        w.text(col_day, y, b"Bold", 9.0, "Day");
-        w.text(col_project, y, b"Bold", 9.0, "Project");
-        w.text(col_task, y, b"Bold", 9.0, "Task");
-        w.text(col_hours, y, b"Bold", 9.0, "Time");
+        w.text(col_day, y, Weight::Bold, 9.0, "Day");
+        w.text(col_project, y, Weight::Bold, 9.0, "Project");
+        w.text(col_task, y, Weight::Bold, 9.0, "Task");
+        w.text(col_hours, y, Weight::Bold, 9.0, "Time");
         if prices {
-            w.text(col_amount, y, b"Bold", 9.0, "Amount");
+            w.text(col_amount, y, Weight::Bold, 9.0, "Amount");
         }
         w.line(y - 4.0);
         w.y -= ROW + 2.0;
@@ -290,18 +330,21 @@ pub fn build(
             header(&mut w, request.include_prices);
         }
         let y = w.y;
-        w.text(col_day, y, b"Reg", 9.0, &r.day);
-        w.text(col_project, y, b"Reg", 9.0, &fit(&r.project, 98.0, 9.0));
-        w.text(col_task, y, b"Reg", 9.0, &fit(&r.task, 164.0, 9.0));
-        w.text(col_hours, y, b"Reg", 9.0, &r.hours);
+        w.text(col_day, y, Weight::Regular, 9.0, &r.day);
+        let project = w.fit(Weight::Regular, &r.project, 98.0, 9.0);
+        w.text(col_project, y, Weight::Regular, 9.0, &project);
+        let task = w.fit(Weight::Regular, &r.task, 164.0, 9.0);
+        w.text(col_task, y, Weight::Regular, 9.0, &task);
+        w.text(col_hours, y, Weight::Regular, 9.0, &r.hours);
         if request.include_prices {
-            w.text(col_amount, y, b"Reg", 9.0, &fit(&r.amount, 100.0, 9.0));
+            let amount = w.fit(Weight::Regular, &r.amount, 100.0, 9.0);
+            w.text(col_amount, y, Weight::Regular, 9.0, &amount);
         }
         w.y -= ROW;
     }
     if rows.is_empty() {
         let y = w.y;
-        w.text(MARGIN, y, b"Reg", 10.0, "No time in this period.");
+        w.text(MARGIN, y, Weight::Regular, 10.0, "No time in this period.");
         w.y -= ROW;
     }
     w.ensure(ROW * 4.0);
@@ -310,7 +353,7 @@ pub fn build(
     w.text(
         MARGIN,
         y - 6.0,
-        b"Bold",
+        Weight::Bold,
         10.0,
         &format!("Total time: {}", hms(total_secs)),
     );
@@ -320,7 +363,7 @@ pub fn build(
         w.text(
             MARGIN,
             y,
-            b"Reg",
+            Weight::Regular,
             9.0,
             &format!("Includes pauses billed as work: {}", hms(pause_secs)),
         );
@@ -332,17 +375,38 @@ pub fn build(
         w.text(
             MARGIN,
             y,
-            b"Bold",
+            Weight::Bold,
             10.0,
             &format!("Total: {}", text.join(" + ")),
         );
         w.y -= ROW;
     }
 
-    Ok(assemble(w.pages, logo))
+    // Every name has been printed by now, so this says all there is to say.
+    let unprintable = w.fonts.missing();
+    if let Some(note) = unprintable_note(&unprintable) {
+        w.ensure(ROW * 2.0);
+        let y = w.y;
+        let note = w.fit(Weight::Regular, &note, WIDTH - 2.0 * MARGIN, 8.0);
+        w.text(MARGIN, y, Weight::Regular, 8.0, &note);
+        w.y -= ROW - 4.0;
+        let y = w.y;
+        w.text(
+            MARGIN,
+            y,
+            Weight::Regular,
+            8.0,
+            "Copying the text from this file gives them as typed, and the Excel and CSV exports show them.",
+        );
+        w.y -= ROW;
+    }
+
+    let bytes = assemble(&mut w, logo)?;
+    Ok((Timesheet { bytes, unprintable }, w))
 }
 
-fn assemble(pages: Vec<Content>, logo: Option<&Logo>) -> Vec<u8> {
+fn assemble(w: &mut Writer, logo: Option<&Logo>) -> Result<Vec<u8>, CoreError> {
+    let pages = std::mem::take(&mut w.pages);
     let mut pdf = Pdf::new();
     let catalog = Ref::new(1);
     let tree = Ref::new(2);
@@ -361,13 +425,6 @@ fn assemble(pages: Vec<Content>, logo: Option<&Logo>) -> Vec<u8> {
     pdf.pages(tree)
         .kids(ids.iter().map(|p| p.0))
         .count(i32::try_from(ids.len()).unwrap_or(i32::MAX));
-    pdf.type1_font(regular)
-        .base_font(Name(b"Helvetica"))
-        .encoding_predefined(Name(b"WinAnsiEncoding"));
-    pdf.type1_font(bold)
-        .base_font(Name(b"Helvetica-Bold"))
-        .encoding_predefined(Name(b"WinAnsiEncoding"));
-
     if let Some(l) = logo {
         let packed = miniz_oxide::deflate::compress_to_vec_zlib(&l.rgb, 6);
         let mut x = pdf.image_xobject(image, &packed);
@@ -394,15 +451,18 @@ fn assemble(pages: Vec<Content>, logo: Option<&Logo>) -> Vec<u8> {
             content.x_object(Name(b"Logo"));
             content.restore_state();
         }
-        let footer = winansi(&format!(
-            "Generated by zWorkTracker. Page {} of {page_count}.",
-            i + 1
-        ));
-        content.begin_text();
-        content.set_font(Name(b"Reg"), 8.0);
-        content.next_line(MARGIN, MARGIN - 18.0);
-        content.show(Str(&footer));
-        content.end_text();
+        let footer = format!("Generated by zWorkTracker. Page {} of {page_count}.", i + 1);
+        #[cfg(test)]
+        w.shown.push(footer.clone());
+        let encoded = w.fonts.encode(Weight::Regular, &footer);
+        show(
+            &mut content,
+            MARGIN,
+            MARGIN - 18.0,
+            Weight::Regular,
+            8.0,
+            &encoded,
+        );
         let stream = content.finish();
         pdf.stream(content_ref, stream.as_slice());
         let mut page = pdf.page(page_ref);
@@ -418,7 +478,9 @@ fn assemble(pages: Vec<Content>, logo: Option<&Logo>) -> Vec<u8> {
             res.x_objects().pair(Name(b"Logo"), image);
         }
     }
-    pdf.finish()
+    // Last, since each page's footer can still add to what the fonts must hold.
+    w.fonts.embed(&mut pdf, regular, bold, &mut alloc)?;
+    Ok(pdf.finish())
 }
 
 #[cfg(test)]
@@ -429,6 +491,26 @@ mod tests {
 
     fn contains(hay: &[u8], needle: &[u8]) -> bool {
         hay.windows(needle.len()).any(|w| w == needle)
+    }
+    /// Everything the document prints, in order.
+    fn text(source: &ExportSource, request: &PdfRequest) -> String {
+        render(source, request, None).unwrap().1.shown.join("\n")
+    }
+    /// The code points of every `ToUnicode` map: what a reader can get out of the file by copying.
+    fn copyable(bytes: &[u8]) -> Vec<u32> {
+        let raw = String::from_utf8_lossy(bytes);
+        let mut out = Vec::new();
+        for block in raw.split("beginbfchar").skip(1) {
+            let body = block.split("endbfchar").next().unwrap();
+            for line in body.lines() {
+                let hex = line.rsplit(['<', ' ']).next().unwrap_or("");
+                let hex = hex.trim_end_matches('>');
+                if let Ok(v) = u32::from_str_radix(hex, 16) {
+                    out.push(v);
+                }
+            }
+        }
+        out
     }
     fn src(n: usize) -> ExportSource {
         let (mut s, _, t) = fixture(None);
@@ -460,10 +542,11 @@ mod tests {
 
     #[test]
     fn it_is_a_pdf_naming_the_zone_with_a_total() {
-        let b = build(&src(2), &req(true), None).unwrap();
+        let b = build(&src(2), &req(true), None).unwrap().bytes;
         assert!(b.starts_with(b"%PDF-"));
-        assert!(contains(&b, b"America/New_York"));
-        assert!(contains(&b, b"Total time"));
+        let t = text(&src(2), &req(true));
+        assert!(t.contains("America/New_York"));
+        assert!(t.contains("Total time"));
         if let Ok(path) = std::env::var("ZWT_SAMPLE_PDF") {
             std::fs::write(path, &b).unwrap();
         }
@@ -471,27 +554,143 @@ mod tests {
 
     #[test]
     fn with_prices_off_no_money_appears() {
-        let b = build(&src(2), &req(false), None).unwrap();
-        assert!(!contains(&b, b"Amount"));
-        assert!(!contains(&b, b"Total:"));
-        for currency_mark in [&[0x80u8][..], b"$", b"EUR", b"USD"] {
-            // The first bytes are the binary marker comment every PDF header carries.
-            assert!(!contains(&b[16..], currency_mark), "{currency_mark:?}");
+        let t = text(&src(2), &req(false));
+        assert!(!t.contains("Amount"));
+        assert!(!t.contains("Total:"));
+        for mark in ["\u{20ac}", "$", "EUR", "USD"] {
+            assert!(!t.contains(mark), "{mark}");
         }
+        // Nor can a reader copy one out of the file: the font holds only what was printed.
+        let b = build(&src(2), &req(false), None).unwrap().bytes;
+        let codes = copyable(&b);
+        assert!(!codes.is_empty(), "the map of copyable text was read");
+        assert!(
+            !codes.contains(&0x24) && !codes.contains(&0x20ac),
+            "{codes:?}"
+        );
     }
 
     #[test]
     fn long_timesheets_paginate() {
-        let b = build(&src(120), &req(true), None).unwrap();
-        assert!(contains(&b, b"Page 3 of"));
+        assert!(text(&src(120), &req(true)).contains("Page 3 of"));
+    }
+
+    fn named(task: &str, project: &str) -> ExportSource {
+        let (mut s, p, t) = fixture(None);
+        s.projects.get_mut(&p).unwrap().name = project.to_owned();
+        s.tasks.get_mut(&t).unwrap().name = task.to_owned();
+        seg(
+            &mut s,
+            &t,
+            "a",
+            "2026-03-01T09:00:00Z",
+            "2026-03-01T10:00:00Z",
+        );
+        source(s, "2026-04-01T00:00:00Z")
     }
 
     #[test]
-    fn text_outside_the_font_prints_as_a_question_mark_and_never_breaks_the_file() {
-        assert_eq!(
-            winansi("Ação €5 日本"),
-            [b'A', 0xe7, 0xe3, b'o', b' ', 0x80, b'5', b' ', b'?', b'?']
+    fn greek_cyrillic_and_accents_print_with_no_warning_and_can_be_copied() {
+        let src = named("Ωμέγα Привет", "Ação Łódź");
+        let doc = build(&src, &req(true), None).unwrap();
+        assert!(doc.unprintable.is_empty());
+        let t = text(&src, &req(true));
+        assert!(t.contains("Ωμέγα Привет") && t.contains("Ação Łódź"));
+        assert!(!t.contains("empty box"));
+        let codes = copyable(&doc.bytes);
+        for c in "ΩПçŁ".chars() {
+            assert!(codes.contains(&u32::from(c)), "{c}");
+        }
+    }
+
+    #[test]
+    fn what_the_font_lacks_is_named_on_the_page_and_returned_and_still_copies() {
+        let src = named("日本語 שלום", "😀");
+        let doc = build(&src, &req(true), None).unwrap();
+        for c in ['日', '本', 'ש', '😀'] {
+            assert!(doc.unprintable.contains(&c), "{c}");
+        }
+        let t = text(&src, &req(true));
+        assert!(t.contains("print as an empty box"), "{t}");
+        assert!(t.contains("U+05E9"), "{t}");
+        let widest = Fonts::new().unwrap();
+        for line in t.lines().filter(|l| l.contains("empty box")) {
+            assert!(widest.measure(Weight::Regular, line, 8.0) <= WIDTH - 2.0 * MARGIN);
+        }
+        assert!(!t.contains('?'), "never a question mark: {t}");
+        let codes = copyable(&doc.bytes);
+        assert!(codes.contains(&0x65e5), "日 copies as typed");
+        // An emoji is outside the 16-bit range, so its map entry is a surrogate pair.
+        assert!(
+            codes.contains(&0xd83d_de00),
+            "😀 copies as typed: {codes:?}"
         );
+    }
+
+    /// Real extraction and a rendered page are in `scripts/verify_pdf.py`, which reads this file.
+    #[test]
+    fn the_mixed_script_sample_builds_and_is_written_when_asked() {
+        let (mut s, p, _) = fixture(None);
+        let c = crate::machine::tests::ctx("2026-01-01T00:00:00Z");
+        s.projects.get_mut(&p).unwrap().name = "Ελληνικά Client".into();
+        for (i, (name, day)) in [
+            ("Ωμέγα αρχείο", 2),
+            ("Отчёт за март", 3),
+            ("Ação Łódź naïve Škoda", 4),
+            ("Cafe\u{301} decomposed", 5),
+            ("日本語の作業", 6),
+            ("한국어 中文", 7),
+            ("שלום Hebrew", 8),
+            ("مرحبا Arabic", 9),
+            ("Launch 😀👍🏽 prep", 10),
+            (
+                "Long name Ωμέγα Привет Ação that must be cut to fit its column on the page",
+                11,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let t = s
+                .create_task(&c, &crate::machine::tests::task_input(name, &p))
+                .unwrap();
+            seg(
+                &mut s,
+                &t,
+                &format!("m{i}"),
+                &format!("2026-03-{day:02}T09:00:00Z"),
+                &format!("2026-03-{day:02}T10:00:00Z"),
+            );
+        }
+        let src = source(s, "2026-04-01T00:00:00Z");
+        let request = PdfRequest {
+            title: "Timesheet Ωμέγα Привет Ação 日本語".into(),
+            ..req(true)
+        };
+        let doc = build(&src, &request, None).unwrap();
+        assert!(doc.unprintable.contains(&'日'));
+        assert!(!doc.unprintable.contains(&'Ω'));
+        if let Ok(path) = std::env::var("ZWT_SAMPLE_UNICODE_PDF") {
+            std::fs::write(path, &doc.bytes).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_warning_counts_and_cuts_a_long_list() {
+        assert_eq!(unprintable_note(&[]), None);
+        assert_eq!(
+            unprintable_note(&['日']).unwrap(),
+            "1 character prints as an empty box, as this font has no glyph: U+65E5."
+        );
+        let many: Vec<char> = ('一'..='十').take(10).collect();
+        assert!(unprintable_note(&many).unwrap().ends_with("and 5 more."));
+    }
+
+    #[test]
+    fn the_same_data_gives_the_same_file() {
+        let a = build(&src(3), &req(true), None).unwrap().bytes;
+        let b = build(&src(3), &req(true), None).unwrap().bytes;
+        assert_eq!(a, b);
     }
 
     #[test]
@@ -518,7 +717,8 @@ mod tests {
             },
             Some(&logo),
         )
-        .unwrap();
+        .unwrap()
+        .bytes;
         assert!(contains(&b, b"/Logo"));
         assert!(decode_logo(b"not a png").is_err());
     }
@@ -559,10 +759,12 @@ mod tests {
             }]),
             ..req(true)
         };
-        let bytes = build(&src, &request, None).unwrap();
-        assert!(contains(&bytes, b"Selection of 1 entries"));
+        let t = text(&src, &request);
+        assert!(t.contains("Selection of 1 entries"));
+        assert!(!t.contains("Secret"));
+        assert!(!t.contains("2026-03-02"));
+        let bytes = build(&src, &request, None).unwrap().bytes;
         assert!(!contains(&bytes, b"Secret"));
-        assert!(!contains(&bytes, b"2026-03-02"));
         let empty = PdfRequest {
             selection: Some(Vec::new()),
             ..req(true)

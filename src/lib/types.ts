@@ -311,6 +311,12 @@ export interface PdfRequest {
   selection: SelectedEntry[] | null;
 }
 
+/** What a PDF export reports: where it went (null when cancelled), and what prints as an empty box. */
+export interface PdfSaved {
+  path: string | null;
+  unprintable: string[];
+}
+
 export interface ManualEntryInput {
   taskId: string;
   start: string;

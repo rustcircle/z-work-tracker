@@ -1030,7 +1030,7 @@ fn export_pdf(
     app: AppHandle,
     core: CoreState<'_>,
     request: PdfRequest,
-) -> CmdResult<Option<String>> {
+) -> CmdResult<pdf::PdfSaved> {
     let svc = core.svc()?;
     let (source, dir) = {
         let s = guard(&svc);
@@ -1044,9 +1044,13 @@ fn export_pdf(
     } else {
         None
     };
-    let bytes = pdf::build(&source, &request, logo.as_ref())?;
+    let sheet = pdf::build(&source, &request, logo.as_ref())?;
     let name = format!("timesheet-{}-to-{}.pdf", request.from, request.to);
-    save_via_dialog(&app, &name, "PDF document", "pdf", &bytes)
+    let path = save_via_dialog(&app, &name, "PDF document", "pdf", &sheet.bytes)?;
+    Ok(pdf::PdfSaved {
+        path,
+        unprintable: sheet.unprintable.iter().map(char::to_string).collect(),
+    })
 }
 
 /// Keeps a checked copy of the logo in the data folder. It stays on this computer.

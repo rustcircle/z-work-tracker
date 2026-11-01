@@ -11,6 +11,7 @@ import type {
   ManualEntryInput,
   PauseInput,
   PdfRequest,
+  PdfSaved,
   SavedColor,
   SummaryPreview,
   SummaryRequest,
@@ -99,7 +100,7 @@ export const api = {
   setDevicePrefix: (prefix: string) => invoke<Snapshot>('set_device_prefix', { prefix }),
   exportSummaryCsv: (id: string) => invoke<string | null>('export_summary_csv', { id }),
   // PDF timesheet and its logo (PNG, kept on this computer only).
-  exportPdf: (request: PdfRequest) => invoke<string | null>('export_pdf', { request }),
+  exportPdf: (request: PdfRequest) => invoke<PdfSaved>('export_pdf', { request }),
   pickPdfLogo: () => invoke<Snapshot>('pick_pdf_logo'),
   clearPdfLogo: () => invoke<Snapshot>('clear_pdf_logo'),
   // Backups and reminders.

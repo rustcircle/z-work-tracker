@@ -242,7 +242,7 @@ The preview tells you about time away you haven't answered yet. It's left out of
 
 ### Timesheet PDF
 
-A local PDF for a period, with or without prices, in the client's zone, with your logo (PNG) if you add one. It's built on this computer by a Rust library with no network access. It uses a built-in Latin font, so characters outside Windows-1252, such as Japanese or Greek, print as `?`. Only the Excel and CSV exports hold those characters as you typed them.
+A local PDF for a period, with or without prices, in the client's zone, with your logo (PNG) if you add one. It's built on this computer by a Rust library with no network access. Its text is set in Noto Sans, which ships with the app, and each PDF embeds only the characters it prints, so text stays selectable and copyable. Latin, Greek and Cyrillic print as typed. Japanese, Chinese, Korean, Hebrew, Arabic and emoji have no glyph in that font: each prints as an empty box, never as `?`. The export then says which on screen and on the timesheet, and copying from the PDF still gives them as typed. The Excel and CSV exports show them normally.
 
 ### Quote helper
 
@@ -609,7 +609,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 | The app seems gone after closing | It's in the tray; check the overflow arrow. Only tray **Quit** exits. |
 | Time kept running overnight | The app asks about a sleep or idle time when you return, and it counts nowhere until you answer. Answer **Drop**, or correct the segment. |
 | A summary won't let me answer about time away | That segment is on a billing summary. Void the summary, answer, then create it again. |
-| A PDF shows `?` | The PDF's built-in font covers Latin text only. Use the Excel or CSV export for other scripts. |
+| A PDF shows empty boxes | The PDF's font covers Latin, Greek and Cyrillic. Use the Excel or CSV export for other scripts and emoji. |
 | Sync folder not detected | Use **Choose another folder**. Only common "My Drive" language variants are detected. |
 | A sync folder shows an error | Check the desktop client is running and the drive is connected. Local data and other folders are unaffected. |
 | "Written to folder" but another PC has no data | The desktop client may still be uploading. |
@@ -640,7 +640,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 - Idle reading (`user-idle`) has not run on Windows. After a wake it could report idle time spanning the sleep; the code clamps that, tested with injected values only.
 - The reminder and budget notifications come from the system's notification service, not run on Windows.
 - A restore with sync on merges newer records back, and the app warns about that.
-- The PDF prints characters outside Windows-1252 as `?`.
+- The PDF prints Japanese, Chinese, Korean, Hebrew, Arabic and emoji as empty boxes, and warns when it does. A font covering CJK would add about 10.8 MB to the installer, against about 0.35 MB for Noto Sans. Right-to-left text isn't laid out as such: its boxes sit on a left-to-right line.
 - A correction made on another device before a summary syncs lands on billed time; the summary keeps its frozen numbers.
 - In a selected Excel export, a part cut from a segment that crosses midnight shows the whole segment's split in the Shift column, including time on the day left out. Its Exact and amounts cover the selected part only.
 - Description edits on an existing task are stashed in a small local file about 300 ms after each change, and recovered at the next launch, once, with a notice, if newer than what was saved. The new-task form isn't covered, and nothing typed in the last 300 ms is.
@@ -650,7 +650,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 
 ## Roadmap
 
-The approved phase 2 list is built, and is described in the [User guide](#user-guide). The performance pass is done; see [Performance](#performance). The gap-fill round is done apart from these: full Unicode in the PDF (it needs a bundled font, which hasn't been chosen or downloaded, so characters outside Windows-1252 still print as `?`) and the macOS lock signal.
+The approved phase 2 list is built, and is described in the [User guide](#user-guide). The performance pass is done; see [Performance](#performance). The gap-fill round is done apart from these: CJK, right-to-left and emoji in the PDF (see above), and the macOS lock signal.
 
 ## Third-party data licences
 

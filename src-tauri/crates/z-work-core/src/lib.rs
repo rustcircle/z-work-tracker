@@ -23,6 +23,7 @@ pub mod machine;
 pub mod merge;
 pub mod model;
 pub mod pdf;
+mod pdffont;
 pub mod persist;
 pub mod pieces;
 pub mod reminder;

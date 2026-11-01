@@ -170,7 +170,8 @@ run(async () => {
   const bill = await inv('create_summary', { request: period });
   r.reference = bill.snapshot.billing.summaries[0]?.reference;
   r.summaryCsv = await inv('export_summary_csv', { id: bill.id });
-  r.pdf = await inv('export_pdf', { request: { projectId: p.id, from: day(4), to: day(2), zone: 'UTC', title: 'Smoke', includePrices: true } });
+  r.pdfSaved = await inv('export_pdf', { request: { projectId: p.id, from: day(4), to: day(2), zone: 'UTC', title: 'Smoke Ωμέγα 日本', includePrices: true } });
+  r.pdf = r.pdfSaved.path;
   const tag = await inv('save_tag', { input: { name: 'Painted', color: '#ABCDEF' } });
   r.tagColor = tag.snapshot.tags.find((x) => x.id === tag.id)?.color;
   try { await inv('save_tag', { input: { name: 'Bad', color: 'red' } }); r.badTag = 'accepted'; } catch (e) { r.badTag = e.code; }
@@ -245,7 +246,8 @@ run(async () => {
   const billCsv = existsSync(r1.summaryCsv ?? '') ? readFileSync(r1.summaryCsv, 'utf8') : '';
   check('the summary CSV says it is not a tax document', /not a tax document/i.test(billCsv));
   const pdf = existsSync(r1.pdf ?? '') ? readFileSync(r1.pdf) : Buffer.alloc(0);
-  check('a PDF timesheet is written locally', pdf.subarray(0, 5).toString() === '%PDF-' && pdf.includes('Smoke'));
+  check('a PDF timesheet is written locally, with its font embedded and a map for copying', pdf.subarray(0, 5).toString() === '%PDF-' && pdf.includes('NotoSans-Regular') && pdf.includes('/ToUnicode'));
+  check('the export names what the font lacks, and only that', JSON.stringify(r1.pdfSaved?.unprintable) === JSON.stringify(['日', '本']));
   check('tag colours are stored canonical and others refused', r1.tagColor === '#abcdef' && r1.badTag === 'validation', JSON.stringify([r1.tagColor, r1.badTag]));
 
   // Run 2: relaunch. Data and theme persist; start a task and get killed, simulating a crash.

@@ -12,7 +12,7 @@ import { PeriodPicker, defaultPeriod, zoneChoices } from '../billing/parts';
 import '../billing/billing.css';
 import { errorMessage } from '../../lib/errorMessage';
 
-export const PDF_CHARACTER_NOTE = 'Text outside Western European characters prints as ?';
+export const PDF_CHARACTER_NOTE = 'Latin, Greek and Cyrillic print as typed. Other scripts, such as Japanese or Arabic, and emoji print as an empty box, and the export says when.';
 
 export interface PdfForm {
   projectId: string;
@@ -31,7 +31,7 @@ export interface PdfForm {
   /** Set while exporting the selected Timeline entries: project, period and zone then come from the selection. */
   selected: PdfSelection | null;
   busy: boolean;
-  result: { path: string | null } | null;
+  result: { path: string | null; unprintable: string[] } | null;
   error: string | null;
   run: () => Promise<void>;
   logoBusy: boolean;
@@ -57,7 +57,7 @@ export function usePdfForm(selected: PdfSelection | null = null): PdfForm {
   const [pricesChoice, setPricesChoice] = useState<boolean | null>(null);
   const [logoChoice, setLogoChoice] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState<{ key: string; path: string | null } | null>(null);
+  const [done, setDone] = useState<{ key: string; path: string | null; unprintable: string[] } | null>(null);
   const [failed, setFailed] = useState<{ key: string; text: string } | null>(null);
   const [logoBusy, setLogoBusy] = useState(false);
   const [logoError, setLogoError] = useState<string | null>(null);
@@ -79,8 +79,7 @@ export function usePdfForm(selected: PdfSelection | null = null): PdfForm {
     setDone(null);
     setFailed(null);
     try {
-      const path = await api.exportPdf(request);
-      setDone({ key, path });
+      setDone({ key, ...(await api.exportPdf(request)) });
     } catch (e) {
       setFailed({ key, text: errorMessage(e) });
     } finally {
@@ -118,7 +117,7 @@ export function usePdfForm(selected: PdfSelection | null = null): PdfForm {
     setUseLogo: setLogoChoice,
     request,
     busy,
-    result: done && done.key === key ? { path: done.path } : null,
+    result: done && done.key === key ? { path: done.path, unprintable: done.unprintable } : null,
     error: failed && failed.key === key ? failed.text : null,
     run,
     selected,
@@ -222,6 +221,12 @@ export function PdfFields({ form }: { form: PdfForm }) {
             Cancelled
           </p>
         ))}
+      {form.result?.path && form.result.unprintable.length > 0 && (
+        <p className="bl-error" role="alert" data-testid="pdf-unprintable">
+          {form.result.unprintable.length === 1 ? '1 character prints' : `${form.result.unprintable.length} characters print`} as an empty box in this PDF, as its font has no glyph: {form.result.unprintable.slice(0, 20).join(' ')}
+          {form.result.unprintable.length > 20 ? ' and more' : ''}. Copying the text from the PDF still gives them, and the Excel and CSV exports show them.
+        </p>
+      )}
     </div>
   );
 }
