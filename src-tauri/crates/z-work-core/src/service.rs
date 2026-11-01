@@ -3749,6 +3749,44 @@ mod tests {
         assert!(s.snapshot().notices.is_empty());
     }
 
+    /// A known limitation, in the README: a save checks only against what has reached its own PC. If this
+    /// behaviour changes, so does that entry.
+    #[test]
+    fn two_pcs_saving_one_field_before_a_sync_keep_the_later_save_and_say_nothing() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let base = s.file().data.tasks[&t].description.clone();
+        let expected = TaskExpected {
+            description: Some(base),
+            ..TaskExpected::default()
+        };
+        let save = |svc: &mut Service, words: &str| {
+            let patch = TaskPatch {
+                description: Some(doc(words)),
+                ..TaskPatch::default()
+            };
+            svc.patch_task(&t, &patch, &expected).unwrap().conflicts
+        };
+        clock.advance(5);
+        assert!(save(&mut s, "Words on this PC").is_empty());
+        clock.advance(5);
+        assert!(save(&mut other, "Words on the other PC").is_empty());
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert_eq!(
+            s.file().data.tasks[&t].description,
+            doc("Words on the other PC")
+        );
+        assert_eq!(
+            other.file().data.tasks[&t].description,
+            doc("Words on the other PC")
+        );
+        assert!(s.snapshot().notices.is_empty());
+        assert!(other.snapshot().notices.is_empty());
+    }
+
     #[test]
     fn a_merge_landing_between_the_read_and_the_save_is_refused_at_the_write() {
         let here = tempfile::tempdir().unwrap();
