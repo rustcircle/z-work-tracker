@@ -690,7 +690,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 **Verified only on macOS or against a mock.**
 
 - Every phase 2 screen is tested against the mock, which reimplements the backend's rules in TypeScript and can drift from them. The native smoke script runs time away, manual entries, corrections, billing, the PDF, tag colours and backup restore against the real backend by calling its commands, without clicking those screens. The real file dialogs and clipboard weren't exercised.
-- Warm copy, cold form, cold Resume and inline editing UI are tested against the mock. The native smoke script checks the backend rules and the tray route against the real backend.
+- Warm copy, cold form and cold Resume UI are tested against the mock, and inline editing mostly is, with the mock and the Rust core held to one table for `patch_task`. The native smoke script checks the backend rules and the tray route against the real backend, and types into the real inline editor to meet a conflict, with Done, Discard and the banner.
 - Real backend, webview and exit paths were tested on macOS with the native smoke script, which doesn't click the real tray icon. Tray icon appearance is unverified.
 - The real OneDrive and Google Drive clients have not been exercised. Detection is tested with an injected environment.
 - Most UI flows are tested with Playwright against the IPC mock.

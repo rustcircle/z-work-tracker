@@ -37,7 +37,7 @@ export function Banners({ children }: { children?: ReactNode }) {
       {snapshot.notices.map((n) => (
         <div key={n.id} className={`banner ${n.level === 'warning' ? 'banner-warning' : 'banner-info'}`} role="status" data-testid="notice">
           {n.level === 'warning' ? <IconWarn /> : <IconInfo />}
-          <span>{n.message}</span>
+          <span className="banner-long">{n.message}</span>
           <button type="button" className="icon-btn" aria-label={`Dismiss notice: ${n.message}`} onClick={() => void act(() => api.dismissNotice(n.id))}>
             <IconClose />
           </button>

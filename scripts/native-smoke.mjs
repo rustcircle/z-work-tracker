@@ -333,15 +333,16 @@ run(async () => {
   check('one backup file exists', existsSync(join(dataDir, 'z-work-data.json.bak')));
 
   // Run 4: words that met newer text, on the real backend. First a draft left over a description another device
-  // has changed since, stamped older than the draft, which the launch must not put over it.
+  // has changed since, stamped older than the draft, which the launch must not put over it. The old rule would have.
   store = readStore();
   const heldTask = Object.values(store.data.tasks).find((t) => t.name === 'Smoke task');
   const para = (text) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
   const iso = (ago) => new Date(Date.now() - ago * 1000).toISOString().slice(0, 19) + 'Z';
   heldTask.description = para('Text from another device');
-  heldTask.descriptionStamp = { at: iso(120), by: 'another-device' };
+  // Later than this device's own synced copy of the task, or the first sync would merge that back over it.
+  heldTask.descriptionStamp = { at: iso(2), by: 'another-device' };
   writeFileSync(join(dataDir, 'z-work-data.json'), JSON.stringify(store));
-  writeFileSync(join(dataDir, 'z-work-drafts.json'), JSON.stringify({ [heldTask.id]: { description: para('Words before the restart'), at: iso(60), base: LIST } }));
+  writeFileSync(join(dataDir, 'z-work-drafts.json'), JSON.stringify({ [heldTask.id]: { description: para('Words before the restart'), at: iso(1), base: LIST } }));
   out = join(work, 'r4.json');
   app = launch(exe, `
 const para = (text) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
@@ -361,7 +362,6 @@ run(async () => {
   r.replayKept = has(t.description, 'Text from another device') && !has(t.description, 'Words before the restart');
   r.replayNotices = s.notices.map((n) => n.message);
   await until(() => /Words before the restart/.test(document.body.innerText), 'the words on screen in a notice');
-  r.draftsAfterLaunch = await inv('get_snapshot').then(() => true);
 
   // The command: per field, what is stored comes back, and the rest of the patch goes.
   const stale = para('What an editor last showed');
