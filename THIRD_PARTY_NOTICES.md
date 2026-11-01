@@ -9,6 +9,7 @@ zWorkTracker is MIT licensed (see `LICENSE`). It includes or is built with the c
 | Time zone boundaries in `@photostructure/tz-lookup`, derived from [timezone-boundary-builder](https://github.com/evansiroky/timezone-boundary-builder) | Package: CC0-1.0. Source boundaries: derived from OpenStreetMap, © OpenStreetMap contributors, Open Database License (ODbL) | Map click to time zone | **ODbL is not an OSI licence.** See below |
 | [Natural Earth](https://www.naturalearthdata.com/) country outlines in `world-atlas` | Data: public domain. Package: ISC, © Michael Bostock | Map outlines | |
 | IANA Time Zone Database in `chrono-tz` and `src/generated/tzdata.json` | Data: public domain. `chrono-tz`: MIT OR Apache-2.0 | Time zone rules | |
+| [Noto Sans](https://github.com/notofonts/latin-greek-cyrillic) 2.015, Regular and Bold, © 2022 The Noto Project Authors | SIL Open Font License 1.1, no Reserved Font Name | Text of the PDF timesheet. A subset goes into each PDF | Licence text in `src-tauri/crates/z-work-core/fonts/OFL.txt`, installed as `licenses/NotoSans-OFL.txt`. Source and checksums in `fonts/SOURCE.md` beside it |
 
 ### The ODbL question
 
@@ -27,10 +28,10 @@ All boundary lookups go through one file, `src/features/zones/geo.ts`, and the m
 
 ## Libraries
 
-**Rust (shipped):** Tauri and its plugins, chrono, chrono-tz, rust_xlsxwriter, pdf-writer, png, miniz_oxide, user-idle, winreg, serde and their dependencies, under MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, Unlicense, MPL-2.0 and Unicode-3.0, each as declared by the crate.
+**Rust (shipped):** Tauri and its plugins, chrono, chrono-tz, rust_xlsxwriter, pdf-writer, subsetter, ttf-parser, png, miniz_oxide, user-idle, winreg, serde and their dependencies, under MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, Unlicense, MPL-2.0 and Unicode-3.0, each as declared by the crate.
 
 **JavaScript (shipped):** React, TipTap, ProseMirror, `@tauri-apps/api`, `topojson-client` and their dependencies, under MIT, ISC, Apache-2.0 OR MIT and CC0-1.0.
 
 ## Not bundled
 
-Fonts come from the operating system (Segoe UI, Cascadia Mono), and none ship with the app. The app icon and interface icons were drawn for this project. The WebView2 Runtime is part of Windows 11 and isn't redistributed.
+The interface's fonts come from the operating system (Segoe UI, Cascadia Mono). The only bundled font is the PDF one above. The app icon and interface icons were drawn for this project. The WebView2 Runtime is part of Windows 11 and isn't redistributed.

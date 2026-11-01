@@ -62,6 +62,11 @@
     "category": "Productivity",
     "shortDescription": "Labor hours tracker",
     "longDescription": "Local-first tracker of labor hours by project and task, with timeline, analysis and spreadsheet exports.",
+    "resources": {
+      "../LICENSE": "licenses/LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "crates/z-work-core/fonts/OFL.txt": "licenses/NotoSans-OFL.txt"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
