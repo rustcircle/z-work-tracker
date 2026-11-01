@@ -116,3 +116,141 @@ test.describe('Discard my words', () => {
     });
   }
 });
+
+// The gate's probes, in a real browser with real mouse and keyboard events.
+test.describe('words that meet newer text', () => {
+  const DOC = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'From another device' }] }] };
+  async function arrive(page: Page): Promise<void> {
+    await page.evaluate(async (doc) => {
+      const task = window.__mock.tasks.find((t) => t.id === 't-guide');
+      if (task) task.description = doc;
+      await window.__mockEmit('state-changed');
+    }, DOC);
+  }
+  const stored = (page: Page) => page.evaluate(() => JSON.stringify(window.__mock.tasks.find((t) => t.id === 't-guide')?.description));
+  const editor = (page: Page) => page.getByRole('form', { name: 'Editing Brand guidelines' });
+
+  async function typedThenNewer(page: Page): Promise<Locator> {
+    await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
+    const form = editor(page);
+    await form.getByRole('textbox', { name: 'Description' }).click();
+    await page.keyboard.type(' mine');
+    await arrive(page);
+    return form;
+  }
+  const settled = async (page: Page) => {
+    for (let i = 0; i < 3; i++) {
+      await page.clock.runFor(500);
+      await page.waitForTimeout(100);
+    }
+  };
+  const heldOpen = async (page: Page, form: Locator) => {
+    expect(await stored(page)).toContain('From another device');
+    expect(await stored(page)).not.toContain('mine');
+    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
+  };
+
+  test('a clean editor shows newer text, and typing goes on from it', async ({ page }) => {
+    await open(page, 'seed=demo');
+    await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
+    const form = editor(page);
+    const box = form.getByRole('textbox', { name: 'Description' });
+    await box.click();
+    await arrive(page);
+    await expect(box).toContainText('From another device');
+    await expect(box).toBeFocused();
+    await page.keyboard.type(' x');
+    await settled(page);
+    expect(await stored(page)).toContain('From another device');
+    expect(await stored(page)).toContain(' x');
+    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'saved');
+  });
+
+  test('a real click on Done whose blur meets them keeps the editor open', async ({ page }) => {
+    await open(page, 'seed=demo');
+    const form = await typedThenNewer(page);
+    await form.getByRole('button', { name: 'Done' }).click();
+    await settled(page);
+    await heldOpen(page, form);
+  });
+
+  test('the same when the reply lands after the mouse is up', async ({ page }) => {
+    await open(page, 'seed=demo');
+    const form = await typedThenNewer(page);
+    await page.evaluate(() => {
+      const w = window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a: unknown, o: unknown) => Promise<unknown> }; __release?: () => void };
+      const real = w.__TAURI_INTERNALS__.invoke;
+      let gate = true;
+      w.__TAURI_INTERNALS__.invoke = async (c, a, o) => {
+        if (gate && (c === 'get_snapshot' || c === 'patch_task')) {
+          gate = false;
+          await new Promise<void>((r) => {
+            w.__release = r;
+          });
+        }
+        return real(c, a, o);
+      };
+    });
+    const done = form.getByRole('button', { name: 'Done' });
+    await done.scrollIntoViewIfNeeded();
+    const b = await done.boundingBox();
+    if (!b) throw new Error('Done has no box');
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.evaluate(() => (window as unknown as { __release?: () => void }).__release?.());
+    await settled(page);
+    await heldOpen(page, form);
+  });
+
+  test('typing on keeps them held and the newer text stored', async ({ page }) => {
+    await open(page, 'seed=demo');
+    const form = await typedThenNewer(page);
+    await settled(page);
+    await page.keyboard.type(' more');
+    await settled(page);
+    await heldOpen(page, form);
+    await expect(form.getByRole('textbox', { name: 'Description' })).toContainText('more');
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  });
+
+  test('Done after the notice saves over the newer text', async ({ page }) => {
+    await open(page, 'seed=demo');
+    const form = await typedThenNewer(page);
+    await settled(page);
+    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
+    await form.getByRole('button', { name: 'Done' }).click();
+    await settled(page);
+    expect(await stored(page)).toContain('mine');
+    await expect(editor(page)).toHaveCount(0);
+  });
+
+  test('Discard on several held fields restores them all, and puts the cursor on the first', async ({ page }) => {
+    await page.setViewportSize({ width: 980, height: 660 });
+    await open(page, 'seed=demo&theme=dark');
+    await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
+    const form = page.getByRole('form', { name: /^Editing / });
+    await form.getByRole('textbox', { name: 'Task name' }).fill('Brand guidelines v2');
+    await page.evaluate(async () => {
+      const task = window.__mock.tasks.find((t) => t.id === 't-guide');
+      if (task) task.name = 'Renamed elsewhere';
+      await window.__mockEmit('state-changed');
+    });
+    await page.clock.runFor(1000);
+    await form.getByRole('combobox', { name: 'Project' }).selectOption('p-web');
+    await page.evaluate(async () => {
+      const task = window.__mock.tasks.find((t) => t.id === 't-guide');
+      if (task) task.projectId = 'p-pack';
+      await window.__mockEmit('state-changed');
+    });
+    await page.clock.runFor(1000);
+    await expect(form.getByTestId('save-state')).toContainText('name and project');
+    const foot = form.locator('.editor-foot');
+    expect(await foot.evaluate((f) => f.scrollWidth <= f.clientWidth)).toBe(true);
+    await form.getByRole('button', { name: 'Discard my words' }).click();
+    await expect(form.getByRole('textbox', { name: 'Task name' })).toHaveValue('Renamed elsewhere');
+    await expect(form.getByRole('combobox', { name: 'Project' })).toHaveValue('p-pack');
+    await expect(form.getByRole('textbox', { name: 'Task name' })).toBeFocused();
+    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'discarded');
+  });
+});
