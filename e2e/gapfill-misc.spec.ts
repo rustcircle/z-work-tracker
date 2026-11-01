@@ -237,3 +237,23 @@ test.describe('keyboard', () => {
     await expectClean(page, found);
   });
 });
+
+test.describe('drafts', () => {
+  test('typed description text is on disk within 300 ms and gone after the real save', async ({ page }) => {
+    const found = await open(page, 'seed=demo');
+    await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
+    const form = page.getByRole('form', { name: 'Editing Brand guidelines' });
+    const box = form.getByRole('textbox', { name: 'Description' });
+    await box.click();
+    await page.keyboard.type(' typed just now');
+    expect(await page.evaluate(() => Object.keys(window.__mock.drafts))).toEqual([]);
+    await page.clock.runFor(350);
+    await expect.poll(() => page.evaluate(() => JSON.stringify(window.__mock.drafts['t-guide'] ?? null))).toContain('typed just now');
+    // Not saved yet: the autosave comes later.
+    expect(await page.evaluate(() => window.__mock.calls.filter((c) => c.cmd === 'patch_task').length)).toBe(0);
+    await page.clock.runFor(1000);
+    await expect(form.getByTestId('save-state')).toHaveText('Saved');
+    await expect.poll(() => page.evaluate(() => Object.keys(window.__mock.drafts))).toEqual([]);
+    await expectClean(page, found);
+  });
+});

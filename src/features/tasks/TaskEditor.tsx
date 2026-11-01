@@ -19,6 +19,8 @@ import { useEditStore, type EditField, type EditSession } from './editStore';
 import { errorMessage } from '../../lib/errorMessage';
 
 export const AUTOSAVE_MS = 600;
+/** How soon typed description text is stashed on disk, so a Windows shutdown in the next second loses nothing. */
+export const DRAFT_MS = 300;
 const RETRY_BASE_MS = 2000;
 const MAX_RETRIES = 5;
 
@@ -43,6 +45,11 @@ export function TaskEditor({ task }: { task: Task }) {
   const projectRef = useRef<HTMLSelectElement | null>(null);
   const descRef = useRef<RichEditorHandle | null>(null);
   const timer = useRef<number | null>(null);
+  // Durable local draft of the description as it is typed (never synced). One writer at a time, in order, so a
+  // late stash can never land after the clear that follows a successful save.
+  const draftTimer = useRef<number | null>(null);
+  const draftDoc = useRef<RichDoc | null>(null);
+  const draftChain = useRef<Promise<void>>(Promise.resolve());
   // The latest stored task: the name to fall back on when a blank one is refused.
   const latest = useRef(task);
   useEffect(() => {
@@ -55,6 +62,24 @@ export function TaskEditor({ task }: { task: Task }) {
       timer.current = null;
     }
   }, []);
+
+  /** Writes the pending draft now. The autosave is the real save, so a failed stash is dropped rather than shown. */
+  const flushDraft = useCallback((): void => {
+    if (draftTimer.current !== null) {
+      window.clearTimeout(draftTimer.current);
+      draftTimer.current = null;
+    }
+    const doc = draftDoc.current;
+    if (doc === null) return;
+    draftDoc.current = null;
+    draftChain.current = draftChain.current.then(() => api.stashDraft(task.id, doc)).catch(() => undefined);
+  }, [task.id]);
+
+  const stashSoon = (doc: RichDoc): void => {
+    draftDoc.current = doc;
+    if (draftTimer.current !== null) window.clearTimeout(draftTimer.current);
+    draftTimer.current = window.setTimeout(flushDraft, DRAFT_MS);
+  };
 
   const doSave = useCallback(async (): Promise<boolean> => {
     const s = session;
@@ -84,6 +109,11 @@ export function TaskEditor({ task }: { task: Task }) {
     }
     s.failures = 0;
     if (s.rev === sentRev) {
+      // The description is saved for real, so the stashed copy is no longer needed. Anything typed since
+      // (the revision moved on) keeps its draft.
+      if (s.dirty.description && draftDoc.current === null && draftTimer.current === null) {
+        draftChain.current = draftChain.current.then(() => api.clearDraft(task.id)).catch(() => undefined);
+      }
       s.dirty = { name: s.dirty.name && !nameOk, project: false, description: false, tags: false };
       setStatus((prev) => (prev.kind === 'rejected' ? prev : { kind: 'saved' }));
     } else schedule();
@@ -94,9 +124,11 @@ export function TaskEditor({ task }: { task: Task }) {
 
   const flush = useCallback((): Promise<boolean> => {
     clearTimer();
+    // Shutting down or leaving: the draft goes to disk first, whatever the save does next.
+    flushDraft();
     session.queue = session.queue.then(doSave, doSave);
     return session.queue;
-  }, [clearTimer, doSave, session]);
+  }, [clearTimer, doSave, flushDraft, session]);
 
   function schedule(delay = AUTOSAVE_MS): void {
     clearTimer();
@@ -253,6 +285,7 @@ export function TaskEditor({ task }: { task: Task }) {
         onChange={(doc: RichDoc) => {
           session.description = doc;
           touch('description');
+          stashSoon(doc);
           schedule();
         }}
         onFocus={() => {
