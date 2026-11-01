@@ -70,7 +70,7 @@ pub fn write(dir: &Path, drafts: &BTreeMap<String, Draft>) -> Result<(), CoreErr
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum KeptBecause {
-    /// The description they were typed over changed elsewhere while they waited.
+    /// The description they were typed over changed while they waited, on another device or here.
     ChangedElsewhere,
     /// Their task no longer exists.
     TaskGone,

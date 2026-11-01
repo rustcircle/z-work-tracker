@@ -445,7 +445,7 @@ run(async () => {
   }
   const exit4 = await withTimeout(app.exited, 15000);
   check('and quit cleanly', exit4 !== 'timeout' && exit4.code === 0, JSON.stringify(exit4));
-  check('a draft never replaces newer text at launch, and a notice shows the words', r4.replayKept === true && r4.replayNotices?.length === 1 && /Words before the restart/.test(r4.replayNotices[0]) && /changed elsewhere/.test(r4.replayNotices[0]), JSON.stringify(r4.replayNotices));
+  check('a draft never replaces newer text at launch, and a notice shows the words', r4.replayKept === true && r4.replayNotices?.length === 1 && /Words before the restart/.test(r4.replayNotices[0]) && /its description changed while they waited/.test(r4.replayNotices[0]), JSON.stringify(r4.replayNotices));
   check('patch_task refuses only the stale field, gives back what is stored, and applies the rest', JSON.stringify(r4.cmdConflicts) === '["description"]' && r4.cmdStoredText === true && r4.cmdStoredName === 'Smoke renamed' && r4.cmdSnapshotName === 'Smoke renamed', JSON.stringify(r4.cmdConflicts));
   check('a stored value equal to the one saved is success, and no expected value changes nothing', JSON.stringify(r4.cmdEqual) === '[]' && JSON.stringify(r4.cmdNoExpected) === JSON.stringify([[], 'Smoke task']));
   check('an expected value for a field not sent is no concern, and a stale name alone conflicts', JSON.stringify(r4.cmdOtherFieldIgnored) === '["name"]', JSON.stringify(r4.cmdOtherFieldIgnored));

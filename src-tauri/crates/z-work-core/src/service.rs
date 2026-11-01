@@ -832,7 +832,7 @@ impl Service {
     fn notify_kept_out(&mut self, kept: Kept) {
         let why = match kept.because {
             KeptBecause::ChangedElsewhere => {
-                "were not put back, because its description changed elsewhere while they waited. The newer text is kept."
+                "were not put back, because its description changed while they waited. The newer text is kept."
             }
             KeptBecause::TaskGone => "were not saved, because the task no longer exists.",
         };
@@ -3320,7 +3320,11 @@ mod tests {
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].level, "warning");
         assert!(notices[0].message.contains("Typed here"));
-        assert!(notices[0].message.contains("changed elsewhere"));
+        assert!(
+            notices[0]
+                .message
+                .contains("its description changed while they waited")
+        );
         // The notice is the only place left for them, so they outlast a launch nobody read it in.
         assert_eq!(kept_words(here.path()), ["Typed here"]);
         assert!(drafts_on_disk(here.path()).is_empty());
@@ -4509,6 +4513,49 @@ mod tests {
         drop(s);
         let s = open(dir.path(), &clock);
         assert_eq!(s.file().data.tasks[&t].description, doc("Held words"));
+    }
+
+    #[test]
+    fn words_that_lose_to_an_edit_made_here_are_not_said_to_have_changed_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let t = words_stashed_and_closed(dir.path(), &clock);
+        // A run that can't read the drafts leaves them alone, and the user edits that very task in it.
+        let path = dir.path().join("z-work-drafts.json");
+        let aside = dir.path().join("in use");
+        std::fs::rename(&path, &aside).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let mut s = open(dir.path(), &clock);
+        clock.advance(5);
+        s.patch_task(
+            &t,
+            &TaskPatch {
+                description: Some(doc("Typed in the stuck run")),
+                ..TaskPatch::default()
+            },
+            &TaskExpected::default(),
+        )
+        .unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&aside, &path).unwrap();
+        clock.advance(60);
+        let s = open(dir.path(), &clock);
+        assert_eq!(
+            s.file().data.tasks[&t].description,
+            doc("Typed in the stuck run")
+        );
+        let words = kept_notices(&s);
+        assert_eq!(words.len(), 1, "{words:?}");
+        assert!(words[0].contains("Held words"));
+        // True of an edit from another device and of this one alike.
+        assert!(
+            !words[0].contains("elsewhere"),
+            "said of an edit made here: {}",
+            words[0]
+        );
+        assert!(words[0].contains("its description changed while they waited"));
     }
 
     #[test]
