@@ -66,9 +66,9 @@ jobs:
 
   # Known vulnerabilities in what the app ships. Packaging waits for this job, so:
   # - These fail it: npm advisories rated moderate or above (production dependencies), and RustSec
-  #   vulnerabilities rated medium or above or with no rating at all.
+  #   vulnerabilities rated medium or above or with no rating at all, and cargo-audit failing to compile.
   # - These don't: unmaintained, unsound and other informational notices, and low ratings. They stay in the log.
-  # - An outage of the npm registry, crates.io or GitHub doesn't either. That part goes unaudited, with a
+  # - An outage of the npm registry, crates.io or GitHub doesn't. That part goes unaudited, with a
   #   warning on the run, so read the warnings before trusting a green run for a release.
   audit:
     name: Dependency audit
@@ -85,19 +85,34 @@ jobs:
           cache: pnpm
       - name: Audit JavaScript dependencies
         run: |
+          # pnpm exits 0 on a registry error when told to ignore it, and names the endpoint in what it prints.
+          warn_if_down() {
+            case "$1" in
+              *"audit endpoint"*) echo "::warning title=JavaScript audit skipped::The npm registry did not answer properly, so JavaScript dependencies were not audited." ;;
+            esac
+          }
           # All levels for the log: the second run prints only what it would fail on.
           report="$(pnpm audit --prod --ignore-registry-errors 2>&1 || true)"
           printf '%s\n' "$report"
-          case "$report" in
-            *"Failed to request"*) echo "::warning title=JavaScript audit skipped::The npm registry did not answer, so JavaScript dependencies were not audited." ;;
-          esac
-          pnpm audit --prod --audit-level moderate --ignore-registry-errors
+          warn_if_down "$report"
+          status=0
+          gate="$(pnpm audit --prod --audit-level moderate --ignore-registry-errors 2>&1)" || status=$?
+          printf '%s\n' "$gate"
+          warn_if_down "$gate"
+          exit "$status"
       - name: Install the Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Audit Rust dependencies
         run: |
-          if ! cargo install cargo-audit --version 0.22.2 --locked; then
-            echo "::warning title=Rust audit skipped::cargo-audit could not be installed, so Rust dependencies were not audited."
+          install_log="$RUNNER_TEMP/cargo-audit-install.log"
+          if ! cargo install cargo-audit --version 0.22.2 --locked > "$install_log" 2>&1; then
+            cat "$install_log"
+            # Not an outage: this would otherwise skip the audit on every run from now on.
+            if grep -q "could not compile" "$install_log"; then
+              echo "::error title=Rust audit broken::cargo-audit 0.22.2 no longer compiles on this toolchain. Update the pinned version."
+              exit 1
+            fi
+            echo "::warning title=Rust audit skipped::cargo-audit could not be downloaded, so Rust dependencies were not audited."
             exit 0
           fi
           if ! git clone --depth 1 https://github.com/RustSec/advisory-db.git "$RUNNER_TEMP/advisory-db"; then
