@@ -147,17 +147,19 @@ fn earnings_text(file: &LocalFile, task_id: &str, now: Ts, tz: Tz) -> (Option<St
     let tomorrow = today
         .succ_opt()
         .map(|d| crate::billing::start_of_day(d, tz));
-    let new_rate = next_rate_change(&source.data, &project_id, now).map(|t| Ts(t.secs() + 1));
+    // Asked from a second back: a rate starting in this very second still has its second one to come.
+    let new_rate =
+        next_rate_change(&source.data, &project_id, Ts(now.secs() - 1)).map(|t| Ts(t.secs() + 1));
     // Only this device's open segment grows, one second per second: another device's stops at what
     // its last sync said, and a newer sync is a data change. With rounding off, the tray's minute is
     // as often as the text needs to follow exact time.
-    let step = row.as_ref().map(|r| {
+    // No row yet means the very start of a day for a running task: it has one a second from now.
+    let wait = row.as_ref().map_or(1, |r| {
         let counted = r.exact_secs + r.pause_secs;
-        let wait =
-            secs_to_next_step(counted, r.rule.increment_minutes, r.rule.method).unwrap_or(60);
-        Ts(now.secs() + wait)
+        secs_to_next_step(counted, r.rule.increment_minutes, r.rule.method).unwrap_or(60)
     });
-    let due = [tomorrow, new_rate, step].into_iter().flatten().min();
+    let step = Ts(now.secs() + wait);
+    let due = [tomorrow, new_rate, Some(step)].into_iter().flatten().min();
     (text, due)
 }
 
@@ -558,6 +560,46 @@ mod tests {
         assert_eq!(cache.amounts_computed(), computed + 1);
         // Nothing has counted on the new day yet.
         assert!(after.unwrap().tooltip.contains("0:10"));
+    }
+
+    /// Refreshing as the tray thread does, waking only when `next_wake_secs` says, the text must match
+    /// one worked out from scratch at every wake.
+    fn assert_wakes_match(f: &LocalFile, from: Ts, secs: i64) {
+        let utc = parse_zone("UTC").unwrap();
+        let mut cache = TrayCache::default();
+        let mut now = from;
+        let mut shown = None;
+        while now.secs() < from.secs() + secs {
+            if let Some(state) = cache.refresh(f, 1, now, utc) {
+                shown = Some(state);
+            }
+            assert_eq!(
+                shown.as_ref(),
+                Some(&tray_state(f, now, utc)),
+                "at {}",
+                now.iso()
+            );
+            now = Ts(now.secs() + i64::try_from(cache.next_wake_secs(now)).unwrap());
+        }
+    }
+
+    #[test]
+    fn the_amount_comes_back_one_second_into_a_new_day() {
+        let (mut f, t) = file();
+        f.data.start(&ctx("2026-01-01T23:50:00Z"), &t).unwrap();
+        assert_wakes_match(&f, Ts::parse("2026-01-01T23:50:00Z").unwrap(), 1200);
+    }
+
+    #[test]
+    fn a_rate_starting_in_the_second_of_a_step_is_still_picked_up() {
+        let (mut f, _) = running_file();
+        let mut later = f.data.rates.values().next().unwrap().clone();
+        later.id = "later".into();
+        later.rate_cents = Some(7200);
+        // 15 minutes and one second in: the second the Up step falls due.
+        later.effective_from = at(901);
+        f.data.rates.insert(later.id.clone(), later);
+        assert_wakes_match(&f, at(1), 1800);
     }
 
     /// The cached text must never lag the real figure, whatever the rule, past pauses and a new rate.
