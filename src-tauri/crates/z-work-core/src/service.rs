@@ -61,8 +61,8 @@ pub struct Service {
     kept_out: BTreeMap<String, Kept>,
     /// Their file couldn't be read or moved aside at this launch, so this run writes nothing over it.
     kept_file_stuck: bool,
-    /// The user has been told that their kept words may not outlast this run.
-    told_kept_at_risk: bool,
+    /// The notice telling the user that their kept words may not outlast this run, once there has been one.
+    kept_at_risk_notice: Option<String>,
     /// The file of drafts couldn't be read or moved aside at this launch. What it holds is for the next launch to put
     /// back, and a draft is one lot of words for a task, so this run writes nothing over it, even once it can be read.
     drafts_file_stuck: bool,
@@ -144,7 +144,7 @@ impl Service {
             mica_available: false,
             kept_out: BTreeMap::new(),
             kept_file_stuck: false,
-            told_kept_at_risk: false,
+            kept_at_risk_notice: None,
             drafts_file_stuck: false,
             opened: now,
             recovered: BTreeMap::new(),
@@ -722,7 +722,7 @@ impl Service {
     }
 
     /// Writes the words kept out of the store to their file, or removes it if none are left. Words it won't
-    /// take may last only as long as their notices, so that gets said, once until a write works again.
+    /// take may last only as long as their notices, so that gets said, by one notice at a time.
     fn save_kept(&mut self) -> Result<(), CoreError> {
         // A file that couldn't be read at launch may only have been in use, and a run can last for weeks.
         if self.kept_file_stuck
@@ -739,10 +739,12 @@ impl Service {
             let all: Vec<&Kept> = self.kept_out.values().collect();
             crate::drafts::write_kept(&self.paths.dir, &all)
         };
-        if written.is_ok() {
-            self.told_kept_at_risk = false;
-        } else if !self.kept_out.is_empty() && !self.told_kept_at_risk {
-            self.told_kept_at_risk = true;
+        let saying_so = self
+            .kept_at_risk_notice
+            .as_ref()
+            .is_some_and(|id| self.notices.iter().any(|n| n.id == *id));
+        if written.is_err() && !self.kept_out.is_empty() && !saying_so {
+            self.kept_at_risk_notice = Some(self.next_notice.to_string());
             self.notify(
                 "warning",
                 "Words kept for you in a notice can't be written to the data folder just now, so they may not come back at the next launch. Copy any you want from their notice before you close the app.".to_owned(),
@@ -3969,6 +3971,69 @@ mod tests {
         s.keep_unsaved_words("gone 2", "Other name", Some("Other new name"), None);
         assert_eq!(told_to_copy(&s), 1, "once is enough");
         assert_eq!(kept_notices(&s).len(), 2);
+    }
+
+    /// The warning that kept words may be lost, as it is on screen.
+    fn dismiss_at_risk_warning(s: &mut Service) {
+        let warning = s
+            .snapshot()
+            .notices
+            .into_iter()
+            .find(|n| n.message.contains("before you close the app"))
+            .unwrap();
+        s.dismiss_notice(&warning.id);
+    }
+
+    #[test]
+    fn a_warning_dismissed_while_writes_still_fail_is_raised_again_by_the_next_words_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        std::fs::create_dir(dir.path().join("z-work-kept-words.json.tmp")).unwrap();
+        s.keep_unsaved_words("gone 1", "First", Some("First words"), None);
+        assert_eq!(told_to_copy(&s), 1);
+        dismiss_at_risk_warning(&mut s);
+        assert_eq!(told_to_copy(&s), 0, "nothing new has gone wrong yet");
+        s.keep_unsaved_words("gone 2", "Second", Some("Second words"), None);
+        assert_eq!(
+            told_to_copy(&s),
+            1,
+            "these words may be lost, and nothing else on screen says so"
+        );
+        s.keep_unsaved_words("gone 3", "Third", Some("Third words"), None);
+        assert_eq!(told_to_copy(&s), 1, "while it is up, once is enough");
+    }
+
+    #[test]
+    fn a_warning_still_up_when_writes_work_for_a_while_is_not_raised_a_second_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let blocker = dir.path().join("z-work-kept-words.json.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        s.keep_unsaved_words("gone 1", "First", Some("First words"), None);
+        assert_eq!(told_to_copy(&s), 1);
+        std::fs::remove_dir(&blocker).unwrap();
+        s.keep_unsaved_words("gone 2", "Second", Some("Second words"), None);
+        assert_eq!(kept_words(dir.path()).len(), 2);
+        std::fs::create_dir(&blocker).unwrap();
+        s.keep_unsaved_words("gone 3", "Third", Some("Third words"), None);
+        assert_eq!(told_to_copy(&s), 1);
+    }
+
+    #[test]
+    fn a_warning_dismissed_when_writes_work_again_stays_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let blocker = dir.path().join("z-work-kept-words.json.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        s.keep_unsaved_words("gone 1", "First", Some("First words"), None);
+        dismiss_at_risk_warning(&mut s);
+        std::fs::remove_dir(&blocker).unwrap();
+        s.keep_unsaved_words("gone 2", "Second", Some("Second words"), None);
+        assert_eq!(told_to_copy(&s), 0);
+        assert_eq!(kept_words(dir.path()).len(), 2);
     }
 
     #[test]
