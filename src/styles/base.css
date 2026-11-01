@@ -9,6 +9,10 @@ body {
   font-size: 14px;
   line-height: 1.45;
 }
+/* Mica (Windows 11, Light and Dark only): the page background token is already translucent (lib/themes.ts), so
+   the body adds nothing under it and the window backdrop shows through. Without Mica `data-mica` is absent and
+   the body paints the opaque `--bg` above. */
+html[data-mica='on'], html[data-mica='on'] body { background: transparent; }
 h1, h2, h3, h4 { margin: 0; font-weight: 600; font-family: 'Segoe UI Variable Display', 'Segoe UI Variable', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 button, input, select, textarea { font: inherit; color: inherit; }

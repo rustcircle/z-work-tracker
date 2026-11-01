@@ -1,4 +1,4 @@
-// Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty`, `?theme=`, `?firstRun=1` (the wizard; `&step=N` resumes at a saved step, `&pc=2` is a second computer whose OneDrive folder already holds data) or `?firstRun=legacy` (the old prompts), `?launch=cold`.
+// Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty`, `?theme=`, `?firstRun=1` (the wizard; `&step=N` resumes at a saved step, `&pc=2` is a second computer whose OneDrive folder already holds data) or `?firstRun=legacy` (the old prompts), `?mica=1`, `?launch=cold`.
 import { emit } from '@tauri-apps/api/event';
 
 import { toIso } from '../lib/tz';
@@ -68,6 +68,8 @@ export function installE2eBackend(): void {
     }
     if (q.get('pc') === '2') seedSecondPc(state);
   }
+  // `mica=1`: a system that can show Mica (Windows 11), for the setting's enabled state.
+  if (q.get('mica') === '1') state.micaAvailable = true;
   if (q.get('sync') === '1') seedSync(state);
   if (q.get('launch') === 'cold') relaunch(state);
   window.__mock = state;

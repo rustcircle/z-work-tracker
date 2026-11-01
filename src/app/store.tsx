@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { api, events, type HideNoticePayload } from '../lib/api';
-import { applyTheme } from '../lib/themes';
+import { applyTheme, showsMica } from '../lib/themes';
 import { isZone, parseIso } from '../lib/tz';
 import type { CommandError, Snapshot } from '../lib/types';
 
@@ -215,9 +215,10 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
   }, [clock]);
 
   const theme = snapshot?.prefs.theme;
+  const glass = snapshot ? showsMica(snapshot.prefs.theme, snapshot.prefs.mica, snapshot.prefs.micaAvailable) : false;
   useEffect(() => {
-    applyTheme(theme ?? 'light');
-  }, [theme]);
+    applyTheme(theme ?? 'light', document.documentElement, glass);
+  }, [theme, glass]);
 
   const act = useCallback(
     async (call: () => Promise<Snapshot>) => {
