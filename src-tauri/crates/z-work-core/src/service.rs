@@ -63,6 +63,10 @@ pub struct Service {
     kept_file_stuck: bool,
     /// The notice telling the user that their kept words may not outlast this run, once there has been one.
     kept_at_risk_notice: Option<String>,
+    /// Kept words dismissed in this run. A file of them read late may still hold them.
+    dismissed_kept: Vec<Kept>,
+    /// Drafts this launch left on disk, as it couldn't write their words to a file of their own.
+    drafts_left: BTreeMap<String, Draft>,
     /// The file of drafts couldn't be read or moved aside at this launch. What it holds is for the next launch to put
     /// back, and a draft is one lot of words for a task, so this run writes nothing over it, even once it can be read.
     drafts_file_stuck: bool,
@@ -145,6 +149,8 @@ impl Service {
             kept_out: BTreeMap::new(),
             kept_file_stuck: false,
             kept_at_risk_notice: None,
+            dismissed_kept: Vec::new(),
+            drafts_left: BTreeMap::new(),
             drafts_file_stuck: false,
             opened: now,
             recovered: BTreeMap::new(),
@@ -172,6 +178,7 @@ impl Service {
         if !svc.drafts_file_stuck {
             let _ = crate::drafts::write(&svc.paths.dir, &stay);
         }
+        svc.drafts_left = stay;
         Ok(svc)
     }
 
@@ -750,7 +757,26 @@ impl Service {
                 "Words kept for you in a notice can't be written to the data folder just now, so they may not come back at the next launch. Copy any you want from their notice before you close the app.".to_owned(),
             );
         }
+        if written.is_ok() {
+            self.clear_drafts_left();
+        }
         written
+    }
+
+    /// The words of the drafts this launch left are in their file now, or their notice was dismissed, and either way
+    /// those drafts would only tell of them again. One stashed over since is words of its own, and stays.
+    fn clear_drafts_left(&mut self) {
+        if self.drafts_left.is_empty() {
+            return;
+        }
+        let Ok(mut all) = self.drafts_to_change() else {
+            return;
+        };
+        let before = all.len();
+        all.retain(|id, draft| self.drafts_left.get(id) != Some(draft));
+        if all.len() == before || crate::drafts::write(&self.paths.dir, &all).is_ok() {
+            self.drafts_left.clear();
+        }
     }
 
     /// Words of a draft the store won't take. A launch cut short after it wrote them finds that draft again.
@@ -773,7 +799,7 @@ impl Service {
     fn keep_once(&mut self, kept: Kept) {
         let known =
             |k: &Kept| k.task_id == kept.task_id && k.at == kept.at && k.words == kept.words;
-        if !self.kept_out.values().any(known) {
+        if !self.kept_out.values().any(known) && !self.dismissed_kept.iter().any(known) {
             self.notify_kept_out(kept);
         }
     }
@@ -1521,7 +1547,8 @@ impl Service {
         self.revision += 1;
         // Words kept out of the store end here, and nowhere else. If this write fails the notice just
         // comes back at the next launch.
-        if self.kept_out.remove(id).is_some() {
+        if let Some(kept) = self.kept_out.remove(id) {
+            self.dismissed_kept.push(kept);
             let _ = self.save_kept();
         }
     }
@@ -4125,6 +4152,217 @@ mod tests {
         assert_eq!(kept_notices(&s).len(), 1);
         assert_eq!(kept_words(here.path()), ["Typed here"]);
         assert!(drafts_on_disk(here.path()).is_empty());
+    }
+
+    /// Words on a task that changed elsewhere, and a launch that couldn't write them to their file, so they
+    /// stay a draft. Returns with what blocks that write.
+    fn words_a_launch_left_a_draft(
+        here: &Path,
+        there: &Path,
+        clock: &ManualClock,
+    ) -> (Service, String, PathBuf) {
+        let (mut s, mut other, t) = two_devices(here, there, clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        clock.advance(3);
+        edited_elsewhere(&mut s, &mut other, &t, "From another device");
+        s.on_exit().unwrap();
+        drop(s);
+        let blocker = here.join("z-work-kept-words.json.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        clock.advance(60);
+        let s = open(here, clock);
+        assert_eq!(kept_notices(&s).len(), 1);
+        assert!(!drafts_on_disk(here).is_empty());
+        (s, t, blocker)
+    }
+
+    /// Dismisses the notice showing kept words.
+    fn dismiss_kept_notice(s: &mut Service, words: &str) {
+        let notice = s
+            .snapshot()
+            .notices
+            .into_iter()
+            .find(|n| n.message.contains("Your unsaved words") && n.message.contains(words))
+            .unwrap();
+        s.dismiss_notice(&notice.id);
+    }
+
+    #[test]
+    fn words_dismissed_after_a_launch_left_them_a_draft_do_not_come_back() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _, blocker) = words_a_launch_left_a_draft(here.path(), there.path(), &clock);
+        std::fs::remove_dir(&blocker).unwrap();
+        dismiss_kept_notice(&mut s, "Typed here");
+        assert!(drafts_on_disk(here.path()).is_empty());
+        drop(s);
+        clock.advance(60);
+        let s = open(here.path(), &clock);
+        assert!(kept_notices(&s).is_empty(), "dismissed for good");
+    }
+
+    #[test]
+    fn a_draft_a_launch_left_goes_when_its_words_reach_their_file() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _, blocker) = words_a_launch_left_a_draft(here.path(), there.path(), &clock);
+        std::fs::remove_dir(&blocker).unwrap();
+        s.on_exit().unwrap();
+        assert_eq!(kept_words(here.path()), ["Typed here"]);
+        assert!(drafts_on_disk(here.path()).is_empty());
+        drop(s);
+        clock.advance(60);
+        let s = open(here.path(), &clock);
+        assert_eq!(kept_notices(&s).len(), 1, "from the one place they are now");
+    }
+
+    #[test]
+    fn a_draft_a_launch_left_stays_while_their_file_still_cannot_be_written() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _, _blocker) = words_a_launch_left_a_draft(here.path(), there.path(), &clock);
+        s.on_exit().unwrap();
+        assert!(kept_words(here.path()).is_empty());
+        assert!(!drafts_on_disk(here.path()).is_empty());
+        drop(s);
+        std::fs::remove_dir(here.path().join("z-work-kept-words.json.tmp")).unwrap();
+        clock.advance(60);
+        let s = open(here.path(), &clock);
+        assert_eq!(kept_words(here.path()), ["Typed here"]);
+        assert_eq!(kept_notices(&s).len(), 1);
+    }
+
+    #[test]
+    fn words_typed_since_a_launch_left_a_draft_stay_when_that_draft_goes() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t, blocker) = words_a_launch_left_a_draft(here.path(), there.path(), &clock);
+        let stored = s.file().data.tasks[&t].description.clone();
+        let p = s.file().data.tasks[&t].project_id.clone();
+        let another = s.create_task(&tinput("Another", &p)).unwrap();
+        clock.advance(1);
+        s.stash_draft(&t, &doc("Typed since"), &stored).unwrap();
+        s.stash_draft(&another, &doc("Typed there too"), &Value::Null)
+            .unwrap();
+        std::fs::remove_dir(&blocker).unwrap();
+        dismiss_kept_notice(&mut s, "Typed here");
+        let left = drafts_on_disk(here.path());
+        assert_eq!(left[&t].description, doc("Typed since"));
+        assert_eq!(left[&another].description, doc("Typed there too"));
+        drop(s);
+        clock.advance(60);
+        let s = open(here.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Typed since"));
+        assert!(kept_notices(&s).is_empty());
+    }
+
+    #[test]
+    fn a_draft_a_launch_left_next_to_another_task_goes_alone() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t, blocker) = words_a_launch_left_a_draft(here.path(), there.path(), &clock);
+        let p = s.file().data.tasks[&t].project_id.clone();
+        let another = s.create_task(&tinput("Another", &p)).unwrap();
+        s.stash_draft(&another, &doc("Typed there"), &Value::Null)
+            .unwrap();
+        std::fs::remove_dir(&blocker).unwrap();
+        s.on_exit().unwrap();
+        assert_eq!(
+            drafts_on_disk(here.path()).into_keys().collect::<Vec<_>>(),
+            [another]
+        );
+    }
+
+    /// Words in their file and still a draft too, as a launch cut short can leave them, with something else
+    /// holding that file at this launch. Returns with its copy, to go back in its place.
+    fn words_in_a_file_in_use_and_a_draft(
+        here: &Path,
+        there: &Path,
+        clock: &ManualClock,
+    ) -> (Service, PathBuf, PathBuf) {
+        let (mut s, mut other, t) = two_devices(here, there, clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        let draft = drafts_on_disk(here);
+        clock.advance(3);
+        edited_elsewhere(&mut s, &mut other, &t, "From another device");
+        s.on_exit().unwrap();
+        drop(s);
+        drop(open(here, clock));
+        crate::drafts::write(here, &draft).unwrap();
+        // A folder in its place can't be read, like a file something else has open.
+        let path = here.join("z-work-kept-words.json");
+        let aside = here.join("in use");
+        std::fs::rename(&path, &aside).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        clock.advance(60);
+        let s = open(here, clock);
+        assert_eq!(kept_notices(&s).len(), 1);
+        (s, path, aside)
+    }
+
+    #[test]
+    fn words_dismissed_do_not_come_back_from_a_file_read_again_in_that_run() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, path, aside) =
+            words_in_a_file_in_use_and_a_draft(here.path(), there.path(), &clock);
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&aside, &path).unwrap();
+        dismiss_kept_notice(&mut s, "Typed here");
+        assert!(kept_notices(&s).is_empty(), "brought back at once");
+        assert!(kept_words(here.path()).is_empty());
+        assert!(drafts_on_disk(here.path()).is_empty());
+        drop(s);
+        clock.advance(60);
+        let s = open(here.path(), &clock);
+        assert!(kept_notices(&s).is_empty());
+    }
+
+    #[test]
+    fn words_dismissed_while_their_file_is_in_use_do_not_come_back_when_it_is_read() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, path, aside) =
+            words_in_a_file_in_use_and_a_draft(here.path(), there.path(), &clock);
+        dismiss_kept_notice(&mut s, "Typed here");
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&aside, &path).unwrap();
+        s.keep_unsaved_words("gone", "Old name", Some("Other words"), None);
+        let words = kept_notices(&s);
+        assert_eq!(words.len(), 1, "{words:?}");
+        assert!(words[0].contains("Other words"));
+        assert_eq!(kept_words(here.path()), ["Other words"]);
+        assert!(drafts_on_disk(here.path()).is_empty());
+    }
+
+    #[test]
+    fn a_file_read_again_still_shows_the_words_nobody_dismissed() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, path, aside) =
+            words_in_a_file_in_use_and_a_draft(here.path(), there.path(), &clock);
+        let mut in_it: Vec<Kept> = serde_json::from_slice(&std::fs::read(&aside).unwrap()).unwrap();
+        let mut more = in_it[0].clone();
+        more.words = "Kept before as well".to_owned();
+        in_it.push(more);
+        std::fs::write(&aside, serde_json::to_vec(&in_it).unwrap()).unwrap();
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&aside, &path).unwrap();
+        dismiss_kept_notice(&mut s, "Typed here");
+        let words = kept_notices(&s);
+        assert_eq!(words.len(), 1, "{words:?}");
+        assert!(words[0].contains("Kept before as well"));
+        assert_eq!(kept_words(here.path()), ["Kept before as well"]);
     }
 
     #[test]
