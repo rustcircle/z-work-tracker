@@ -209,6 +209,20 @@ impl Service {
         self.system_zone.clone()
     }
 
+    /// The zone the user is viewing: the active one, else their own, else this computer's.
+    #[must_use]
+    pub fn viewing_zone(&self) -> chrono_tz::Tz {
+        let settings = &self.file.data.settings;
+        settings
+            .get("activeZone")
+            .filter(|e| e.value.is_string())
+            .or_else(|| settings.get("myZone"))
+            .and_then(|e| e.value.as_str())
+            .and_then(|z| crate::validate::parse_zone(z).ok())
+            .or_else(|| crate::validate::parse_zone(&self.system_zone).ok())
+            .unwrap_or(chrono_tz::UTC)
+    }
+
     pub fn set_system_zone(&mut self, zone: String) {
         self.system_zone = zone;
     }
@@ -772,7 +786,7 @@ impl Service {
             .remote_devices
             .get(&due.requested_by)
             .map_or("another device", |d| d.name.as_str());
-        let zone = crate::validate::parse_zone(&self.system_zone).unwrap_or(chrono_tz::UTC);
+        let zone = self.viewing_zone();
         let when = chrono::DateTime::from_timestamp(due.at.secs(), 0).map_or_else(
             || due.at.iso(),
             |t| t.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string(),
@@ -3040,6 +3054,30 @@ mod tests {
             owner.snapshot().notices.is_empty(),
             "dismissed stays dismissed"
         );
+    }
+
+    #[test]
+    fn the_pause_notice_gives_the_time_in_the_zone_being_viewed() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut owner, t) = running(dir_a.path(), &clock);
+        owner.set_system_zone("UTC".into());
+        owner
+            .set_setting("myZone", serde_json::json!("Asia/Tokyo"))
+            .unwrap();
+        let mut asker = open(dir_b.path(), &clock);
+        asker.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+        asker.request_remote_pause(&t).unwrap();
+        let at = asker.file().data.pause_requests.values().next().unwrap().at;
+        owner.absorb_remote(&asker.file().data.clone(), BTreeMap::new(), Vec::new());
+        let expected = chrono::DateTime::from_timestamp(at.secs(), 0)
+            .unwrap()
+            .with_timezone(&chrono_tz::Asia::Tokyo)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        let notices = owner.snapshot().notices;
+        assert!(notices[0].message.contains(&expected), "{notices:?}");
     }
 
     #[test]

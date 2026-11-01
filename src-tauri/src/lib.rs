@@ -151,14 +151,6 @@ impl Core {
     }
 }
 
-fn zone_for_tray(snapshot_zone: Option<&serde_json::Value>, fallback: &str) -> chrono_tz::Tz {
-    snapshot_zone
-        .and_then(serde_json::Value::as_str)
-        .and_then(|z| parse_zone(z).ok())
-        .or_else(|| parse_zone(fallback).ok())
-        .unwrap_or(chrono_tz::UTC)
-}
-
 /// Asks the tray thread to look now, for example after a data change. Tray calls can wait on the UI
 /// thread, so nothing here waits for them.
 fn refresh_tray(_app: &AppHandle, core: &Core) {
@@ -175,13 +167,7 @@ fn update_tray(core: &Core, cache: &mut TrayCache) -> Duration {
     };
     let (state, wait) = {
         let s = guard(svc);
-        let settings = &s.file().data.settings;
-        let chosen = settings
-            .get("activeZone")
-            .filter(|e| e.value.is_string())
-            .or_else(|| settings.get("myZone"))
-            .map(|e| &e.value);
-        let zone = zone_for_tray(chosen, &s.snapshot_system_zone());
+        let zone = s.viewing_zone();
         let now = s.now();
         let state = cache.refresh(s.file(), s.revision(), now, zone);
         (state, Duration::from_secs(cache.next_wake_secs(now)))
