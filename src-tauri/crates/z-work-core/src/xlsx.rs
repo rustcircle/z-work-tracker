@@ -674,25 +674,30 @@ pub fn build(source: &ExportSource, request: &ExportRequest) -> Result<Vec<u8>, 
         used.push("Earnings".to_owned());
         write_earnings_sheet(wb.add_worksheet(), source, &request.day_zone, tz, &st)?;
     }
-    // The UI's analytics sheets describe everything logged, so a selection leaves them out and says so.
-    if let Some(count) = source.selected_count() {
+    // A selection's analysis sheets are worked out here from its own entries. Sheets sent by the UI
+    // describe everything logged, so they are never used for one.
+    let selection_sheets;
+    let sheets: &[AnalyticsSheet] = if let Some(count) = source.selected_count() {
         let sheet = wb.add_worksheet();
         sheet.set_name("About this selection").map_err(err)?;
+        used.push("About this selection".to_owned());
         sheet
             .write_string(0, 0, format!("This export holds a selection of {count} task-day entries from the Timeline. Every sheet and total covers those only."))
             .map_err(err)?;
         sheet
-            .write_string(1, 0, "Analytics sheets are left out of a selection.")
+            .write_string(1, 0, "The analysis sheets run from the first to the last selected day and count only the selected entries. Averages per calendar day still count the days between them. Shift figures count the shifts of selected days, and an effective hourly rate on a fixed fee is over the selected time.")
             .map_err(err)?;
+        selection_sheets = crate::analytics::selection_sheets(source, &request.day_zone)?;
+        &selection_sheets
     } else {
-        for a in request
-            .analytics
-            .iter()
-            .filter(|a| request.include_earnings || !a.contains_prices)
-        {
-            let name = clean_sheet_name(&a.name, &mut used);
-            write_analytics_sheet(wb.add_worksheet(), a, &name, &st)?;
-        }
+        &request.analytics
+    };
+    for a in sheets
+        .iter()
+        .filter(|a| request.include_earnings || !a.contains_prices)
+    {
+        let name = clean_sheet_name(&a.name, &mut used);
+        write_analytics_sheet(wb.add_worksheet(), a, &name, &st)?;
     }
     wb.save_to_buffer().map_err(err)
 }

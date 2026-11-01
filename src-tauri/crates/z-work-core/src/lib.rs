@@ -10,6 +10,7 @@
 )]
 
 pub mod adjust;
+pub mod analytics;
 pub mod backup;
 pub mod billing;
 pub mod catalog;

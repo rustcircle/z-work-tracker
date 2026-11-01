@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use chrono_tz::Tz;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::billing::{TaskDay, day_of, split_by_day, task_days_of};
 use crate::error::CoreError;
@@ -42,6 +42,13 @@ pub struct SelectedEntry {
 }
 
 const MAX_SELECTED: usize = 200_000;
+const ANALYSIS_SETTINGS: [&str; 5] = [
+    "clientZone",
+    "clientWorkStart",
+    "clientWorkEnd",
+    "dailyTargetHours",
+    "weeklyTargetHours",
+];
 
 impl ExportSource {
     /// A copy holding the selected task-days and nothing else, not even the other records' names.
@@ -80,10 +87,34 @@ impl ExportSource {
                 .tasks
                 .iter()
                 .filter(|(id, _)| tasks.contains(id.as_str()))
+                .map(|(k, v)| {
+                    let mut task = v.clone();
+                    // The day a task stopped is a day like any other: kept only if it was selected.
+                    task.stopped_at = v
+                        .stopped_at
+                        .filter(|at| keys.contains(&(k.clone(), day_of(*at, tz))));
+                    (k.clone(), task)
+                })
+                .collect(),
+            // What the analysis sheets read. Shifts are the user's schedule, not logged time, and the
+            // sheets name only those on a selected day. Tags are only those the selected tasks carry.
+            shifts: self.data.shifts.clone(),
+            settings: self
+                .data
+                .settings
+                .iter()
+                .filter(|(k, _)| ANALYSIS_SETTINGS.contains(&k.as_str()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             ..Shared::default()
         };
+        data.tags = self
+            .data
+            .tags
+            .iter()
+            .filter(|(id, _)| data.tasks.values().any(|t| t.tags.contains(id)))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let projects: BTreeSet<String> =
             data.tasks.values().map(|t| t.project_id.clone()).collect();
         data.projects = self
@@ -178,7 +209,7 @@ impl ExportSource {
 
     /// What counts as time, cut down to the selection when there is one, so a segment crossing
     /// midnight gives only its selected day.
-    fn counted(&self) -> Vec<Piece> {
+    pub(crate) fn counted(&self) -> Vec<Piece> {
         let end = |s: &Segment| self.end_of(s);
         let all = pieces(&self.data, &end);
         let Some(only) = &self.only else {
@@ -449,7 +480,8 @@ pub struct ExportRequest {
     /// Segment id to shift attribution text, computed by the UI's shift module.
     #[serde(default)]
     pub segment_shifts: BTreeMap<String, String>,
-    /// Summary sheets computed by the UI's analytics modules, so they match the screen exactly.
+    /// Summary sheets computed by the UI's analytics modules, so they match the screen exactly. A
+    /// selection ignores these: its sheets are worked out here, from the selected entries.
     #[serde(default)]
     pub analytics: Vec<AnalyticsSheet>,
     /// Export only these Timeline entries. Their days are in `day_zone`.
@@ -457,7 +489,7 @@ pub struct ExportRequest {
     pub selection: Option<Vec<SelectedEntry>>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CellKind {
     Text,
@@ -471,14 +503,14 @@ pub enum CellKind {
     Usd,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsColumn {
     pub header: String,
     pub kind: CellKind,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyticsSheet {
     pub name: String,
@@ -818,8 +850,75 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn the_workbook_builds_from_a_selection_and_leaves_analytics_out() {
-            let (src, t, _) = world();
+        fn the_workbook_builds_from_a_selection_with_its_own_analytics() {
+            let (mut src, t, other) = world();
+            // What `scripts/verify_selection.py` looks for: names that must and must not get in.
+            let stamp = crate::model::Stamp::default();
+            for (id, name) in [("tag-shown", "Shown tag"), ("tag-hidden", "Hidden tag")] {
+                src.data.tags.insert(
+                    id.into(),
+                    crate::model::Tag {
+                        id: id.into(),
+                        name: name.into(),
+                        color: "#abcdef".into(),
+                        deleted: false,
+                        stamp: stamp.clone(),
+                    },
+                );
+            }
+            src.data.tasks.get_mut(&t).unwrap().tags = vec!["tag-shown".into()];
+            src.data.tasks.get_mut(&other).unwrap().tags = vec!["tag-hidden".into()];
+            let c = ctx("2026-01-01T00:00:00Z");
+            let mut project = project_input("LeakProject");
+            project.color = "#123456".into();
+            let hidden_project = src.data.create_project(&c, &project).unwrap();
+            let hidden = src
+                .data
+                .create_task(&c, &task_input("LeakTask", &hidden_project))
+                .unwrap();
+            src.data
+                .set_rate(
+                    &c,
+                    &RateInput {
+                        project_id: hidden_project,
+                        rate_cents: Some(9999),
+                        currency: "USD".into(),
+                        effective_from: Some("2026-01-01T00:00:00Z".to_owned()),
+                        confirm_retroactive: true,
+                    },
+                )
+                .unwrap();
+            seg(
+                &mut src.data,
+                &hidden,
+                "h",
+                "2026-03-01T13:00:00Z",
+                "2026-03-01T14:00:00Z",
+            );
+            // 1 March 2026 is a Sunday. One shift runs that day, and one only on weekdays.
+            for (id, name, days) in [
+                ("sh-sun", "Sunday shift", vec![7]),
+                ("sh-wk", "Weekday shift", vec![1, 2, 3, 4, 5]),
+            ] {
+                src.data.shifts.insert(
+                    id.into(),
+                    crate::model::ShiftVersion {
+                        id: id.into(),
+                        shift_id: id.into(),
+                        effective_from: "2020-01-01".into(),
+                        name: name.into(),
+                        color: "#0ea5e9".into(),
+                        start: "08:50".into(),
+                        end: "12:00".into(),
+                        weekdays: days,
+                        zone: "UTC".into(),
+                        break_minutes: 0,
+                        retired: false,
+                        deleted: false,
+                        stamp: stamp.clone(),
+                    },
+                );
+            }
             let request = ExportRequest {
                 day_zone: "UTC".into(),
                 my_zone: "UTC".into(),
