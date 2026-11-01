@@ -1421,6 +1421,11 @@ fn run_chores(app: &AppHandle, core: &Core) {
     }
 }
 
+fn main_window_in_view(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
+}
+
 fn notify(app: &AppHandle, text: &str) {
     if let Err(e) = app
         .notification()
@@ -1508,6 +1513,13 @@ fn spawn_sync(app: AppHandle, core: Arc<Core>, svc: Arc<Mutex<Service>>) {
             schedule.cycle_done(clock(), failed);
             if changed {
                 refresh_tray(&app, &core);
+            }
+            // The banner covers a window in view. Nobody sees that in the tray, so say it there too.
+            let alerts = guard(&svc).take_pause_alerts();
+            if !main_window_in_view(&app) {
+                for text in alerts {
+                    notify(&app, &text);
+                }
             }
             // Status also changes without data changing, so the UI always hears about it.
             let _ = app.emit("state-changed", ());

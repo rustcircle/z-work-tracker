@@ -14,8 +14,8 @@ use crate::detect::Detected;
 use crate::error::CoreError;
 use crate::idle::{IdleTracker, NewGap};
 use crate::machine::{
-    Ctx, ProjectInput, RateInput, RequiredField, RoundingInput, ShiftInput, TaskInput, TaskPatch,
-    Transition, cold_required, doc_has_text,
+    Ctx, PauseRequestDue, ProjectInput, RateInput, RequiredField, RoundingInput, ShiftInput,
+    TaskInput, TaskPatch, Transition, cold_required, doc_has_text,
 };
 use crate::merge::merge;
 use crate::model::{
@@ -44,6 +44,7 @@ pub struct Service {
     clock: Arc<dyn Clock>,
     notices: Vec<Notice>,
     next_notice: u64,
+    pause_alerts: Vec<String>,
     targets: BTreeMap<String, TargetStatus>,
     detected: Vec<Detected>,
     system_zone: String,
@@ -104,6 +105,7 @@ impl Service {
             file,
             clock,
             notices: Vec::new(),
+            pause_alerts: Vec::new(),
             next_notice: 1,
             targets: BTreeMap::new(),
             detected: Vec::new(),
@@ -751,6 +753,35 @@ impl Service {
         project_figures(&self.file.data, tz, &|s: &Segment| source.end_of(s))
     }
 
+    /// Pauses by request not yet offered as a system notification, for a window that may be hidden. Each
+    /// is also a dismissible notice, so a person who doesn't see this still reads it in the app.
+    pub fn take_pause_alerts(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pause_alerts)
+    }
+
+    /// What the owner of a task needs to hear: it stopped by itself, and time since the request is gone.
+    fn pause_request_message(&self, due: &PauseRequestDue) -> String {
+        let task = self
+            .file
+            .data
+            .tasks
+            .get(&due.task_id)
+            .map_or("A task", |t| t.name.as_str());
+        let device = self
+            .file
+            .remote_devices
+            .get(&due.requested_by)
+            .map_or("another device", |d| d.name.as_str());
+        let zone = crate::validate::parse_zone(&self.system_zone).unwrap_or(chrono_tz::UTC);
+        let when = chrono::DateTime::from_timestamp(due.at.secs(), 0).map_or_else(
+            || due.at.iso(),
+            |t| t.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string(),
+        );
+        format!(
+            "\"{task}\" was paused because {device} asked for it. Its time stopped at {when}, when that was asked, so anything you did on it after then isn't counted. Resume it if you're still working."
+        )
+    }
+
     /// What deserves a system notification now. Each budget threshold and reminder notifies once.
     pub fn take_alerts(&mut self) -> Vec<String> {
         let mut out = Vec::new();
@@ -1069,15 +1100,25 @@ impl Service {
                 return false;
             }
         }
+        let mut paused = Vec::new();
         let outcome = self.mutate(|f, c| {
             f.data = merged;
             f.remote_devices = known;
+            paused = f.data.pause_requests_due(c.device);
             f.data.reconcile(c);
             f.data.raise_reference_marks(&mut f.prefs.reference_marks);
             Ok(())
         });
         match outcome {
-            Ok(()) => data_changed,
+            Ok(()) => {
+                // Saved with the segment closed, so a later cycle finds nothing left to do for it.
+                for due in &paused {
+                    let message = self.pause_request_message(due);
+                    self.pause_alerts.push(message.clone());
+                    self.notify("warning", message);
+                }
+                data_changed || !paused.is_empty()
+            }
             Err(e) => {
                 self.local_error = Some(format!(
                     "Could not save data merged from the sync folder: {e}"
@@ -2950,6 +2991,70 @@ mod tests {
         clock.advance(5);
         let s = open(dir.path(), &clock);
         assert_ne!(s.file().data.tasks[&t].description, doc("Draft"));
+    }
+
+    #[test]
+    fn the_owner_is_told_once_which_task_was_paused_and_by_which_device() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut owner, t) = running(dir_a.path(), &clock);
+        owner.set_system_zone("UTC".into());
+        let mut asker = open(dir_b.path(), &clock);
+        clock.advance(600);
+        asker.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+        asker.request_remote_pause(&t).unwrap();
+        let at = asker.file().data.pause_requests.values().next().unwrap().at;
+        let by = asker.file().device_id.clone();
+        clock.advance(600);
+        let seen = BTreeMap::from([(
+            by,
+            crate::model::RemoteDevice {
+                name: "Office PC".into(),
+                last_heartbeat: None,
+                written_at: clock.now(),
+            },
+        )]);
+        assert!(owner.absorb_remote(&asker.file().data.clone(), seen.clone(), Vec::new()));
+        let name = owner.file().data.tasks[&t].name.clone();
+        let notices = owner.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        let text = &notices[0].message;
+        assert!(text.contains(&format!("\"{name}\"")), "{text}");
+        assert!(text.contains("Office PC"), "{text}");
+        assert!(text.contains(&at.iso()[11..16]), "{text}");
+        assert_eq!(notices[0].level, "warning");
+        // One system notification too, for when the window is hidden, and only one.
+        assert_eq!(owner.take_pause_alerts(), std::slice::from_ref(text));
+        assert!(owner.take_pause_alerts().is_empty());
+
+        // The next cycles bring the same request again: it has done its work.
+        clock.advance(600);
+        owner.absorb_remote(&asker.file().data.clone(), seen.clone(), Vec::new());
+        assert_eq!(owner.snapshot().notices.len(), 1);
+        assert!(owner.take_pause_alerts().is_empty());
+        let id = owner.snapshot().notices[0].id.clone();
+        owner.dismiss_notice(&id);
+        owner.absorb_remote(&asker.file().data.clone(), seen, Vec::new());
+        assert!(
+            owner.snapshot().notices.is_empty(),
+            "dismissed stays dismissed"
+        );
+    }
+
+    #[test]
+    fn a_requesting_device_with_no_known_name_is_still_mentioned() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut owner, t) = running(dir_a.path(), &clock);
+        let mut asker = open(dir_b.path(), &clock);
+        clock.advance(600);
+        asker.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+        asker.request_remote_pause(&t).unwrap();
+        owner.absorb_remote(&asker.file().data.clone(), BTreeMap::new(), Vec::new());
+        let notices = owner.snapshot().notices;
+        assert!(notices[0].message.contains("another device"), "{notices:?}");
     }
 
     #[test]

@@ -197,6 +197,15 @@ fn new_id() -> String {
     Uuid::new_v4().to_string()
 }
 
+/// A pause request that will close one of this device's open segments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PauseRequestDue {
+    pub segment_id: String,
+    pub task_id: String,
+    pub requested_by: String,
+    pub at: Ts,
+}
+
 impl Shared {
     pub(crate) fn live_project(&self, id: &str) -> Result<&Project, CoreError> {
         self.projects
@@ -753,40 +762,58 @@ impl Shared {
         names
     }
 
+    /// The requests `reconcile` would act on now: one for each of this device's open segments that has
+    /// any. Several devices may have asked: the earliest stands, which is also what `end_of` counts.
+    #[must_use]
+    pub fn pause_requests_due(&self, device: &str) -> Vec<PauseRequestDue> {
+        let mut asked = std::collections::BTreeMap::<&str, &PauseRequest>::new();
+        for q in self.pause_requests.values().filter(|q| {
+            self.segments
+                .get(&q.segment_id)
+                .is_some_and(|s| s.end.is_none() && s.device_id == device)
+        }) {
+            asked
+                .entry(q.segment_id.as_str())
+                .and_modify(|first| {
+                    if q.at < first.at {
+                        *first = q;
+                    }
+                })
+                .or_insert(q);
+        }
+        asked
+            .into_values()
+            .map(|q| PauseRequestDue {
+                segment_id: q.segment_id.clone(),
+                task_id: q.task_id.clone(),
+                requested_by: q.requested_by.clone(),
+                at: q.at,
+            })
+            .collect()
+    }
+
     /// Restores local invariants after a merge. Only this device's own segments are ever altered.
     /// Returns true when something changed.
     pub fn reconcile(&mut self, ctx: &Ctx<'_>) -> bool {
         let mut changed = false;
         // A pause asked for from another device: this device closes its own segment, at the moment
         // of the request or at once if that has passed the segment's own start.
-        // Several devices may have asked: the earliest stands, which is also what `end_of` counts.
-        let mut asked = std::collections::BTreeMap::<String, (String, Ts)>::new();
-        for q in self.pause_requests.values().filter(|q| {
-            self.segments
-                .get(&q.segment_id)
-                .is_some_and(|s| s.end.is_none() && s.device_id == ctx.device)
-        }) {
-            asked
-                .entry(q.segment_id.clone())
-                .and_modify(|(_, at)| *at = (*at).min(q.at))
-                .or_insert((q.task_id.clone(), q.at));
-        }
-        for (seg_id, (task_id, at)) in asked {
-            self.close_segment(&seg_id, at.min(ctx.now));
+        for due in self.pause_requests_due(ctx.device) {
+            self.close_segment(&due.segment_id, due.at.min(ctx.now));
             self.set_state(
                 ctx,
-                &task_id,
+                &due.task_id,
                 TaskState::Paused,
                 Some(PauseReason::RemoteRequest),
             );
             self.audit(
                 ctx,
                 "task",
-                &task_id,
+                &due.task_id,
                 "pausedByRequest",
                 "",
                 serde_json::Value::Null,
-                serde_json::json!({"segmentId": seg_id, "at": at}),
+                serde_json::json!({"segmentId": due.segment_id, "at": due.at}),
             );
             changed = true;
         }
