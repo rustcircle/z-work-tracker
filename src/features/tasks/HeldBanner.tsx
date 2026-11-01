@@ -24,9 +24,9 @@ export function HeldBanner() {
         const name = nameOf(id);
         return name === undefined ? null : banner(`held-${id}`, 'held-banner', heldAwayNotice(name, fields));
       })}
-      {[...unsentAway].map(([id, fields]) => {
+      {[...unsentAway].map(([id, unsent]) => {
         const name = nameOf(id);
-        return name === undefined ? null : banner(`unsent-${id}`, 'unsent-banner', unsentAwayNotice(name, fields));
+        return name === undefined ? null : banner(`unsent-${id}`, 'unsent-banner', unsentAwayNotice(name, unsent.fields, unsent.refused));
       })}
     </>
   );

@@ -79,6 +79,8 @@ export interface EditSession {
   queue: Promise<boolean>;
   /** Failed saves in a row, for the retry delay. */
   failures: number;
+  /** Why the backend refuses to take this edit at all, if it does. Sending it again can't help, so nothing does until it changes. */
+  refused: string | null;
   /** The next autosave or retry. Lives here so that rebuilt editors share one, and it outlives a closed editor. */
   timer: number | null;
   /** Stashed drafts are written one at a time, in order, across rebuilds. */
@@ -126,6 +128,7 @@ export function newSession(task: Task, report: (status: SaveStatus) => void): Ed
     edits: { name: 0, project: 0, description: 0, tags: 0 },
     queue: Promise.resolve(true),
     failures: 0,
+    refused: null,
     timer: null,
     draftChain: Promise.resolve(),
     closed: false,
@@ -146,11 +149,17 @@ export function hasUnsaved(s: EditSession): boolean {
 
 type FieldsByTask = ReadonlyMap<string, readonly SavedField[]>;
 
-/** `was` with a task's fields replaced, the same object if nothing changed. */
-function withFields(was: FieldsByTask, id: string, fields: readonly SavedField[]): FieldsByTask {
-  if ((was.get(id) ?? []).join() === fields.join()) return was;
+/** The fields failing to save for a task, and why if that can't change by itself. */
+export interface Unsent {
+  fields: readonly SavedField[];
+  refused: string | null;
+}
+
+/** `was` with a task's entry replaced, the same object if nothing changed. */
+function withEntry<T>(was: ReadonlyMap<string, T>, id: string, entry: T | null): ReadonlyMap<string, T> {
+  if (JSON.stringify(was.get(id) ?? null) === JSON.stringify(entry)) return was;
   const next = new Map(was);
-  if (fields.length > 0) next.set(id, fields);
+  if (entry !== null) next.set(id, entry);
   else next.delete(id);
   return next;
 }
@@ -166,7 +175,7 @@ interface EditStoreApi {
   /** The fields held back, by task, while no editor is on screen to say so. */
   heldAway: FieldsByTask;
   /** The fields failing to save, by task, while no editor is on screen to say so. */
-  unsentAway: FieldsByTask;
+  unsentAway: ReadonlyMap<string, Unsent>;
   /** Tells the store a draft's holds, its failures or its editor may have changed. */
   noteAway: (id: string, s: EditSession) => void;
   /** The draft for a task, created from `init` the first time. Mutated in place by the editor. */
@@ -187,7 +196,7 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
   const { snapshot, act } = useAppState();
   const [editing, setEditing] = useState<ReadonlySet<string>>(new Set());
   const [heldAway, setHeldAway] = useState<FieldsByTask>(new Map());
-  const [unsentAway, setUnsentAway] = useState<FieldsByTask>(new Map());
+  const [unsentAway, setUnsentAway] = useState<ReadonlyMap<string, Unsent>>(new Map());
   const sessions = useRef(new Map<string, EditSession>());
   const flushers = useRef(new Map<string, () => Promise<unknown>>());
   /** Focus requested before the editor existed. */
@@ -221,8 +230,10 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     }
   }, []);
   const noteAway = useCallback((id: string, s: EditSession) => {
-    setHeldAway((was) => withFields(was, id, s.shown ? [] : heldFields(s)));
-    setUnsentAway((was) => withFields(was, id, s.shown ? [] : unsentFields(s)));
+    const held = s.shown ? [] : heldFields(s);
+    const unsent = s.shown ? [] : unsentFields(s);
+    setHeldAway((was) => withEntry(was, id, held.length > 0 ? held : null));
+    setUnsentAway((was) => withEntry(was, id, unsent.length > 0 ? { fields: unsent, refused: s.refused } : null));
   }, []);
   const taskGone = useCallback(
     (id: string, s: EditSession) => {
@@ -235,8 +246,8 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
       s.dirty = { name: false, project: false, description: false, tags: false };
       close(id);
       flushers.current.delete(id);
-      setHeldAway((was) => withFields(was, id, []));
-      setUnsentAway((was) => withFields(was, id, []));
+      setHeldAway((was) => withEntry(was, id, null));
+      setUnsentAway((was) => withEntry(was, id, null));
       // Keeping words also ends their stash, once they are safe: the backend knows when that is.
       s.draftChain = s.draftChain
         .then(async () => {
@@ -300,7 +311,7 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
   const revision = snapshot.revision;
   useEffect(() => {
     for (const s of [...sessions.current.values()]) {
-      if (!s.shown && s.failures > MAX_RETRIES && hasUnsaved(s)) void s.retry();
+      if (!s.shown && s.failures > MAX_RETRIES && s.refused === null && hasUnsaved(s)) void s.retry();
     }
   }, [revision]);
 

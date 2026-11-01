@@ -20,7 +20,7 @@ import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { MAX_RETRIES, SAVED_FIELDS, hasUnsaved, heldFields, newSession, sameValue, settle, storedFields, useEditStore, type EditField, type SaveStatus, type SavedField } from './editStore';
-import { errorMessage } from '../../lib/errorMessage';
+import { errorCode, errorMessage } from '../../lib/errorMessage';
 
 export const AUTOSAVE_MS = 600;
 /** How soon typed description text is stashed on disk, so a Windows shutdown in the next second loses nothing. */
@@ -47,9 +47,17 @@ export function heldAwayNotice(name: string, held: readonly SavedField[]): strin
 }
 
 /** Why a task's values haven't gone yet, and what the user can do, for a notice that outlasts the error of the failed save. */
-export function unsentAwayNotice(name: string, unsent: readonly SavedField[]): string {
+export function unsentAwayNotice(name: string, unsent: readonly SavedField[], refused: string | null): string {
   const end = !unsent.includes('description') ? 'your edit is lost' : unsent.length === 1 ? 'your words come back at the next launch, if the disk took them' : 'the description comes back at the next launch, if the disk took it, and the rest is lost';
-  return `Your edit to the ${listFields(unsent)} of “${name}” could not be saved yet. It is still here and will be sent again. Opening the task's editor shows it and tries again. If the app closes first, ${end}.`;
+  const edit = `Your edit to the ${listFields(unsent)} of “${name}”`;
+  const state = refused === null ? `${edit} could not be saved yet. It is still here and will be sent again. Opening the task's editor shows it and tries again.` : `${edit} can't be saved: ${refused}. It is still here. Open the task's editor to change it.`;
+  return `${state} If the app closes first, ${end}.`;
+}
+
+/** Why the backend won't take a save, when the failure is in the edit and not in the writing. */
+function refusal(e: unknown): string | null {
+  const code = errorCode(e);
+  return code === 'validation' || code === 'not_found' ? errorMessage(e) : null;
 }
 
 /** What the status line says while unsaved values wait for the user to choose. The editor shows one value per field, so it can't show the newer one beside them. */
@@ -192,9 +200,12 @@ export function TaskEditor({ task }: { task: Task }) {
     };
     s.saving = true;
     const sentExpected = s.expected;
-    const out: { reply?: PatchReply } = {};
+    const out: { reply?: PatchReply; error?: unknown } = {};
     const ok = await act(async () => {
-      const reply = await api.patchTask(task.id, patch, expected);
+      const reply = await api.patchTask(task.id, patch, expected).catch((e: unknown) => {
+        out.error = e;
+        throw e;
+      });
       out.reply = reply;
       // Before the snapshot is adopted, so nothing rendered from it can take this save for a newer value.
       for (const f of SAVED_FIELDS) {
@@ -224,13 +235,15 @@ export function TaskEditor({ task }: { task: Task }) {
         return false;
       }
       s.failures += 1;
+      s.refused = refusal(out.error);
       if (s.dirty.description) stashAgain();
-      const willRetry = s.failures <= MAX_RETRIES && SAVED_FIELDS.some((f) => s.dirty[f] && !s.conflict[f]);
+      const willRetry = s.refused === null && s.failures <= MAX_RETRIES && SAVED_FIELDS.some((f) => s.dirty[f] && !s.conflict[f]);
       s.report({ kind: 'failed', willRetry });
       if (willRetry) schedule(RETRY_BASE_MS * 2 ** (s.failures - 1));
       return false;
     }
     s.failures = 0;
+    s.refused = null;
     if (out.reply) latest.current = { ...latest.current, ...out.reply.stored };
     if (send.description && s.conflict.description) stashAgain();
     // A sent field not changed since is done with. What was held stays unsaved, and so does anything typed meanwhile.
@@ -272,6 +285,7 @@ export function TaskEditor({ task }: { task: Task }) {
     session.dirty[field] = true;
     session.edits[field] += 1;
     session.failures = 0;
+    session.refused = null;
     setStatus((prev) => (prev.kind === 'saving' ? prev : { kind: 'idle' }));
   }
 

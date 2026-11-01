@@ -613,6 +613,8 @@ describe('an edit to a task deleted elsewhere', () => {
 
 describe('found in review of the fixes', () => {
   const noticesShown = () => screen.queryAllByTestId('notice').map((n) => n.textContent ?? '');
+  const unsent = () => screen.queryAllByTestId('unsent-banner');
+  const tries = () => vi.mocked(api.patchTask).mock.calls.length;
 
   it('a stash that failed is written again when the save is refused, as the notice promises the words come back', async () => {
     const user = await openEditor();
@@ -640,6 +642,35 @@ describe('found in review of the fixes', () => {
     await pass(2000);
     expect(noticesShown()[0]).toContain('one two');
     expect(state.drafts['t-guide']).toBeUndefined();
+  });
+
+  it('an edit that can never pass says why, and later writes neither try it again nor bring the error back', async () => {
+    const user = await openEditor();
+    await user.type(nameBox(), 'x'.repeat(250));
+    await toggle(user);
+    await pass(100);
+    expect(editorOpen()).toBe(false);
+    const sent = tries();
+    await pass(ALL_RETRIES_MS);
+    expect(tries()).toBe(sent);
+    const banner = unsent()[0];
+    expect(banner).toHaveTextContent("can't be saved: Task name is longer than 200 characters");
+    expect(banner).toHaveTextContent("Open the task's editor to change it");
+    expect(banner).not.toHaveTextContent('sent again');
+    await user.click(screen.getByRole('button', { name: 'Hide earnings' }));
+    await pass(100);
+    expect(tries()).toBe(sent);
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(unsent()).toHaveLength(1);
+    // The fix is the user's, in the editor, and then it goes.
+    await user.click(screen.getByRole('button', { name: /^Edit Brand guidelines/ }));
+    await user.clear(nameBox());
+    await user.type(nameBox(), 'Brand guidelines v2');
+    await pass(2000);
+    expect(guide().name).toBe('Brand guidelines v2');
+    await done(user);
+    await pass(100);
+    expect(unsent()).toHaveLength(0);
   });
 });
 
