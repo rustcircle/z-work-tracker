@@ -644,7 +644,7 @@ impl Service {
     /// Words kept at an earlier launch and not yet dismissed.
     fn load_kept(&mut self) {
         let read = crate::drafts::read_kept(&self.paths.dir);
-        let Ok(Some(mut all)) = read else {
+        let Ok(Some(all)) = read else {
             // A damaged file goes aside. One that can't be read may only be in use, so it stays for the next launch.
             let aside = match read {
                 Ok(None) => crate::drafts::set_aside_kept(&self.paths.dir, self.now()).ok(),
@@ -663,18 +663,29 @@ impl Service {
             );
             return;
         };
+        self.show_kept(all);
+    }
+
+    fn show_kept(&mut self, mut all: Vec<Kept>) {
         all.sort_by_key(|k| k.at);
         for mut kept in all {
             if let Some(task) = self.file.data.tasks.get(&kept.task_id) {
                 kept.name.clone_from(&task.name);
             }
-            self.notify_kept_out(kept);
+            self.keep_once(kept);
         }
     }
 
     /// Writes the words kept out of the store to their file, or removes it if none are left. Words it won't
     /// take may last only as long as their notices, so that gets said, once until a write works again.
     fn save_kept(&mut self) -> Result<(), CoreError> {
+        // A file that couldn't be read at launch may only have been in use, and a run can last for weeks.
+        if self.kept_file_stuck
+            && let Ok(Some(all)) = crate::drafts::read_kept(&self.paths.dir)
+        {
+            self.kept_file_stuck = false;
+            self.show_kept(all);
+        }
         let written = if self.kept_file_stuck {
             Err(CoreError::StoreUnavailable(
                 "the file of kept words can't be read".to_owned(),
@@ -703,13 +714,16 @@ impl Service {
             .tasks
             .get(task_id)
             .map_or("a deleted task", |t| t.name.as_str());
-        let kept = Kept {
+        self.keep_once(Kept {
             task_id: task_id.to_owned(),
             name: name.to_owned(),
             words: crate::subtasks::plain_text(&draft.description),
             at: draft.at,
             because,
-        };
+        });
+    }
+
+    fn keep_once(&mut self, kept: Kept) {
         let known =
             |k: &Kept| k.task_id == kept.task_id && k.at == kept.at && k.words == kept.words;
         if !self.kept_out.values().any(known) {
@@ -3775,6 +3789,36 @@ mod tests {
         std::fs::remove_dir(&path).unwrap();
         let s = open(dir.path(), &clock);
         assert!(s.snapshot().notices.is_empty());
+    }
+
+    #[test]
+    fn a_file_of_kept_words_that_can_be_read_again_takes_this_runs_words_and_shows_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.keep_unsaved_words("gone 1", "First", Some("Kept before"), None);
+        s.on_exit().unwrap();
+        drop(s);
+        // A folder in its place can't be read, like a file something else has open for a while.
+        let path = dir.path().join("z-work-kept-words.json");
+        let aside = dir.path().join("in use");
+        std::fs::rename(&path, &aside).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        clock.advance(1);
+        let mut s = open(dir.path(), &clock);
+        assert!(kept_notices(&s).is_empty());
+        s.keep_unsaved_words("gone 2", "Second", Some("Kept in this run"), None);
+        assert_eq!(told_to_copy(&s), 1);
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&aside, &path).unwrap();
+        clock.advance(1);
+        s.keep_unsaved_words("gone 3", "Third", Some("Kept later"), None);
+        let mut words = kept_words(dir.path());
+        words.sort();
+        assert_eq!(words, ["Kept before", "Kept in this run", "Kept later"]);
+        assert_eq!(kept_notices(&s).len(), 3);
+        drop(s);
+        assert_eq!(kept_notices(&open(dir.path(), &clock)).len(), 3);
     }
 
     #[test]
