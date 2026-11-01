@@ -536,7 +536,8 @@ function resolveColor(s: MockState, wanted: string, taken: readonly string[], un
 /** Tags are a set: their order is no change. */
 const sameTags = (a: string[], b: string[]): boolean => a.length === b.length && a.every((t) => b.includes(t));
 
-function snapshot(s: MockState): Snapshot {
+/** A read gives the revision as it is. Anything else counts as a write, which is the only thing that raises it in the backend. */
+function snapshot(s: MockState, read = false): Snapshot {
   const withTasks = new Set(s.tasks.map((t) => t.projectId));
   const input = pieceInput(s);
   const all = computePieces(input, endOf(s));
@@ -578,7 +579,7 @@ function snapshot(s: MockState): Snapshot {
     });
   const tags = s.tags.filter((t) => !t.deleted);
   return structuredClone({
-    revision: (s.revision += 1),
+    revision: read ? s.revision : (s.revision += 1),
     now: toIso(s.now),
     deviceId: DEVICE_ID,
     deviceName: 'Mock PC',
@@ -1200,7 +1201,7 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
 export function handle(s: MockState, cmd: string, a: Record<string, unknown>): unknown {
   switch (cmd) {
     case 'get_snapshot':
-      return snapshot(s);
+      return snapshot(s, true);
     case 'create_project': {
       const input = cleanProject(s, a.input as ProjectInput, null);
       const { color, replacedFrom } = resolveColor(s, input.color, s.projects.filter((p) => !p.archived).map((p) => p.color), false);

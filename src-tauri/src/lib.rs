@@ -1304,6 +1304,17 @@ mod smoke {
         use tauri::Emitter;
         app.emit("state-changed", ()).map_err(|e| e.to_string())
     }
+
+    /// Makes the data folder refuse writes, or take them again, so saves fail for real.
+    #[tauri::command(async)]
+    pub fn smoke_data_folder_writable(writable: bool) -> Result<(), String> {
+        let dir = std::env::var("ZWT_SMOKE_DATA_DIR").map_err(|e| e.to_string())?;
+        let mut permissions = std::fs::metadata(&dir)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        permissions.set_readonly(!writable);
+        std::fs::set_permissions(&dir, permissions).map_err(|e| e.to_string())
+    }
 }
 
 fn tray_toggle(app: &AppHandle) {
@@ -1842,7 +1853,8 @@ pub fn run() {
         smoke::smoke_window_visible,
         smoke::smoke_tray_toggle,
         smoke::smoke_observe,
-        smoke::smoke_emit_changed
+        smoke::smoke_emit_changed,
+        smoke::smoke_data_folder_writable
     ]);
 
     let app = match builder.build(tauri::generate_context!()) {

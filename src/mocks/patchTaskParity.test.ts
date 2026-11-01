@@ -51,10 +51,12 @@ describe('patch_task with expected values, the same table as the backend', () =>
     expect(task).toMatchObject(c.after);
   });
 
-  it('the snapshot built later reads as newer', () => {
-    const { s } = world();
+  it('only a write raises the revision, as in the backend', () => {
+    const { s, taskId } = world();
     const first = handle(s, 'get_snapshot', {}) as { revision: number };
-    const second = handle(s, 'get_snapshot', {}) as { revision: number };
-    expect(second.revision).toBeGreaterThan(first.revision);
+    expect((handle(s, 'get_snapshot', {}) as { revision: number }).revision).toBe(first.revision);
+    const written = handle(s, 'patch_task', { id: taskId, patch: { name: 'Written' } }) as PatchReply;
+    expect(written.snapshot.revision).toBeGreaterThan(first.revision);
+    expect((handle(s, 'get_snapshot', {}) as { revision: number }).revision).toBe(written.snapshot.revision);
   });
 });

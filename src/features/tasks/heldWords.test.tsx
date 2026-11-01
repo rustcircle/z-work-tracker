@@ -64,6 +64,7 @@ const countOf = (cmd: string) => state.calls.filter((c) => c.cmd === cmd).length
 /** Another device's text lands in the store, and this page hears of it. */
 async function arrive(change: () => void = () => void (guide().description = elsewhere)) {
   change();
+  state.revision += 1;
   await act(() => emit('state-changed'));
   await pass(100);
 }
