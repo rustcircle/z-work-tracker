@@ -1,10 +1,11 @@
-// Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty`, `?theme=`, `?firstRun=1` (the wizard) or `?firstRun=legacy` (the old prompts), `?launch=cold`.
+// Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty`, `?theme=`, `?firstRun=1` (the wizard; `&step=N` resumes at a saved step, `&pc=2` is a second computer whose OneDrive folder already holds data) or `?firstRun=legacy` (the old prompts), `?launch=cold`.
 import { emit } from '@tauri-apps/api/event';
 
 import { toIso } from '../lib/tz';
 import type { Theme } from '../lib/types';
 import { demoP2State, demoState } from './demoSeed';
-import { crashRelaunch, emptyState, installMock, relaunch, type MockState } from './ipcMock';
+import { fullProject } from './factories';
+import { DEVICE_ID, crashRelaunch, emptyState, installMock, relaunch, type MockState } from './ipcMock';
 
 declare global {
   interface Window {
@@ -27,6 +28,24 @@ function seedSync(state: MockState): void {
   state.syncPromptDone = true;
 }
 
+/** `?pc=2`: this is a second computer. A detected OneDrive folder already holds the first one's records. */
+function seedSecondPc(state: MockState): void {
+  const root = 'C:\\Users\\me\\OneDrive';
+  const stamp = { at: toIso(state.now), by: DEVICE_ID };
+  state.detected = [{ provider: 'oneDrive', root, source: 'the OneDrive folder' }];
+  state.folders[root] = {
+    devices: ['Office PC'],
+    counts: { projects: 1, tasks: 6, segments: 48 },
+    available: true,
+    data: {
+      projects: [fullProject({ id: 'p-office', name: 'Office project', color: '#2563eb' })],
+      settings: { myZone: 'Europe/Lisbon' },
+      rounding: [{ id: 'r-office', projectId: null, effectiveFrom: '2026-01-01', incrementMinutes: 15, method: 'up', deleted: false, stamp }],
+      shifts: [],
+    },
+  };
+}
+
 export function installE2eBackend(): void {
   const q = new URLSearchParams(window.location.search);
   const seed = q.get('seed');
@@ -43,6 +62,11 @@ export function installE2eBackend(): void {
     state.syncPromptDone = false;
     state.clientZonePromptDone = false;
     state.settings.clientZone = null;
+    if (firstRun === '1') {
+      state.settings = {};
+      state.setupStep = Number(q.get('step') ?? '0') || 0;
+    }
+    if (q.get('pc') === '2') seedSecondPc(state);
   }
   if (q.get('sync') === '1') seedSync(state);
   if (q.get('launch') === 'cold') relaunch(state);

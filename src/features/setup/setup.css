@@ -1,0 +1,19 @@
+.wizard { align-items: start; }
+.wizard-card { gap: 12px; }
+.wizard-progress { margin: 0; font-size: 13px; color: var(--text-muted); font-weight: 600; }
+.wizard-dots { display: flex; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.wizard-dots li { width: 26px; height: 6px; border-radius: 3px; background: var(--border); border: 1px solid var(--border-strong); box-sizing: border-box; }
+.wizard-dots li.done { background: var(--accent); border-color: var(--accent); }
+.wizard-dots li.now { background: var(--focus); border-color: var(--focus); width: 40px; }
+.wizard h1:focus { outline: none; }
+.wizard h1:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: 4px; }
+.wizard-body { display: flex; flex-direction: column; gap: 12px; }
+.wizard-note { padding: 8px 12px; border-left: 4px solid var(--focus); background: color-mix(in srgb, var(--focus) 10%, var(--surface)); border-radius: 4px; margin: 0; }
+.wizard-table { border-collapse: collapse; width: 100%; max-width: 420px; }
+.wizard-table th, .wizard-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.wizard-table .num { text-align: right; }
+.wizard-folders, .wizard-presets { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.wizard-folders li { padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
+.wizard-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 6px; }
+.wizard-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.wizard-foot { margin: 0; font-size: 12.5px; }

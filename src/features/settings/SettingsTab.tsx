@@ -3,6 +3,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { useNav } from '../../components/nav';
 import { Button, Card } from '../../components/ui';
 import { IconBack } from '../../components/icons';
+import { RerunSetup } from '../setup/RerunSetup';
 import { AuditSection } from './AuditSection';
 import { BackupsSection } from './BackupsSection';
 import { BillingPrefixSection } from './BillingPrefixSection';
@@ -30,6 +31,7 @@ const SECTIONS: { id: string; title: string; render: () => ReactNode }[] = [
   { id: 'sync', title: 'Sync between devices', render: () => <SyncSection /> },
   { id: 'backups', title: 'Backups', render: () => <BackupsSection /> },
   { id: 'audit', title: 'History of changes', render: () => <AuditSection /> },
+  { id: 'setup', title: 'Setup', render: () => <RerunSetup /> },
   { id: 'about', title: 'About', render: () => <AboutSection /> },
 ];
 
