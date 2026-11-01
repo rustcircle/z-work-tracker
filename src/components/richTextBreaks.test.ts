@@ -127,6 +127,24 @@ describe('plain text keeps the words on both sides of a break or a paragraph apa
     expect(templatePreview(TASKS).items).toEqual(['one two', 'three']);
   });
 
+  it('ends the first line of the template preview at a break, but not at a bold or italic word inside it', () => {
+    const brief = written((e) => {
+      e.commands.toggleBold();
+      type(e, 'Brief:');
+      e.commands.toggleBold();
+      type(e, ' write the ');
+      e.commands.toggleItalic();
+      type(e, 'copy');
+      e.commands.toggleItalic();
+      shiftEnter(e);
+      type(e, 'Deadline: Friday');
+      enter(e);
+      type(e, 'Second paragraph');
+    });
+    expect(docPlainText(brief)).toBe('Brief: write the copy Deadline: Friday Second paragraph');
+    expect(templatePreview(brief).firstLine).toBe('Brief: write the copy');
+  });
+
   it('keeps two paragraphs of one list item apart too, as a paste of such a list makes them', () => {
     const pasted = written((e) => {
       e.commands.setContent('<ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p>One</p><p>Two</p></li></ul>');

@@ -189,6 +189,38 @@ describe('template rules', () => {
     expect(templatePreview(null)).toEqual({ firstLine: '', items: [] });
     expect(liveTagIds({ tags: ['a', 'b', 'c'] }, new Set(['a', 'c']))).toEqual(['a', 'c']);
   });
+
+  describe('first line of the preview', () => {
+    // What the editor writes: a mark (bold, italic) goes on the text node, and splits the text of one line into several.
+    const text = (words: string, ...marks: string[]) => (marks.length === 0 ? { type: 'text', text: words } : { type: 'text', text: words, marks: marks.map((type) => ({ type })) });
+    const paragraph = (...content: object[]) => ({ type: 'paragraph', content });
+    const doc = (...content: object[]) => ({ type: 'doc', content });
+    const firstLine = (...content: object[]) => templatePreview(doc(...content)).firstLine;
+    const hardBreak = { type: 'hardBreak' };
+
+    it('is the whole line, not its first text node: a mark splits the text, not the line', () => {
+      expect(firstLine(paragraph(text('Brief:', 'bold'), text(' write the copy')))).toBe('Brief: write the copy');
+      expect(firstLine(paragraph(text('Send the '), text('final', 'italic'), text(' artwork by '), text('Friday', 'bold', 'italic'), text('.')))).toBe('Send the final artwork by Friday.');
+      expect(firstLine(paragraph(text('Brief:', 'bold'), text(' write the copy')), paragraph(text('Second paragraph')))).toBe('Brief: write the copy');
+    });
+
+    it('ends at a hard break, and passes over a line with nothing on it', () => {
+      expect(firstLine(paragraph(text('Brief:', 'bold'), text(' write the copy'), hardBreak, text('Deadline: Friday')))).toBe('Brief: write the copy');
+      expect(firstLine(paragraph(hardBreak, text('Brief:', 'bold'), text(' after an empty line')))).toBe('Brief: after an empty line');
+      expect(firstLine({ type: 'paragraph' }, paragraph(text('  ')), paragraph(hardBreak), paragraph(text('Third paragraph')))).toBe('Third paragraph');
+      expect(firstLine({ type: 'paragraph' }, paragraph(text('  ', 'bold'), hardBreak))).toBe('');
+    });
+
+    it('is the first one outside a task list, in a heading, a quote or a list item as well', () => {
+      const item = (...content: object[]) => ({ type: 'taskItem', attrs: { checked: false }, content: [paragraph(...content)] });
+      const tasks = { type: 'taskList', content: [item(text('Moodboard', 'bold'), text(' for the client'))] };
+      expect(firstLine(tasks, paragraph(text('Scope:', 'bold'), text(' three directions')))).toBe('Scope: three directions');
+      expect(firstLine(tasks)).toBe('');
+      expect(firstLine({ type: 'heading', attrs: { level: 2 }, content: [text('Logo', 'italic'), text(' job')] })).toBe('Logo job');
+      expect(firstLine({ type: 'blockquote', content: [paragraph(text('Quoted', 'bold'), text(' words'))] })).toBe('Quoted words');
+      expect(firstLine({ type: 'bulletList', content: [{ type: 'listItem', content: [paragraph(text('First', 'bold'), text(' point'))] }] })).toBe('First point');
+    });
+  });
 });
 
 describe('Settings: templates', () => {
