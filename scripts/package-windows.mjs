@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // Builds the Windows x64 NSIS installer from macOS with the GNU toolchain, then checks the PE imports
-// (only DLLs that ship in Windows are allowed) and reports the signature state honestly.
+// (only DLLs that ship in Windows are allowed) and reports the signature state honestly. Tauri signs a
+// copy of the exe for the installer, so the signatures that count are read from inside the installer.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+
+import { chooseRoute } from './windows-sign.mjs';
 
 const TARGET = 'x86_64-pc-windows-gnu';
 const OBJDUMP = 'x86_64-w64-mingw32-objdump';
@@ -48,8 +51,24 @@ function hasCertificate(file) {
   return buf.readUInt32LE(dirs + 4 * 8 + 4) > 0;
 }
 
+/** Signature state of the files that get installed, or null when no 7-Zip can open the installer. */
+function signaturesInside(installerFile) {
+  const tool = ['7zz', '7z'].find((t) => spawnSync('which', [t]).status === 0);
+  if (!tool) return null;
+  const dir = join(release, 'installer-contents');
+  rmSync(dir, { recursive: true, force: true });
+  const names = ['zWorkTracker.exe', 'uninstall.exe', 'WebView2Loader.dll'];
+  const opened = spawnSync(tool, ['x', '-y', `-o${dir}`, installerFile, ...names], { encoding: 'utf8', maxBuffer: 1 << 26 });
+  if (opened.status !== 0) return null;
+  const found = names.filter((n) => existsSync(join(dir, n))).map((n) => ({ name: n, signed: hasCertificate(join(dir, n)) }));
+  rmSync(dir, { recursive: true, force: true });
+  return found;
+}
+
 const list = imports(exe);
 const bad = list.filter((d) => FORBIDDEN.test(d));
+const signingWanted = chooseRoute(process.env, process.platform).route !== 'none';
+const inside = signaturesInside(installerPath);
 const report = [
   `App exe: ${exe}`,
   `Size: ${statSync(exe).size} bytes`,
@@ -57,15 +76,22 @@ const report = [
   ...list.map((d) => `  ${d}`),
   '',
   `Forbidden compiler-runtime DLLs: ${bad.length ? bad.join(', ') : 'none'}`,
-  `Authenticode signature in app exe: ${hasCertificate(exe) ? 'present' : 'NONE (UNSIGNED)'}`,
   `Installer: ${installerPath}`,
   `Installer size: ${statSync(installerPath).size} bytes`,
   `Authenticode signature in installer: ${hasCertificate(installerPath) ? 'present' : 'NONE (UNSIGNED)'}`,
+  ...(inside === null
+    ? ['Files inside the installer: not checked, needs 7-Zip (brew install sevenzip)']
+    : inside.map((f) => `Authenticode signature in ${f.name} inside the installer: ${f.signed ? 'present' : 'NONE (UNSIGNED)'}`)),
 ].join('\n');
 console.log(report);
 if (!existsSync(out)) mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'pe-imports.txt'), `${report}\n`);
 if (bad.length) {
   console.error(`The app needs DLLs Windows does not ship: ${bad.join(', ')}`);
+  process.exit(1);
+}
+const missed = [...(hasCertificate(installerPath) ? [] : ['the installer']), ...(inside ?? []).filter((f) => !f.signed).map((f) => f.name)];
+if (signingWanted && missed.length) {
+  console.error(`Signing was asked for, but these are unsigned: ${missed.join(', ')}`);
   process.exit(1);
 }
