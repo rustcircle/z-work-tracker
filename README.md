@@ -30,7 +30,7 @@ Status: phase 2 build. It has been run and tested on macOS, and the Windows inst
 
 **Install.** Run `zWorkTracker_0.1.0_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
 
-The installer is **not signed yet**, so Windows SmartScreen may say "Windows protected your PC". To continue, choose **More info**, then **Run anyway**. Signing removes that warning over time; see [signing](#windows-code-signing).
+An unsigned installer can make Windows SmartScreen say "Windows protected your PC". To continue, choose **More info**, then **Run anyway**. This project's builds are meant for your own PCs, signed with [a self-signed certificate](#trusting-your-own-builds-with-a-self-signed-certificate); SmartScreen may still warn about a downloaded file even then.
 
 **What the app needs from Windows.** It needs one thing: the Microsoft Edge WebView2 Runtime that comes with Windows 11. The app ships no runtime and never downloads one. If WebView2 is missing or disabled, both the installer and the app say so instead of opening a blank window. Everything else is inside the app: JavaScript, map data, time zone data, chart code and icons.
 
@@ -510,48 +510,106 @@ node scripts/perf-native.mjs --exe <dir>/release/zWorkTracker --store <store> --
 pnpm package:windows
 ```
 
-This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_0.1.0_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the files are signed. `WebView2Loader.dll` ships inside the installer next to the exe.
+This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_0.1.0_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the installer and the files inside it are signed (reading those needs `brew install sevenzip`). `WebView2Loader.dll` ships inside the installer next to the exe.
 
 ### Trusting your own builds with a self-signed certificate
 
-This is only for your own PCs. A self-signed certificate is trusted only on PCs set up as below. It isn't public code signing and must not be described as signed for anyone else. **The private key must stay private**: the commands make it non-exportable, on the PC that signs. Norton and other security tools may still flag the file. These commands haven't been run for this project, because it has no Windows machine to test on.
+This is the route for your own PCs, and only those. A self-signed certificate is trusted only on PCs set up as below. It isn't public code signing and must not be described as signed for anyone else.
 
-In Windows PowerShell, on the PC that signs:
+**What it doesn't do.** SmartScreen may still warn about a downloaded file, because its reputation check is separate from trusting a certificate. Norton and other security tools decide on their own and may still flag the file. If Norton flags it, don't add exclusions; report a false positive through Norton's route: <https://support.norton.com/sp/en/us/home/current/solutions/kb20090410134005EN>.
+
+**What has been tested.** None of the PowerShell here has run, because this project has no Windows machine to test on. The signing itself has run from macOS with a throwaway certificate; see [signing from macOS](#signing-from-macos).
+
+**1. Create the certificate, once, on one PC.** It can sign code and nothing else, and lasts 5 years. In PowerShell:
 
 ```powershell
 $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Pedro Jorge (zWorkTracker)" `
-  -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy NonExportable -KeyUsage DigitalSignature `
-  -NotAfter (Get-Date).AddYears(3)
-Export-Certificate -Cert $cert -FilePath .\zWorkTracker-public.cer
+  -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy Exportable -KeyUsage DigitalSignature `
+  -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(5)
+$cert.EnhancedKeyUsageList   # should list Code Signing only
+$cert.Thumbprint             # note it down: this names the certificate from here on
 ```
 
-On each PC that should trust it, signing PC included, import the public `.cer` only. Windows asks you to confirm the Root import:
+**2. Export the two files.**
 
 ```powershell
-Import-Certificate -FilePath .\zWorkTracker-public.cer -CertStoreLocation Cert:\CurrentUser\Root
-Import-Certificate -FilePath .\zWorkTracker-public.cer -CertStoreLocation Cert:\CurrentUser\TrustedPublisher
+$folder = New-Item -ItemType Directory -Force "$HOME\zWorkTracker-signing"
+$password = Read-Host -AsSecureString "Password for the .pfx"
+Export-PfxCertificate -Cert $cert -FilePath "$folder\zWorkTracker-signing.pfx" -Password $password
+Export-Certificate -Cert $cert -FilePath "$folder\zWorkTracker-public.cer"
 ```
 
-Sign both the installer and, once installed, the installed `zWorkTracker.exe`, adjusting the paths to yours. A timestamp keeps the signature valid after the certificate expires:
+- `zWorkTracker-signing.pfx` is **private**: anyone with it and its password can sign as you, and your PCs will believe them. Keep it password-protected and out of this repository and of OneDrive, Google Drive or any other sync folder. Back it up to somewhere offline, such as a USB drive in a drawer, and keep the password in your password manager, not next to it.
+- `zWorkTracker-public.cer` is public. It is the only file the other PCs need.
+
+**3. Trust it on each PC, the signing PC included.** Copy the `.cer` over, and in PowerShell run as administrator:
 
 ```powershell
-$cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Where-Object Subject -eq "CN=Pedro Jorge (zWorkTracker)"
-Set-AuthenticodeSignature -FilePath .\zWorkTracker_0.1.0_x64-setup.exe -Certificate $cert -HashAlgorithm SHA256 -TimestampServer http://timestamp.digicert.com
-Set-AuthenticodeSignature -FilePath "$env:LOCALAPPDATA\zWorkTracker\zWorkTracker.exe" -Certificate $cert -HashAlgorithm SHA256 -TimestampServer http://timestamp.digicert.com
-Get-AuthenticodeSignature .\zWorkTracker_0.1.0_x64-setup.exe, "$env:LOCALAPPDATA\zWorkTracker\zWorkTracker.exe" | Format-List Status, StatusMessage, SignerCertificate
+Import-Certificate -FilePath .\zWorkTracker-public.cer -CertStoreLocation Cert:\LocalMachine\Root
+Import-Certificate -FilePath .\zWorkTracker-public.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
 ```
 
-`Status` should read `Valid` on a PC set up this way. Reinstalling replaces the installed exe with an unsigned copy, so sign it again afterwards.
+The PC now accepts anything signed with that key, which is why the `.pfx` matters so much.
 
-**If Norton flags it.** Don't add exclusions. Report it as a false positive through Norton's route: <https://support.norton.com/sp/en/us/home/current/solutions/kb20090410134005EN>.
+**4. Build signed.** The exe has to be signed before it goes into the installer, and a finished installer can't be opened to do that afterwards. So signing happens during the build, through `bundle.windows.signCommand`, which runs `scripts/windows-sign.mjs` in this order: the exe and bundled DLLs, then the uninstaller as the installer is written, then the installer. Each file gets SHA-256 and an RFC 3161 timestamp, as in `signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 ...`. The timestamp keeps a signature valid after the certificate expires.
+
+On a Windows PC with the Windows SDK's signing tools and this project's build tools:
+
+```powershell
+$env:WINDOWS_CERT_THUMBPRINT = "<the thumbprint>"
+$env:SIGNTOOL_PATH = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+pnpm tauri build --bundles nsis
+```
+
+Or on GitHub, which never needs the certificate on another machine's disk for longer than the build: put the two secrets in the `windows-signing` environment, then run **Windows build** from the Actions tab. The first command reads the file and pipes it straight into the secret, and the second asks for the password:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\zWorkTracker-signing\zWorkTracker-signing.pfx")) | gh secret set WINDOWS_CERT_PFX_BASE64 --env windows-signing --repo rustcircle/z-work-tracker
+gh secret set WINDOWS_CERT_PASSWORD --env windows-signing --repo rustcircle/z-work-tracker
+```
+
+The artifact's name then ends in `-self-signed`. With no secrets the workflow still succeeds and the name ends in `-UNSIGNED`.
+
+**5. Check it,** on a PC set up as in step 3. `signtool` comes with the Windows SDK; `Get-AuthenticodeSignature` is part of Windows, so it's enough on a PC without the SDK:
+
+```powershell
+signtool verify /pa /v .\zWorkTracker_0.1.0_x64-setup.exe
+Get-AuthenticodeSignature .\zWorkTracker_0.1.0_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+```
+
+`signtool` should end with `Successfully verified`, and `Status` should read `Valid`, with a `TimeStamperCertificate`. After installing, run the same two commands on `$env:LOCALAPPDATA\zWorkTracker\zWorkTracker.exe` and `uninstall.exe` beside it. Check the installer and the installed files: the exe left in `src-tauri\target` by the build is the unsigned original.
+
+**If the key leaks,** or you lose track of the `.pfx`, stop trusting the certificate. A timestamped signature stays valid for as long as a PC trusts it, so this is the only thing that helps. On each PC, as administrator:
+
+```powershell
+$thumbprint = "<the thumbprint>"
+Remove-Item "Cert:\LocalMachine\Root\$thumbprint", "Cert:\LocalMachine\TrustedPublisher\$thumbprint"
+```
+
+On the PC that made it, also run `Remove-Item "Cert:\CurrentUser\My\$thumbprint" -DeleteKey`. Delete the `.pfx` and its backups, delete the GitHub secrets with `gh secret delete`, then start again from step 1 and rebuild.
+
+**When it expires,** or a few months before, start again from step 1 with a new certificate and repeat step 3 on each PC. Replace the GitHub secrets. Builds already installed keep verifying while the old certificate stays trusted, thanks to their timestamps, so keep it trusted until they've been replaced by a newer build. Then remove it as above. New builds can't be signed with an expired certificate: the workflow stops with that message.
+
+### Signing from macOS
+
+`pnpm package:windows` signs too, with the `.pfx` copied to the Mac, outside this repository and any sync folder. It needs `brew install osslsigncode sevenzip`:
+
+```sh
+export WINDOWS_CERT_PFX_PATH="$HOME/zWorkTracker-signing/zWorkTracker-signing.pfx"
+read -rs WINDOWS_CERT_PASSWORD && export WINDOWS_CERT_PASSWORD
+pnpm package:windows
+unset WINDOWS_CERT_PASSWORD
+```
+
+It reports the signatures of the installer and of what's inside it, and fails if any is missing. **What has been tested:** this was run with a throwaway test certificate that has since been deleted, and `osslsigncode verify` accepted the installer and, unpacked from it, `zWorkTracker.exe`, `uninstall.exe` and `WebView2Loader.dll`, each with a DigiCert timestamp. PFX files using the encryption Windows may export (3DES or AES-256) opened fine. **Not tested:** Windows itself accepting those signatures.
 
 ### Windows installer from GitHub
 
-`.github/workflows/windows-build.yml` builds on `windows-latest`, by manual run or a `v*` tag. That build uses Rust's MSVC target, and the build from macOS uses MinGW; the bundling config is the same, but only the MinGW build has been produced so far. It hasn't been pushed or run yet.
+`.github/workflows/windows-build.yml` builds on `windows-latest`, by manual run or a `v*` tag. That build uses Rust's MSVC target, and the build from macOS uses MinGW; the bundling config is the same, but only the MinGW build has been produced so far. Its one run on GitHub stopped at the test gates, so the packaging job has never run. It needs no secrets: without them it builds, warns, and names the artifact `z-work-tracker-windows-UNSIGNED`.
 
 ### Windows code signing
 
-The artifacts are **unsigned** until you add credentials. No certificate is included, and none is created. Signing runs through `bundle.windows.signCommand` for the exe, the installer, the uninstaller and the bundled DLLs. It always uses SHA-256 with an RFC 3161 timestamp. With no credentials the build prints `UNSIGNED` and succeeds. Partly set credentials fail the build, so a release isn't silently unsigned.
+The artifacts are **unsigned** until you add credentials. No certificate is included, and none is created. The route in use is [the self-signed one](#trusting-your-own-builds-with-a-self-signed-certificate), which is Route 2 below; Routes 1 and 3 stay here, unused, in case that changes. Signing runs through `bundle.windows.signCommand` for the exe, the installer, the uninstaller and the bundled DLLs. It always uses SHA-256 with an RFC 3161 timestamp. With no credentials the build prints `UNSIGNED` and succeeds. Partly set credentials fail the build, so a release isn't silently unsigned.
 
 **First, check the metadata.** In `src-tauri/tauri.conf.json`, `bundle.publisher` is what Installed Apps shows, and `bundle.copyright` names the copyright holder. With your own certificate, keep the publisher the same as the name on it. The name Windows shows in security prompts always comes from the certificate.
 
@@ -568,7 +626,7 @@ The artifacts are **unsigned** until you add credentials. No certificate is incl
 - From macOS, `brew install osslsigncode` and use the PFX variables.
 - `WINDOWS_TIMESTAMP_URL` is optional.
 
-**Route 3: SignPath Foundation, free for open source (if the project is accepted).** Acceptance isn't assured, and the routes above and unsigned builds keep working regardless. **The publisher Windows shows will be "SignPath Foundation", not you.**
+**Route 3: SignPath Foundation, free for open source (if the project is accepted). Not in use: the job is dormant unless `SIGNING_ROUTE` is set.** Acceptance isn't assured, and the routes above and unsigned builds keep working regardless. **The publisher Windows shows will be "SignPath Foundation", not you.**
 
 1. Set the repository variable `SIGNING_ROUTE` to `signpath`. This selects the workflow's `signpath` job; the `build` job then skips.
 2. Add the secret `SIGNPATH_API_TOKEN`, and the variables `SIGNPATH_ORGANIZATION_ID` and `SIGNPATH_CONNECTOR_URL`.
@@ -576,9 +634,9 @@ The artifacts are **unsigned** until you add credentials. No certificate is incl
 
 The job runs only on a GitHub-hosted Windows runner, because SignPath won't sign what's built elsewhere, so the installer built from macOS can't take this route. It signs the exe, packs it into the installer with `makensis`, signs the installer, then verifies both with `signtool verify /pa`. That's two approvals per release. The uninstaller embedded in the installer stays unsigned on this route. None of this has run yet.
 
-**On GitHub,** add the same names as repository secrets, with the PFX as base64 in `WINDOWS_CERT_PFX_BASE64`. The workflow runs `signtool verify /pa` and fails if credentials were supplied but verification fails.
+**On GitHub,** add the same names as secrets of the `windows-signing` environment, with the PFX as base64 in `WINDOWS_CERT_PFX_BASE64`. The workflow writes the PFX to a temporary file, removes it after the build whatever happened, and prints no secret. It unpacks the installer and runs `signtool verify /pa` on it and on the exe and uninstaller inside, and fails if any signature, timestamp or signer is wrong. For a self-signed certificate it first trusts the public part on that runner, which is thrown away afterwards, since the check can't pass otherwise.
 
-Never commit real values. `.env` is ignored by git. Note that scripts read variables from the environment, so export them or load `.env` first. Signing routes have been tested for command construction and secret handling, not with a real certificate.
+Never commit real values. `.env` is ignored by git, and so are certificate and key files. Note that scripts read variables from the environment, so export them or load `.env` first. Signing has been run with a throwaway certificate from macOS only; on Windows and GitHub it hasn't been run with any certificate.
 
 ### Manual Windows test checklist
 
@@ -607,7 +665,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 
 | Problem | What to do |
 |---|---|
-| "Windows protected your PC" | The installer is unsigned. Choose **More info**, then **Run anyway**. |
+| "Windows protected your PC" | SmartScreen doesn't know the file yet, signed or not. Choose **More info**, then **Run anyway**. |
 | Blank window or WebView2 message | Run Windows Update, or reinstall the WebView2 Runtime from Microsoft. Your data is safe. |
 | The app seems gone after closing | It's in the tray; check the overflow arrow. Only tray **Quit** exits. |
 | Time kept running overnight | The app asks about a sleep or idle time when you return, and it counts nowhere until you answer. Answer **Drop**, or correct the segment. |
