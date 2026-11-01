@@ -11,6 +11,14 @@ import type { RichDoc } from '../../lib/types';
 
 export type EditField = 'name' | 'project' | 'description';
 
+export type SaveStatus =
+  | { kind: 'idle' }
+  | { kind: 'saving' }
+  | { kind: 'saved' }
+  | { kind: 'rejected'; message: string }
+  | { kind: 'failed'; willRetry: boolean }
+  | { kind: 'conflict' };
+
 export interface EditSession {
   name: string;
   description: RichDoc;
@@ -33,6 +41,14 @@ export interface EditSession {
   draftChain: Promise<void>;
   /** The editor was closed with changes still unsaved. */
   closed: boolean;
+  /** The stored description the unsaved one was edited from, to notice a newer one arriving from elsewhere. */
+  base: RichDoc;
+  /** A closed editor's description met newer stored text. It stays here and isn't sent until the user chooses to. */
+  conflict: boolean;
+  /** The editor showing this draft now, for the outcome of a save that started under an earlier one. */
+  report: (status: SaveStatus) => void;
+  /** Saves through that editor. */
+  retry: () => Promise<boolean>;
 }
 
 /** Whether a save still has something to send. A blank name never does: it is refused, not sent. */
@@ -46,6 +62,8 @@ interface EditStoreApi {
   close: (id: string) => void;
   /** Tells the store a save landed, so a closed editor's draft can go once nothing is left in it. */
   saved: (id: string, s: EditSession) => void;
+  /** Drops a draft whose task no longer exists. */
+  forget: (id: string, s: EditSession) => void;
   /** The draft for a task, created from `init` the first time. Mutated in place by the editor. */
   session: (id: string, init: () => EditSession) => EditSession;
   register: (id: string, flush: () => Promise<unknown>) => () => void;
@@ -90,6 +108,12 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
   }, []);
   const saved = useCallback((id: string, s: EditSession) => {
     if (s.closed && !hasUnsaved(s) && sessions.current.get(id) === s) {
+      sessions.current.delete(id);
+      flushers.current.delete(id);
+    }
+  }, []);
+  const forget = useCallback((id: string, s: EditSession) => {
+    if (sessions.current.get(id) === s) {
       sessions.current.delete(id);
       flushers.current.delete(id);
     }
@@ -139,6 +163,6 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     };
   }, [flushAll]);
 
-  const api = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, session, register, flushAll }), [editing, open, close, saved, session, register, flushAll]);
+  const api = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, forget, session, register, flushAll }), [editing, open, close, saved, forget, session, register, flushAll]);
   return <Ctx.Provider value={api}>{children}</Ctx.Provider>;
 }

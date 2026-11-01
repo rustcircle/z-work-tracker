@@ -151,4 +151,115 @@ describe('a save that failed as the editor closed', () => {
     expect(within(reopened).getByRole('textbox', { name: 'Task name' })).toHaveValue('Renamed elsewhere');
     expect(within(reopened).getByRole('textbox', { name: 'Description' })).toHaveTextContent('failed words');
   });
+
+  describe('when newer text arrives from elsewhere meanwhile', () => {
+    const elsewhere = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'From another device' }] }] };
+    async function newerElsewhere(words: string) {
+      const user = await closeOnAFailedSave(words);
+      const guide = state.tasks.find((t) => t.id === 't-guide');
+      if (guide) guide.description = elsewhere;
+      await act(() => emit('state-changed'));
+      await pass(100);
+      storeDown = false;
+      return user;
+    }
+
+    it('the retry leaves the newer text alone', async () => {
+      await newerElsewhere(' failed words');
+      await pass(ALL_RETRIES_MS);
+      expect(saved()).toContain('From another device');
+      expect(saved()).not.toContain('failed words');
+      expect(screen.getByRole('alert')).toHaveTextContent('changed elsewhere');
+    });
+
+    it('so does the save when the window hides', async () => {
+      await newerElsewhere(' failed words');
+      const hidden = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+      hidden.mockRestore();
+      await pass(100);
+      expect(saved()).toContain('From another device');
+    });
+
+    it('reopening shows the words and says so, and sends nothing until the user chooses', async () => {
+      const user = await newerElsewhere(' failed words');
+      await pass(ALL_RETRIES_MS);
+      await toggleEditor(user);
+      expect(box()).toHaveTextContent('failed words');
+      expect(within(form()).getByTestId('save-state')).toHaveTextContent('changed elsewhere');
+      await pass(ALL_RETRIES_MS);
+      expect(saved()).toContain('From another device');
+      await user.click(screen.getByRole('button', { name: 'Done' }));
+      await waitFor(() => expect(saved()).toContain('failed words'));
+      expect(saved()).not.toContain('From another device');
+    });
+
+    it('its other unsaved fields still go, and the words stay', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+      state = demoState();
+      bootApp(state);
+      await user.click(await screen.findByRole('button', { name: 'Edit Brand guidelines' }));
+      await user.type(within(form()).getByRole('textbox', { name: 'Task name' }), ' v2');
+      await user.click(box());
+      await user.keyboard(' failed words');
+      storeDown = true;
+      await user.click(screen.getByRole('button', { name: 'Edit Brand guidelines v2' }));
+      const guide = state.tasks.find((t) => t.id === 't-guide');
+      if (guide) guide.description = elsewhere;
+      storeDown = false;
+      await pass(ALL_RETRIES_MS);
+      expect(guide?.name).toBe('Brand guidelines v2');
+      expect(saved()).toContain('From another device');
+    });
+  });
+
+  it('a task deleted elsewhere stops the retries and leaves no draft', async () => {
+    await closeOnAFailedSave(' failed words');
+    storeDown = false;
+    await waitFor(() => expect(state.drafts['t-guide']).toBeDefined());
+    state.tasks = state.tasks.filter((t) => t.id !== 't-guide');
+    await pass(ALL_RETRIES_MS);
+    const tries = attempts;
+    const hidden = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    hidden.mockRestore();
+    await pass(ALL_RETRIES_MS);
+    expect(attempts).toBe(tries);
+    expect(state.drafts['t-guide']).toBeUndefined();
+  });
+
+  it('closing one editor does not send another outside its backoff', async () => {
+    const user = await closeOnAFailedSave(' failed words');
+    await toggleEditor(user);
+    await pass(100);
+    await user.click(within(form()).getByRole('textbox', { name: 'Task name' }));
+    const other = screen.getByRole('button', { name: 'Edit Logo concepts' });
+    await user.click(other);
+    await pass(100);
+    const tries = attempts;
+    await user.click(screen.getByRole('button', { name: 'Edit Logo concepts' }));
+    await pass(100);
+    expect(attempts).toBe(tries);
+  });
+
+  it('a save that fails after reopening shows in the new editor, and keeps retrying through it', async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+    state = demoState();
+    bootApp(state);
+    await user.click(await screen.findByRole('button', { name: 'Edit Brand guidelines' }));
+    await user.click(box());
+    await user.keyboard(' failed words');
+    let fail: (reason: unknown) => void = () => undefined;
+    vi.mocked(api.patchTask).mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    await toggleEditor(user);
+    await toggleEditor(user);
+    storeDown = true;
+    await act(async () => fail({ code: 'io', message: 'the data file is locked' }));
+    await pass(100);
+    expect(within(form()).getByTestId('save-state')).toHaveTextContent('Not saved');
+    storeDown = false;
+    await pass(ALL_RETRIES_MS);
+    expect(within(form()).getByTestId('save-state')).toHaveTextContent('Saved');
+    expect(saved()).toContain('failed words');
+  });
 });

@@ -15,7 +15,7 @@ import { TagPicker } from './TagPicker';
 import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
-import { hasUnsaved, useEditStore, type EditField, type EditSession } from './editStore';
+import { hasUnsaved, useEditStore, type EditField, type EditSession, type SaveStatus } from './editStore';
 import { errorMessage } from '../../lib/errorMessage';
 
 export const AUTOSAVE_MS = 600;
@@ -24,21 +24,25 @@ export const DRAFT_MS = 300;
 export const RETRY_BASE_MS = 2000;
 const MAX_RETRIES = 5;
 
-type Status = { kind: 'idle' } | { kind: 'saving' } | { kind: 'saved' } | { kind: 'rejected'; message: string } | { kind: 'failed'; willRetry: boolean };
+/** The stored task as the backend has it now: an editor that has closed no longer gets snapshots. */
+async function storedTask(id: string): Promise<Task | undefined> {
+  return (await api.getSnapshot()).tasks.find((t) => t.id === id);
+}
 
 export function TaskEditor({ task }: { task: Task }) {
   const { snapshot, adopt, showError } = useAppState();
   const { act } = useCommands();
   const store = useEditStore();
+  const { saved: savedInStore, forget } = store;
   const statusId = useId();
+  const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
 
-  const session = store.session(task.id, (): EditSession => ({ name: task.name, description: task.description, projectId: null, tags: null, dirty: { name: false, project: false, description: false, tags: false }, focus: null, rev: 0, queue: Promise.resolve(true), failures: 0, timer: null, draftChain: Promise.resolve(), closed: false }));
+  const session = store.session(task.id, (): EditSession => ({ name: task.name, description: task.description, projectId: null, tags: null, dirty: { name: false, project: false, description: false, tags: false }, focus: null, rev: 0, queue: Promise.resolve(true), failures: 0, timer: null, draftChain: Promise.resolve(), closed: false, base: task.description, conflict: false, report: setStatus, retry: () => Promise.resolve(true) }));
   const [name, setName] = useState(session.name);
   const [projectId, setProjectId] = useState(session.projectId ?? task.projectId);
   const [tags, setTags] = useState<string[]>(session.tags ?? task.tags);
   const [templateState, setTemplateState] = useState<string | null>(null);
   const [templateBusy, setTemplateBusy] = useState(false);
-  const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [nameError, setNameError] = useState<string | null>(null);
 
   const nameRef = useRef<HTMLInputElement | null>(null);
@@ -81,27 +85,56 @@ export function TaskEditor({ task }: { task: Task }) {
 
   const doSave = useCallback(async (): Promise<boolean> => {
     const s = session;
-    if (!s.dirty.name && !s.dirty.project && !s.dirty.description && !s.dirty.tags) return true;
+    if (!hasUnsaved(s) && !s.dirty.name) return true;
+    // Nobody is looking at a closed editor, so its old words must not replace newer ones that arrived from
+    // elsewhere while it waited. They stay in the draft, for the user to see and choose when they reopen it.
+    if (s.closed && s.dirty.description && !s.conflict) {
+      let stored: Task | undefined;
+      try {
+        stored = await storedTask(task.id);
+      } catch {
+        stored = undefined;
+      }
+      if (stored && JSON.stringify(stored.description) !== JSON.stringify(s.base)) {
+        s.conflict = true;
+        showError(`“${stored.name}” was changed elsewhere while an edit waited to save, so the edit wasn't sent. Open the task to see it.`);
+      }
+    }
     const cur = latest.current;
     const trimmed = s.name.trim();
     const nameOk = s.dirty.name && trimmed !== '';
-    const changes = nameOk || s.dirty.project || s.dirty.description || s.dirty.tags;
-    if (s.dirty.name && trimmed === '') setStatus({ kind: 'rejected', message: `A task needs a name, so “${cur.name}” is kept.` });
-    if (!changes) return true;
+    const sendDescription = s.dirty.description && !s.conflict;
+    const changes = nameOk || s.dirty.project || sendDescription || s.dirty.tags;
+    if (s.dirty.name && trimmed === '') s.report({ kind: 'rejected', message: `A task needs a name, so “${cur.name}” is kept.` });
+    if (!changes) {
+      if (s.conflict) s.report({ kind: 'conflict' });
+      return true;
+    }
     const sentRev = s.rev;
-    setStatus({ kind: 'saving' });
+    s.report({ kind: 'saving' });
     const patch: TaskPatch = {
       ...(nameOk ? { name: trimmed } : {}),
       ...(s.dirty.project && s.projectId ? { projectId: s.projectId } : {}),
-      ...(s.dirty.description ? { description: s.description } : {}),
+      ...(sendDescription ? { description: s.description } : {}),
       // An empty list clears the tags: only patch_task does that, update_task ignores it.
       ...(s.dirty.tags && s.tags ? { tags: s.tags } : {}),
     };
     const ok = await act(() => api.patchTask(task.id, patch));
     if (!ok) {
+      // A task deleted elsewhere can never take this save. Trying again would only repeat the error.
+      const gone = await storedTask(task.id).then(
+        (t) => t === undefined,
+        () => false,
+      );
+      if (gone) {
+        s.dirty = { name: false, project: false, description: false, tags: false };
+        s.draftChain = s.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
+        forget(task.id, s);
+        return false;
+      }
       s.failures += 1;
       const willRetry = s.failures <= MAX_RETRIES;
-      setStatus({ kind: 'failed', willRetry });
+      s.report({ kind: 'failed', willRetry });
       if (willRetry) schedule(RETRY_BASE_MS * 2 ** (s.failures - 1));
       return false;
     }
@@ -109,17 +142,24 @@ export function TaskEditor({ task }: { task: Task }) {
     if (s.rev === sentRev) {
       // The description is saved for real, so the stashed copy is no longer needed. Anything typed since
       // (the revision moved on) keeps its draft.
-      if (s.dirty.description && draftDoc.current === null && draftTimer.current === null) {
+      if (sendDescription && draftDoc.current === null && draftTimer.current === null) {
         s.draftChain = s.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
       }
-      s.dirty = { name: s.dirty.name && !nameOk, project: false, description: false, tags: false };
-      setStatus((prev) => (prev.kind === 'rejected' ? prev : { kind: 'saved' }));
-      store.saved(task.id, s);
-    } else schedule();
+      s.dirty = { name: s.dirty.name && !nameOk, project: false, description: s.dirty.description && !sendDescription, tags: false };
+      s.report(s.conflict ? { kind: 'conflict' } : { kind: 'saved' });
+      savedInStore(task.id, s);
+    } else {
+      // Typing went on during this save, and the next one is edited from what this one stored.
+      if (sendDescription) {
+        const stored = await storedTask(task.id).catch(() => undefined);
+        if (stored) s.base = stored.description;
+      }
+      schedule();
+    }
     return true;
-  // `schedule` is declared below and only reads refs, so it is safe to leave out.
+  // `schedule` is declared below and only reads the session.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [act, session, store, task.id]);
+  }, [act, forget, savedInStore, session, showError, task.id]);
 
   const flush = useCallback((): Promise<boolean> => {
     clearTimer();
@@ -131,10 +171,14 @@ export function TaskEditor({ task }: { task: Task }) {
 
   function schedule(delay = AUTOSAVE_MS): void {
     clearTimer();
-    session.timer = window.setTimeout(() => void flush(), delay);
+    session.timer = window.setTimeout(() => void session.retry(), delay);
   }
 
   function touch(field: keyof EditSession['dirty']): void {
+    // The first unsaved change of the description: what it is edited from.
+    if (field === 'description' && !session.dirty.description) session.base = latest.current.description;
+    // Going on editing words shown as not sent is the choice to save them.
+    if (field === 'description') session.conflict = false;
     session.dirty[field] = true;
     session.rev += 1;
     session.failures = 0;
@@ -152,11 +196,14 @@ export function TaskEditor({ task }: { task: Task }) {
   );
 
   // Changes left unsaved by the editor before this one are this one's to finish, so the result shows here.
+  // A description that met newer text waits for the user instead.
   useEffect(() => {
-    if (hasUnsaved(session)) schedule();
-    // `schedule` only reads the session and refs.
+    session.report = setStatus;
+    session.retry = flush;
+    if (session.dirty.name || session.dirty.project || session.dirty.tags || (session.dirty.description && !session.conflict)) schedule();
+    // `schedule` only reads the session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session]);
+  }, [session, flush]);
 
   // Give focus back to the field that had it, or to the name when the editor was just opened.
   useEffect(() => {
@@ -210,6 +257,9 @@ export function TaskEditor({ task }: { task: Task }) {
     session.dirty.name = false;
     setNameError(null);
   };
+
+  // Reopened on words that met newer text: nothing has happened in this editor yet, and they still need saying.
+  const shown: SaveStatus = session.conflict && status.kind === 'idle' ? { kind: 'conflict' } : status;
 
   return (
     <form
@@ -313,11 +363,12 @@ export function TaskEditor({ task }: { task: Task }) {
         }}
       />
       <div className="editor-foot">
-        <span id={statusId} className="save-state" role="status" aria-live="polite" data-testid="save-state" data-kind={status.kind}>
-          {status.kind === 'saving' && 'Saving…'}
-          {status.kind === 'saved' && 'Saved'}
-          {status.kind === 'rejected' && status.message}
-          {status.kind === 'failed' && (status.willRetry ? 'Not saved. Your changes are still here and will be sent again.' : 'Not saved. Your changes are still here. Edit or press Done to try again.')}
+        <span id={statusId} className="save-state" role="status" aria-live="polite" data-testid="save-state" data-kind={shown.kind}>
+          {shown.kind === 'saving' && 'Saving…'}
+          {shown.kind === 'saved' && 'Saved'}
+          {shown.kind === 'rejected' && shown.message}
+          {shown.kind === 'conflict' && 'This description was changed elsewhere while your words waited to save. They are shown here and have not been sent. Edit them or press Done to save them over the newer text.'}
+          {shown.kind === 'failed' && (shown.willRetry ? 'Not saved. Your changes are still here and will be sent again.' : 'Not saved. Your changes are still here. Edit or press Done to try again.')}
         </span>
         <div className="editor-buttons">
           <Button small disabled={templateBusy} onClick={() => void saveAsTemplate()}>
@@ -327,6 +378,8 @@ export function TaskEditor({ task }: { task: Task }) {
             small
             variant="primary"
             onClick={() => {
+              // Done on words that met newer text is the choice to save them.
+              session.conflict = false;
               // A failed save keeps the editor open, so what was typed is not lost.
               void flush().then((saved) => {
                 if (saved) store.close(task.id);
