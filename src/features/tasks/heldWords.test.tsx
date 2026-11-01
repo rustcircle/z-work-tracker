@@ -909,6 +909,72 @@ describe('QC-F: a refused save that lands after the field was given up', () => {
   });
 });
 
+describe('QC-G: a press on Done dragged off the button', () => {
+  const doneButton = () => within(form()).getByRole('button', { name: 'Done' });
+  /** Pressed on Done and released elsewhere: no click comes of it. */
+  async function pressAndDragOff(user: User) {
+    await user.pointer([{ target: doneButton(), keys: '[MouseLeft>]' }]);
+    await user.pointer([{ target: document.body }, { keys: '[/MouseLeft]' }]);
+    await pass(10);
+    expect(editorOpen()).toBe(true);
+  }
+  const pressEnterOnDone = async (user: User) => {
+    await act(async () => doneButton().focus());
+    await user.keyboard('{Enter}');
+  };
+
+  it('leaves no list behind: a later keyboard press sends what is held by then', async () => {
+    const user = await openEditor();
+    await pressAndDragOff(user);
+    await user.click(box());
+    await user.keyboard(' mine');
+    await arrive();
+    await pass(1000);
+    expect(kind()).toBe('conflict');
+    await pressEnterOnDone(user);
+    await pass(2000);
+    expect(storedText()).toContain('mine');
+    expect(editorOpen()).toBe(false);
+  });
+
+  it('leaves no list behind: a later keyboard press never sends a hold that only its own blur brought', async () => {
+    const user = await holdWords();
+    await pressAndDragOff(user);
+    await user.click(discardButton() as HTMLElement);
+    await user.click(box());
+    await user.keyboard(' again');
+    await arrive(() => {
+      guide().description = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Newer still' }] }] };
+    });
+    // The blur of moving to the button sends the words. The reply comes only after the key.
+    const impl = vi.mocked(api.patchTask).getMockImplementation();
+    if (!impl) throw new Error('patchTask is not spied on');
+    let release: () => void = () => undefined;
+    vi.mocked(api.patchTask).mockImplementationOnce(
+      (...args) =>
+        new Promise((resolve, reject) => {
+          release = () => void impl(...args).then(resolve, reject);
+        }),
+    );
+    await pressEnterOnDone(user);
+    await act(async () => release());
+    await pass(2000);
+    expect(storedText()).toContain('Newer still');
+    expect(storedText()).not.toContain('again');
+    expect(editorOpen()).toBe(true);
+    expect(kind()).toBe('conflict');
+  });
+
+  it('a real click still sends only what was held before the press', async () => {
+    const user = await holdWords();
+    await pressAndDragOff(user);
+    await done(user);
+    await pass(2000);
+    expect(storedText()).toContain('mine');
+    expect(editorOpen()).toBe(false);
+  });
+});
+
 describe('found in review', () => {
   /** The next save waits at the backend's door until `land` is called. */
   function gateNextSave(): () => void {

@@ -525,10 +525,11 @@ export function TaskEditor({ task }: { task: Task }) {
             onPointerDown={() => {
               heldAtPress.current = heldFields(session);
             }}
-            onClick={() => {
+            onClick={(e) => {
               // Only what was on screen as held before this press is the user's to send regardless. A keyboard press
-              // has no pointer-down, and any blur of its own came with an earlier key.
-              const chosen = heldAtPress.current ?? heldFields(session);
+              // has no pointer-down, and any blur of its own came with an earlier key. It reads no list either, as the
+              // list of a press dragged off this button is still here, and `detail` is 0 for a click of no pointer.
+              const chosen = (e.detail > 0 ? heldAtPress.current : null) ?? heldFields(session);
               heldAtPress.current = null;
               void (async () => {
                 // The blur of this very press may have started a save that holds more back: it settles first.
