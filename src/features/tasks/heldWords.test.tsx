@@ -406,6 +406,118 @@ describe('QC-4: a closed editor whose retry holds', () => {
   });
 });
 
+describe('QC-C: a closed editor whose saves failed until the retries ran out', () => {
+  const unsent = () => screen.queryAllByTestId('unsent-banner');
+  const tries = () => vi.mocked(api.patchTask).mock.calls.length;
+  const hideEarnings = (u: User) => u.click(screen.getByRole('button', { name: 'Hide earnings' }));
+
+  async function closedOnFailures(typed: (u: User) => Promise<unknown> = async (u) => {
+    await u.click(box());
+    await u.keyboard(' mine');
+  }): Promise<User> {
+    const user = await openEditor();
+    await typed(user);
+    storeDown = true;
+    await toggle(user);
+    await pass(ALL_RETRIES_MS);
+    expect(editorOpen()).toBe(false);
+    return user;
+  }
+
+  it('says in a banner of its own that an edit is waiting, and what closing the app would do', async () => {
+    await closedOnFailures();
+    expect(storedText()).not.toContain('mine');
+    expect(unsent()).toHaveLength(1);
+    expect(unsent()[0]).toHaveTextContent('Your edit to the description of “Brand guidelines” could not be saved yet');
+    expect(unsent()[0]).toHaveTextContent('your words come back at the next launch');
+  });
+
+  it('a name or project says it would be lost', async () => {
+    await closedOnFailures((u) => u.type(nameBox(), ' v2'));
+    expect(unsent()[0]).toHaveTextContent('Your edit to the name of “Brand guidelines”');
+    expect(unsent()[0]).toHaveTextContent('If the app closes first, your edit is lost');
+  });
+
+  it('a later success sends the words, and only that ends the banner', async () => {
+    const user = await closedOnFailures();
+    storeDown = false;
+    await hideEarnings(user);
+    await pass(100);
+    expect(storedText()).toContain('mine');
+    expect(unsent()).toHaveLength(0);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(state.drafts['t-guide']).toBeUndefined();
+  });
+
+  it('a later success whose retry still fails leaves the banner up, and tries once more', async () => {
+    const user = await closedOnFailures();
+    const before = tries();
+    await hideEarnings(user);
+    await pass(100);
+    expect(tries()).toBe(before + 1);
+    expect(storedText()).not.toContain('mine');
+    expect(unsent()).toHaveLength(1);
+    // Nothing goes round in circles: the next try waits for the next success.
+    await pass(ALL_RETRIES_MS);
+    expect(tries()).toBe(before + 1);
+  });
+
+  it('dismissing the error leaves the banner', async () => {
+    const user = await closedOnFailures();
+    await user.click(screen.getByRole('button', { name: 'Dismiss error' }));
+    expect(unsent()).toHaveLength(1);
+  });
+
+  it('newer text meanwhile: the retry after a later success holds, and the held banner takes over', async () => {
+    const user = await closedOnFailures();
+    storeDown = false;
+    guide().description = elsewhere;
+    await hideEarnings(user);
+    await pass(100);
+    expect(storedText()).toContain('From another');
+    expect(storedText()).not.toContain('mine');
+    expect(unsent()).toHaveLength(0);
+    expect(screen.getByTestId('held-banner')).toHaveTextContent('changed elsewhere');
+  });
+
+  it('reopening shows the words in the editor and takes over from the banner', async () => {
+    const user = await closedOnFailures();
+    await toggle(user);
+    expect(unsent()).toHaveLength(0);
+    expect(box()).toHaveTextContent('mine');
+    await toggle(user);
+    await pass(100);
+    expect(unsent()).toHaveLength(1);
+  });
+
+  it('says nothing while saves work, or for an editor on screen', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    storeDown = true;
+    await pass(ALL_RETRIES_MS);
+    expect(kind()).toBe('failed');
+    expect(unsent()).toHaveLength(0);
+    storeDown = false;
+    await done(user);
+    await pass(2000);
+    expect(editorOpen()).toBe(false);
+    expect(unsent()).toHaveLength(0);
+    expect(storedText()).toContain('mine');
+  });
+
+  it('a stash that failed with the save is written again, for the app closing first', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    storeDown = true;
+    vi.spyOn(api, 'stashDraft').mockRejectedValueOnce({ code: 'io', message: 'the data file is locked' });
+    await user.keyboard(' mine');
+    await toggle(user);
+    await pass(ALL_RETRIES_MS);
+    expect(JSON.stringify(state.drafts['t-guide'])).toContain('mine');
+  });
+});
+
 describe('an edit to a task deleted elsewhere', () => {
   const noticesShown = () => screen.queryAllByTestId('notice').map((n) => n.textContent ?? '');
   async function deleteIt() {

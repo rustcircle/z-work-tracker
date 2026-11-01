@@ -19,14 +19,13 @@ import { TagPicker } from './TagPicker';
 import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
-import { SAVED_FIELDS, hasUnsaved, heldFields, newSession, sameValue, settle, storedFields, useEditStore, type EditField, type SaveStatus, type SavedField } from './editStore';
+import { MAX_RETRIES, SAVED_FIELDS, hasUnsaved, heldFields, newSession, sameValue, settle, storedFields, useEditStore, type EditField, type SaveStatus, type SavedField } from './editStore';
 import { errorMessage } from '../../lib/errorMessage';
 
 export const AUTOSAVE_MS = 600;
 /** How soon typed description text is stashed on disk, so a Windows shutdown in the next second loses nothing. */
 export const DRAFT_MS = 300;
 export const RETRY_BASE_MS = 2000;
-const MAX_RETRIES = 5;
 
 /** "name", "name and tags", "name, project and tags". */
 function listFields(fields: readonly SavedField[]): string {
@@ -47,6 +46,12 @@ export function heldAwayNotice(name: string, held: readonly SavedField[]): strin
   return `“${name}” was changed elsewhere while an edit waited to save, so the edit to its ${listFields(held)} wasn't sent. Open the task's editor to choose what to keep. ${ifTheAppCloses(held, 'your words come back as a notice at the next launch', 'your edit is lost')}`;
 }
 
+/** Why a task's values haven't gone yet, and what the user can do, for a notice that outlasts the error of the failed save. */
+export function unsentAwayNotice(name: string, unsent: readonly SavedField[]): string {
+  const end = !unsent.includes('description') ? 'your edit is lost' : unsent.length === 1 ? 'your words come back at the next launch, if the disk took them' : 'the description comes back at the next launch, if the disk took it, and the rest is lost';
+  return `Your edit to the ${listFields(unsent)} of “${name}” could not be saved yet. It is still here and will be sent again. Opening the task's editor shows it and tries again. If the app closes first, ${end}.`;
+}
+
 /** What the status line says while unsaved values wait for the user to choose. */
 function conflictNotice(held: readonly SavedField[]): string {
   const end = ifTheAppCloses(held, 'they come back as a notice at the next launch', 'they are lost');
@@ -60,7 +65,7 @@ export function TaskEditor({ task }: { task: Task }) {
   const { snapshot, adopt, showError } = useAppState();
   const { act } = useCommands();
   const store = useEditStore();
-  const { saved: savedInStore, taskGone, noteHeld } = store;
+  const { saved: savedInStore, taskGone, noteAway } = store;
   const statusId = useId();
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
 
@@ -202,6 +207,8 @@ export function TaskEditor({ task }: { task: Task }) {
         return false;
       }
       s.failures += 1;
+      // The stash may have failed the same way, and it is all that outlasts the app closing.
+      if (s.dirty.description) s.draftChain = s.draftChain.then(() => api.stashDraft(task.id, s.description, s.expected.description)).catch(() => undefined);
       const willRetry = s.failures <= MAX_RETRIES && SAVED_FIELDS.some((f) => s.dirty[f] && !s.conflict[f]);
       s.report({ kind: 'failed', willRetry });
       if (willRetry) schedule(RETRY_BASE_MS * 2 ** (s.failures - 1));
@@ -235,11 +242,11 @@ export function TaskEditor({ task }: { task: Task }) {
     // Shutting down or leaving: the draft goes to disk first, whatever the save does next.
     flushDraft();
     session.queue = session.queue.then(doSave, doSave).then((ok) => {
-      noteHeld(task.id, session);
+      noteAway(task.id, session);
       return ok;
     });
     return session.queue;
-  }, [clearTimer, doSave, flushDraft, noteHeld, session, task.id]);
+  }, [clearTimer, doSave, flushDraft, noteAway, session, task.id]);
 
   function schedule(delay = AUTOSAVE_MS): void {
     clearTimer();
@@ -256,12 +263,12 @@ export function TaskEditor({ task }: { task: Task }) {
   // While this editor is on screen it says what is held. When it goes, a notice elsewhere takes that over.
   useEffect(() => {
     session.shown = true;
-    noteHeld(task.id, session);
+    noteAway(task.id, session);
     return () => {
       session.shown = false;
-      noteHeld(task.id, session);
+      noteAway(task.id, session);
     };
-  }, [noteHeld, session, task.id]);
+  }, [noteAway, session, task.id]);
 
   // Register for "save now" requests, and save whatever is pending if this editor goes away.
   useEffect(() => store.register(task.id, flush), [store, task.id, flush]);

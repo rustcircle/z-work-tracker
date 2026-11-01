@@ -3,8 +3,8 @@
 // its editor without losing what was typed. A draft with unsaved changes also outlives closing the
 // editor, so there is only ever one draft per task: a retry always sends its latest text, and reopening
 // shows what failed to save. The store also fans out "save now" requests: from the backend's flush
-// event (window hiding, app quitting) and from the page becoming hidden, and keeps a list of the
-// values held back whose editor is not on screen, so a notice can say so for as long as that lasts.
+// event (window hiding, app quitting) and from the page becoming hidden, and keeps lists of the values
+// held back or failing to save whose editor is not on screen, so a notice can say so for as long as that lasts.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { useAppState } from '../../app/store';
@@ -14,6 +14,9 @@ import { sameJson } from '../../lib/sameJson';
 import type { RichDoc, StoredFields, Task } from '../../lib/types';
 
 export type EditField = 'name' | 'project' | 'description';
+
+/** Retries of a failing save on a timer. After these it waits for a write of anything else to show saving works again. */
+export const MAX_RETRIES = 5;
 
 /** The fields a save can carry: the keys of an editor's `dirty`. */
 export const SAVED_FIELDS = ['name', 'project', 'description', 'tags'] as const;
@@ -106,6 +109,11 @@ export function heldFields(s: EditSession): SavedField[] {
   return SAVED_FIELDS.filter((f) => s.dirty[f] && s.conflict[f]);
 }
 
+/** The unsaved fields whose last save failed, and go when one works. A blank name never does: it is refused, not sent. */
+export function unsentFields(s: EditSession): SavedField[] {
+  return s.failures === 0 ? [] : SAVED_FIELDS.filter((f) => s.dirty[f] && !s.conflict[f] && (f !== 'name' || s.name.trim() !== ''));
+}
+
 /** A fresh draft for a task as stored now. `report` shows the outcome of its saves. */
 export function newSession(task: Task, report: (status: SaveStatus) => void): EditSession {
   return {
@@ -143,6 +151,17 @@ function unsavedWords(s: EditSession): string {
   return [name, description].filter((w) => w !== '').join('\n');
 }
 
+type FieldsByTask = ReadonlyMap<string, readonly SavedField[]>;
+
+/** `was` with a task's fields replaced, the same object if nothing changed. */
+function withFields(was: FieldsByTask, id: string, fields: readonly SavedField[]): FieldsByTask {
+  if ((was.get(id) ?? []).join() === fields.join()) return was;
+  const next = new Map(was);
+  if (fields.length > 0) next.set(id, fields);
+  else next.delete(id);
+  return next;
+}
+
 interface EditStoreApi {
   editing: ReadonlySet<string>;
   open: (id: string, focus?: EditField) => void;
@@ -152,9 +171,11 @@ interface EditStoreApi {
   /** Ends a draft whose task no longer exists: no save can take it, so a notice shows its words. */
   taskGone: (id: string, s: EditSession) => void;
   /** The fields held back, by task, while no editor is on screen to say so. */
-  heldAway: ReadonlyMap<string, readonly SavedField[]>;
-  /** Tells the store a draft's holds or its editor may have changed. */
-  noteHeld: (id: string, s: EditSession) => void;
+  heldAway: FieldsByTask;
+  /** The fields failing to save, by task, while no editor is on screen to say so. */
+  unsentAway: FieldsByTask;
+  /** Tells the store a draft's holds, its failures or its editor may have changed. */
+  noteAway: (id: string, s: EditSession) => void;
   /** The draft for a task, created from `init` the first time. Mutated in place by the editor. */
   session: (id: string, init: () => EditSession) => EditSession;
   register: (id: string, flush: () => Promise<unknown>) => () => void;
@@ -172,7 +193,8 @@ export function useEditStore(): EditStoreApi {
 export function EditStoreProvider({ children }: { children: ReactNode }) {
   const { snapshot, act } = useAppState();
   const [editing, setEditing] = useState<ReadonlySet<string>>(new Set());
-  const [heldAway, setHeldAway] = useState<ReadonlyMap<string, readonly SavedField[]>>(new Map());
+  const [heldAway, setHeldAway] = useState<FieldsByTask>(new Map());
+  const [unsentAway, setUnsentAway] = useState<FieldsByTask>(new Map());
   const sessions = useRef(new Map<string, EditSession>());
   const flushers = useRef(new Map<string, () => Promise<unknown>>());
   /** Focus requested before the editor existed. */
@@ -205,15 +227,9 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
       flushers.current.delete(id);
     }
   }, []);
-  const noteHeld = useCallback((id: string, s: EditSession) => {
-    const fields = s.shown ? [] : heldFields(s);
-    setHeldAway((was) => {
-      if ((was.get(id) ?? []).join() === fields.join()) return was;
-      const next = new Map(was);
-      if (fields.length > 0) next.set(id, fields);
-      else next.delete(id);
-      return next;
-    });
+  const noteAway = useCallback((id: string, s: EditSession) => {
+    setHeldAway((was) => withFields(was, id, s.shown ? [] : heldFields(s)));
+    setUnsentAway((was) => withFields(was, id, s.shown ? [] : unsentFields(s)));
   }, []);
   const taskGone = useCallback(
     (id: string, s: EditSession) => {
@@ -224,12 +240,8 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
       s.dirty = { name: false, project: false, description: false, tags: false };
       close(id);
       flushers.current.delete(id);
-      setHeldAway((was) => {
-        if (!was.has(id)) return was;
-        const next = new Map(was);
-        next.delete(id);
-        return next;
-      });
+      setHeldAway((was) => withFields(was, id, []));
+      setUnsentAway((was) => withFields(was, id, []));
       // The stashed copy goes only once the notice has them. If that fails the next launch tells of them instead.
       s.draftChain = s.draftChain
         .then(async () => {
@@ -287,6 +299,15 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     }
   }, [snapshot.tasks, heldAway, taskGone]);
 
+  // A write has just landed, so saving works again, and a draft with no retries left can go now. If it fails again it
+  // waits for the next one: this goes round no faster than other things are saved.
+  const revision = snapshot.revision;
+  useEffect(() => {
+    for (const s of [...sessions.current.values()]) {
+      if (!s.shown && s.failures > MAX_RETRIES && hasUnsaved(s)) void s.retry();
+    }
+  }, [revision]);
+
   // The backend asks for a save when the window hides or the app quits; so does a hidden page.
   useEffect(() => {
     const unlisten = events.onFlushEdits(() => void flushAll());
@@ -300,6 +321,6 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     };
   }, [flushAll]);
 
-  const value = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, taskGone, heldAway, noteHeld, session, register, flushAll }), [editing, open, close, saved, taskGone, heldAway, noteHeld, session, register, flushAll]);
+  const value = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, taskGone, heldAway, unsentAway, noteAway, session, register, flushAll }), [editing, open, close, saved, taskGone, heldAway, unsentAway, noteAway, session, register, flushAll]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
