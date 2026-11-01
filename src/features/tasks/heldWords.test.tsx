@@ -852,6 +852,63 @@ describe('what the notices say', () => {
   });
 });
 
+describe('QC-F: a refused save that lands after the field was given up', () => {
+  /** A rename on its way that the backend will refuse, as the name changed elsewhere first. */
+  async function refusedRenameOnItsWay(): Promise<{ user: User; land: () => Promise<void> }> {
+    const user = await openEditor();
+    await user.type(nameBox(), ' v2');
+    await arrive(() => {
+      guide().name = 'Renamed elsewhere';
+    });
+    const impl = vi.mocked(api.patchTask).getMockImplementation();
+    if (!impl) throw new Error('patchTask is not spied on');
+    let release: () => void = () => undefined;
+    vi.mocked(api.patchTask).mockImplementationOnce(
+      (...args) =>
+        new Promise((resolve, reject) => {
+          release = () => void impl(...args).then(resolve, reject);
+        }),
+    );
+    await pass(700);
+    expect(vi.mocked(api.patchTask)).toHaveBeenCalled();
+    return { user, land: () => act(async () => release()) };
+  }
+
+  it('Escape, then the reply: nothing is held, and typing goes on from the newer name', async () => {
+    const { user, land } = await refusedRenameOnItsWay();
+    await user.keyboard('{Escape}');
+    expect(nameBox()).toHaveValue('Renamed elsewhere');
+    await land();
+    await pass(100);
+    expect(kind()).not.toBe('conflict');
+    await user.type(nameBox(), ' z');
+    await pass(2000);
+    expect(guide().name).toBe('Renamed elsewhere z');
+    expect(kind()).toBe('saved');
+    expect(discardButton()).toBeNull();
+  });
+
+  it('Escape and typing, then the reply: the same, as the typing goes on from what is shown', async () => {
+    const { user, land } = await refusedRenameOnItsWay();
+    await user.keyboard('{Escape}');
+    await user.type(nameBox(), ' z');
+    await land();
+    await pass(2000);
+    expect(guide().name).toBe('Renamed elsewhere z');
+    expect(kind()).toBe('saved');
+    expect(discardButton()).toBeNull();
+  });
+
+  it('with no Escape the reply still holds what was typed', async () => {
+    const { land } = await refusedRenameOnItsWay();
+    await land();
+    await pass(2000);
+    expect(guide().name).toBe('Renamed elsewhere');
+    expect(nameBox()).toHaveValue('Brand guidelines v2');
+    expect(kind()).toBe('conflict');
+  });
+});
+
 describe('found in review', () => {
   /** The next save waits at the backend's door until `land` is called. */
   function gateNextSave(): () => void {

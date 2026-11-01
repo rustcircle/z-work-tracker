@@ -179,6 +179,7 @@ export function TaskEditor({ task }: { task: Task }) {
       ...(send.tags && !s.overriding.tags ? { tags: s.expected.tags } : {}),
     };
     s.saving = true;
+    const sentExpected = s.expected;
     const out: { reply?: PatchReply } = {};
     const ok = await act(async () => {
       const reply = await api.patchTask(task.id, patch, expected);
@@ -187,7 +188,8 @@ export function TaskEditor({ task }: { task: Task }) {
       for (const f of SAVED_FIELDS) {
         if (!send[f]) continue;
         // A field given up while this was on its way isn't expecting anything of it, and shows what the store holds next.
-        if (reply.conflicts.includes(f)) s.conflict[f] = true;
+        // Typing since goes on from that, so a refusal of what was sent before says nothing about it.
+        if (reply.conflicts.includes(f)) s.conflict[f] = s.dirty[f] && sameValue(f, s.expected, sentExpected);
         else if (s.dirty[f]) s.expected = settle(s.expected, f, reply.stored);
         s.overriding[f] = false;
       }
