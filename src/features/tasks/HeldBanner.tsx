@@ -20,9 +20,9 @@ export function HeldBanner() {
   );
   return (
     <>
-      {[...heldAway].map(([id, fields]) => {
+      {[...heldAway].map(([id, held]) => {
         const name = nameOf(id);
-        return name === undefined ? null : banner(`held-${id}`, 'held-banner', heldAwayNotice(name, fields));
+        return name === undefined ? null : banner(`held-${id}`, 'held-banner', heldAwayNotice(name, held.fields, held.stashFailed));
       })}
       {[...unsentAway].map(([id, unsent]) => {
         const name = nameOf(id);

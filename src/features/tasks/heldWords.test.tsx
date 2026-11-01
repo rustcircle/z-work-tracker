@@ -988,6 +988,107 @@ describe('what the notices say', () => {
   });
 });
 
+describe('a stash the disk will not take', () => {
+  const diskFull = () => vi.spyOn(api, 'stashDraft').mockRejectedValue({ code: 'io', message: 'the disk is full' });
+  const copyThem = "It isn't taking them just now, so copy what you want to keep.";
+
+  /** Words typed with no stash working, newer text in, and the autosave has met it. */
+  async function heldWithNoStash(): Promise<{ user: User; stash: ReturnType<typeof diskFull> }> {
+    const user = await openEditor();
+    const stash = diskFull();
+    await user.click(box());
+    await user.keyboard(' mine');
+    await arrive();
+    await pass(1000);
+    expect(kind()).toBe('conflict');
+    expect(stash).toHaveBeenCalled();
+    expect(state.drafts['t-guide']).toBeUndefined();
+    return { user, stash };
+  }
+
+  it('the notice in the editor makes no promise the disk has not kept', async () => {
+    await heldWithNoStash();
+    expect(saveState()).toHaveTextContent('If the app closes first, they come back as a notice at the next launch, if the disk takes them.');
+    expect(saveState()).toHaveTextContent(copyThem);
+  });
+
+  it('nor does the banner with the editor closed', async () => {
+    const { user } = await heldWithNoStash();
+    await toggle(user);
+    await pass(100);
+    const banner = screen.getByTestId('held-banner');
+    expect(banner).toHaveTextContent('If the app closes first, your words come back as a notice at the next launch, if the disk takes them.');
+    expect(banner).toHaveTextContent(copyThem);
+  });
+
+  it('with the name held too, it says so of the description', async () => {
+    const { user } = await heldWithNoStash();
+    await user.type(nameBox(), ' v2');
+    await arrive(() => {
+      guide().name = 'Renamed elsewhere';
+    });
+    await pass(1000);
+    expect(saveState()).toHaveTextContent('If the app closes first, the description comes back as a notice at the next launch, if the disk takes it, and the rest is lost.');
+    expect(saveState()).toHaveTextContent("It isn't taking it just now, so copy what you want to keep.");
+  });
+
+  it('with only the name held, there are no words on the disk to speak of', async () => {
+    const user = await openEditor();
+    diskFull();
+    await user.type(nameBox(), ' v2');
+    await arrive(() => {
+      guide().name = 'Renamed elsewhere';
+    });
+    await pass(1000);
+    expect(kind()).toBe('conflict');
+    expect(saveState()).toHaveTextContent('If the app closes first, they are lost.');
+    expect(saveState()).not.toHaveTextContent('disk');
+  });
+
+  it('a stash that works again takes it all back, in the editor', async () => {
+    const { user, stash } = await heldWithNoStash();
+    stash.mockRestore();
+    await user.keyboard(' more');
+    await pass(400);
+    expect(JSON.stringify(state.drafts['t-guide'])).toContain('more');
+    expect(saveState()).toHaveTextContent('If the app closes first, they come back as a notice at the next launch.');
+    expect(saveState()).not.toHaveTextContent('disk');
+  });
+
+  it('a stash that works again takes it all back, in the banner', async () => {
+    const { user, stash } = await heldWithNoStash();
+    await toggle(user);
+    await pass(100);
+    expect(screen.getByTestId('held-banner')).toHaveTextContent('if the disk takes them');
+    stash.mockRestore();
+    // The window hiding sends everything through a save again, and a held description gets another stash from that.
+    await act(() => emit('flush-edits'));
+    await pass(100);
+    expect(JSON.stringify(state.drafts['t-guide'])).toContain('mine');
+    expect(screen.getByTestId('held-banner')).toHaveTextContent('your words come back as a notice at the next launch.');
+    expect(screen.getByTestId('held-banner')).not.toHaveTextContent('disk');
+  });
+
+  it('an editor opened on them again says so from the start', async () => {
+    const { user } = await heldWithNoStash();
+    await toggle(user);
+    await pass(100);
+    await toggle(user);
+    expect(saveState()).toHaveTextContent('if the disk takes them');
+  });
+
+  it('it says nothing of a stash that failed under words that have since been saved', async () => {
+    const user = await openEditor();
+    diskFull();
+    await user.click(box());
+    await user.keyboard(' mine');
+    await pass(1000);
+    expect(kind()).toBe('saved');
+    expect(storedText()).toContain('mine');
+    expect(saveState()).not.toHaveTextContent('disk');
+  });
+});
+
 describe('QC-F: a refused save that lands after the field was given up', () => {
   /** A rename on its way that the backend will refuse, as the name changed elsewhere first. */
   async function refusedRenameOnItsWay(): Promise<{ user: User; land: () => Promise<void> }> {

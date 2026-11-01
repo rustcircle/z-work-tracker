@@ -85,6 +85,8 @@ export interface EditSession {
   timer: number | null;
   /** Stashed drafts are written one at a time, in order, across rebuilds. */
   draftChain: Promise<void>;
+  /** The latest of them didn't reach the disk, so the next launch may have nothing of these words to show. */
+  stashFailed: boolean;
   /** The editor was closed with changes still unsaved. */
   closed: boolean;
   /**
@@ -104,6 +106,8 @@ export interface EditSession {
   shown: boolean;
   /** The editor showing this draft now, for the outcome of a save that started under an earlier one. */
   report: (status: SaveStatus) => void;
+  /** That editor again, for how the latest stash went. */
+  reportStash: (failed: boolean) => void;
   /** Saves through that editor. */
   retry: () => Promise<boolean>;
 }
@@ -138,6 +142,7 @@ export function newSession(task: Task, report: (status: SaveStatus) => void): Ed
     refused: null,
     timer: null,
     draftChain: Promise.resolve(),
+    stashFailed: false,
     closed: false,
     expected: storedFields(task),
     conflict: { name: false, project: false, description: false, tags: false },
@@ -146,6 +151,7 @@ export function newSession(task: Task, report: (status: SaveStatus) => void): Ed
     saving: false,
     shown: false,
     report,
+    reportStash: () => undefined,
     retry: () => Promise.resolve(true),
   };
 }
@@ -155,7 +161,11 @@ export function hasUnsaved(s: EditSession): boolean {
   return (s.dirty.name && s.name.trim() !== '') || s.dirty.project || s.dirty.description || s.dirty.tags;
 }
 
-type FieldsByTask = ReadonlyMap<string, readonly SavedField[]>;
+/** The fields held back for a task, and whether the disk has taken a description among them. */
+export interface Held {
+  fields: readonly SavedField[];
+  stashFailed: boolean;
+}
 
 /** The fields failing to save for a task, and why if that can't change by itself. */
 export interface Unsent {
@@ -181,7 +191,7 @@ interface EditStoreApi {
   /** Ends a draft whose task no longer exists: no save can take it, so a notice shows its words. */
   taskGone: (id: string, s: EditSession) => void;
   /** The fields held back, by task, while no editor is on screen to say so. */
-  heldAway: FieldsByTask;
+  heldAway: ReadonlyMap<string, Held>;
   /** The fields failing to save, by task, while no editor is on screen to say so. */
   unsentAway: ReadonlyMap<string, Unsent>;
   /** Tells the store a draft's holds, its failures or its editor may have changed. */
@@ -203,7 +213,7 @@ export function useEditStore(): EditStoreApi {
 export function EditStoreProvider({ children }: { children: ReactNode }) {
   const { snapshot, act } = useAppState();
   const [editing, setEditing] = useState<ReadonlySet<string>>(new Set());
-  const [heldAway, setHeldAway] = useState<FieldsByTask>(new Map());
+  const [heldAway, setHeldAway] = useState<ReadonlyMap<string, Held>>(new Map());
   const [unsentAway, setUnsentAway] = useState<ReadonlyMap<string, Unsent>>(new Map());
   const sessions = useRef(new Map<string, EditSession>());
   const flushers = useRef(new Map<string, () => Promise<unknown>>());
@@ -240,7 +250,7 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
   const noteAway = useCallback((id: string, s: EditSession) => {
     const held = s.shown ? [] : heldFields(s);
     const unsent = s.shown ? [] : unsentFields(s);
-    setHeldAway((was) => withEntry(was, id, held.length > 0 ? held : null));
+    setHeldAway((was) => withEntry(was, id, held.length > 0 ? { fields: held, stashFailed: s.stashFailed } : null));
     setUnsentAway((was) => withEntry(was, id, unsent.length > 0 ? { fields: unsent, refused: s.refused } : null));
   }, []);
   const taskGone = useCallback(

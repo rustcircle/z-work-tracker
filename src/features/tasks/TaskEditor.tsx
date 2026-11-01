@@ -37,16 +37,21 @@ function listFields(fields: readonly SavedField[]): string {
 
 /**
  * What becomes of held values if the app closes first. Words typed into a description are stashed on disk, and the
- * next launch shows them in a notice rather than over the newer text. The other fields live only in this page.
+ * next launch shows them in a notice rather than over the newer text, as long as the disk takes them. The other
+ * fields live only in this page.
  */
-function ifTheAppCloses(held: readonly SavedField[], words: string, others: string): string {
+function ifTheAppCloses(held: readonly SavedField[], stashFailed: boolean, words: string, others: string): string {
   if (!held.includes('description')) return `If the app closes first, ${others}.`;
-  return held.length === 1 ? `If the app closes first, ${words}.` : `If the app closes first, the description comes back as a notice at the next launch and the rest is lost.`;
+  const only = held.length === 1;
+  const them = only ? 'them' : 'it';
+  const disk = stashFailed ? `, if the disk takes ${them}` : '';
+  const end = only ? `${words}${disk}` : `the description comes back as a notice at the next launch${disk}${stashFailed ? ',' : ''} and the rest is lost`;
+  return `If the app closes first, ${end}.${stashFailed ? ` It isn't taking ${them} just now, so copy what you want to keep.` : ''}`;
 }
 
 /** Why a task's values were not sent, and what the user can do, for a notice outside the editor. */
-export function heldAwayNotice(name: string, held: readonly SavedField[]): string {
-  return `“${name}” was changed elsewhere while an edit waited to save, so the edit to its ${listFields(held)} wasn't sent. Open the task's editor to choose what to keep. ${ifTheAppCloses(held, 'your words come back as a notice at the next launch', 'your edit is lost')}`;
+export function heldAwayNotice(name: string, held: readonly SavedField[], stashFailed: boolean): string {
+  return `“${name}” was changed elsewhere while an edit waited to save, so the edit to its ${listFields(held)} wasn't sent. Open the task's editor to choose what to keep. ${ifTheAppCloses(held, stashFailed, 'your words come back as a notice at the next launch', 'your edit is lost')}`;
 }
 
 /** Why a task's values haven't gone yet, and what the user can do, for a notice that outlasts the error of the failed save. */
@@ -64,8 +69,8 @@ function refusal(e: unknown): string | null {
 }
 
 /** What the status line says while unsaved values wait for the user to choose. The editor shows one value per field, so it can't show the newer one beside them. */
-function conflictNotice(held: readonly SavedField[]): string {
-  const end = ifTheAppCloses(held, 'they come back as a notice at the next launch', 'they are lost');
+function conflictNotice(held: readonly SavedField[], stashFailed: boolean): string {
+  const end = ifTheAppCloses(held, stashFailed, 'they come back as a notice at the next launch', 'they are lost');
   const both = held.includes('description') || held.includes('name') ? ' To see both, copy your words, press Discard my words, and paste them back.' : '';
   if (held.length === 1 && held[0] === 'description') {
     return `This description was changed elsewhere while your words waited to save. They are shown here and have not been sent. Typing on does not send them. Press Done to save them over the newer text, which you can't read first, or press Discard my words to keep the newer text.${both} ${end}`;
@@ -82,6 +87,7 @@ export function TaskEditor({ task }: { task: Task }) {
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
 
   const session = store.session(task.id, () => newSession(task, setStatus));
+  const [stashFailed, setStashFailed] = useState(session.stashFailed);
   const [name, setName] = useState(session.name);
   const [projectId, setProjectId] = useState(session.projectId ?? task.projectId);
   const [tags, setTags] = useState<string[]>(session.tags ?? task.tags);
@@ -142,7 +148,23 @@ export function TaskEditor({ task }: { task: Task }) {
     }
   }, [session]);
 
-  /** Writes the pending draft now. The autosave is the real save, so a failed stash is dropped rather than shown. */
+  /** Writes a stash in its turn. The autosave is the real save, but held or unsent words count on this if the app closes, so how it went gets said. */
+  const stash = useCallback(
+    (doc: RichDoc): void => {
+      const went = (failed: boolean): void => {
+        session.stashFailed = failed;
+        session.reportStash(failed);
+        noteAway(task.id, session);
+      };
+      session.draftChain = session.draftChain.then(() => api.stashDraft(task.id, doc, session.expected.description)).then(
+        () => went(false),
+        () => went(true),
+      );
+    },
+    [noteAway, session, task.id],
+  );
+
+  /** Writes the pending draft now. */
   const flushDraft = useCallback((): void => {
     if (draftTimer.current !== null) {
       window.clearTimeout(draftTimer.current);
@@ -151,8 +173,8 @@ export function TaskEditor({ task }: { task: Task }) {
     const doc = draftDoc.current;
     if (doc === null) return;
     draftDoc.current = null;
-    session.draftChain = session.draftChain.then(() => api.stashDraft(task.id, doc, session.expected.description)).catch(() => undefined);
-  }, [session, task.id]);
+    stash(doc);
+  }, [stash]);
 
   const stashSoon = (doc: RichDoc): void => {
     draftDoc.current = doc;
@@ -167,10 +189,10 @@ export function TaskEditor({ task }: { task: Task }) {
     draftDoc.current = null;
   }, []);
 
-  /** A stash can fail with nothing said, and held or unsent words count on it to outlast the app closing. */
+  /** A stash can fail, and held or unsent words count on one reaching the disk. */
   const stashAgain = useCallback((): void => {
-    session.draftChain = session.draftChain.then(() => api.stashDraft(task.id, session.description, session.expected.description)).catch(() => undefined);
-  }, [session, task.id]);
+    stash(session.description);
+  }, [session, stash]);
 
   const doSave = useCallback(async (): Promise<boolean> => {
     const s = session;
@@ -319,6 +341,7 @@ export function TaskEditor({ task }: { task: Task }) {
   // A held value waits for the user instead.
   useEffect(() => {
     session.report = setStatus;
+    session.reportStash = setStashFailed;
     session.retry = flush;
     if (SAVED_FIELDS.some((f) => session.dirty[f] && !session.conflict[f])) schedule();
     // `schedule` only reads the session.
@@ -567,7 +590,7 @@ export function TaskEditor({ task }: { task: Task }) {
           {shown.kind === 'discarded' && 'Discarded. What is stored now is shown.'}
           {shown.kind === 'failed' && (shown.willRetry ? 'Not saved. Your changes are still here and will be sent again.' : 'Not saved. Your changes are still here. Edit or press Done to try again.')}
           {shown.kind !== 'conflict' && held.length > 0 && ' '}
-          {held.length > 0 && conflictNotice(held)}
+          {held.length > 0 && conflictNotice(held, stashFailed)}
         </span>
         <div className="editor-buttons">
           {held.length > 0 && (
