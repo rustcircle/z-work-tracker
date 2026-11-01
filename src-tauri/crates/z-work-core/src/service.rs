@@ -54,8 +54,8 @@ pub struct Service {
     targets: BTreeMap<String, TargetStatus>,
     detected: Vec<Detected>,
     system_zone: String,
-    /// Bumped on every committed change, so the app knows when to schedule a sync, and when the words kept
-    /// in notices change, so that no older reply on its way to the page can undo that.
+    /// Bumped on every committed change, so the app knows when to schedule a sync, and when words are kept
+    /// or a notice is dismissed, so that no older reply on its way to the page can undo that.
     revision: u64,
     /// Words kept out of the store, by the id of the notice showing them.
     kept_out: BTreeMap<String, Kept>,
@@ -1457,10 +1457,10 @@ impl Service {
 
     pub fn dismiss_notice(&mut self, id: &str) {
         self.notices.retain(|n| n.id != id);
+        self.revision += 1;
         // Words kept out of the store end here, and nowhere else. If this write fails the notice just
         // comes back at the next launch.
         if self.kept_out.remove(id).is_some() {
-            self.revision += 1;
             let _ = self.save_kept();
         }
     }
@@ -3830,6 +3830,18 @@ mod tests {
         ]});
         s.keep_unsaved_words("gone", "Old name", Some("New name"), Some(&lines));
         assert_eq!(kept_words(dir.path()), ["New name\nLine one\nLine two"]);
+    }
+
+    #[test]
+    fn dismissing_any_notice_reads_as_newer_so_no_older_reply_brings_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.notify("warning", "Something to read".to_owned());
+        let before = s.revision();
+        let id = s.snapshot().notices[0].id.clone();
+        s.dismiss_notice(&id);
+        assert!(s.revision() > before);
     }
 
     #[test]
