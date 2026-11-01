@@ -302,6 +302,64 @@ describe('a save that failed as the editor closed', () => {
       expect(saveState()).toHaveAttribute('data-kind', 'conflict');
     });
 
+    /** Held words on a reopened editor: the retries ran out, newer text came, the editor is back. */
+    async function reopenedOnHeldWords() {
+      const user = await closeOnAFailedSave(' failed words');
+      await pass(ALL_RETRIES_MS);
+      await arrivesElsewhere();
+      storeDown = false;
+      await waitFor(() => expect(state.drafts['t-guide']).toBeDefined());
+      await toggleEditor(user);
+      expect(saveState()).toHaveAttribute('data-kind', 'conflict');
+      return user;
+    }
+
+    it('Discard my words gives the newer text back and forgets the held words', async () => {
+      const user = await reopenedOnHeldWords();
+      const discard = screen.getByRole('button', { name: 'Discard my words' });
+      expect(discard).toHaveAccessibleDescription(/changed elsewhere/);
+      await user.click(discard);
+      expect(box()).toHaveTextContent('From another device');
+      expect(box()).not.toHaveTextContent('failed words');
+      // The cursor goes back to the description, which was built again on the newer text.
+      await waitFor(() => expect(box()).toHaveFocus());
+      expect(saveState()).toHaveAttribute('data-kind', 'discarded');
+      expect(screen.queryByRole('button', { name: 'Discard my words' })).toBeNull();
+      await waitFor(() => expect(state.drafts['t-guide']).toBeUndefined());
+      const tries = attempts;
+      await pass(ALL_RETRIES_MS);
+      await user.click(screen.getByRole('button', { name: 'Done' }));
+      await waitFor(() => expect(screen.queryByRole('form', { name: 'Editing Brand guidelines' })).toBeNull());
+      expect(attempts).toBe(tries);
+      expect(saved()).toContain('From another device');
+      expect(saved()).not.toContain('failed words');
+      await toggleEditor(user);
+      expect(box()).toHaveTextContent('From another device');
+      expect(saveState()).not.toHaveAttribute('data-kind', 'conflict');
+    });
+
+    it('Discard my words works from the keyboard', async () => {
+      const user = await reopenedOnHeldWords();
+      // A reopened editor puts the cursor in the name; the keyboard user moves on to the button.
+      await act(async () => screen.getByRole('button', { name: 'Discard my words' }).focus());
+      await user.keyboard('{Enter}');
+      await waitFor(() => expect(box()).toHaveTextContent('From another device'));
+      expect(saveState()).toHaveAttribute('data-kind', 'discarded');
+    });
+
+    it('is offered only while something is held', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+      state = demoState();
+      bootApp(state);
+      await user.click(await screen.findByRole('button', { name: 'Edit Brand guidelines' }));
+      expect(screen.queryByRole('button', { name: 'Discard my words' })).toBeNull();
+      await user.click(box());
+      await user.keyboard(' fine');
+      await pass(2000);
+      expect(saveState()).toHaveAttribute('data-kind', 'saved');
+      expect(screen.queryByRole('button', { name: 'Discard my words' })).toBeNull();
+    });
+
     it('the save on the blur of the close click holds back too, with no failed save before it', async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
       state = demoState();
@@ -404,6 +462,7 @@ describe('a save that failed as the editor closed', () => {
         kept: () => guide().name,
         wasKept: 'Renamed elsewhere',
         shownMine: () => expect(nameBox()).toHaveValue('Brand guidelines v2'),
+        shownTheirs: () => expect(nameBox()).toHaveValue('Renamed elsewhere'),
         sent: 'Brand guidelines v2',
       },
       {
@@ -415,6 +474,7 @@ describe('a save that failed as the editor closed', () => {
         kept: () => guide().projectId,
         wasKept: 'p-pack',
         shownMine: () => expect(projectBox()).toHaveValue('p-web'),
+        shownTheirs: () => expect(projectBox()).toHaveValue('p-pack'),
         sent: 'p-web',
       },
       {
@@ -426,6 +486,7 @@ describe('a save that failed as the editor closed', () => {
         kept: () => (guide().tags ?? []).join(),
         wasKept: 'tag-concept',
         shownMine: () => expect(within(openForm()).getByRole('checkbox', { name: /Admin/ })).toBeChecked(),
+        shownTheirs: () => expect(within(openForm()).getByRole('checkbox', { name: /Admin/ })).not.toBeChecked(),
         sent: 'tag-admin',
       },
     ] as const;
@@ -465,6 +526,26 @@ describe('a save that failed as the editor closed', () => {
       await user.click(screen.getByRole('button', { name: 'Done' }));
       await waitFor(() => expect(c.kept()).toBe(c.sent));
       await waitFor(() => expect(screen.queryByRole('form', { name: /^Editing / })).toBeNull());
+    });
+
+    it.each(cases)('Discard my words on a held $field shows what is stored and sends nothing', async (c) => {
+      const user = await closeOnAFailedEdit(c.edit);
+      c.elsewhere();
+      await act(() => emit('state-changed'));
+      await pass(100);
+      storeDown = false;
+      await pass(ALL_RETRIES_MS);
+      await user.click(screen.getByRole('button', { name: `Edit ${guide().name}` }));
+      c.shownMine();
+      await user.click(screen.getByRole('button', { name: 'Discard my words' }));
+      c.shownTheirs();
+      expect(saveState()).toHaveAttribute('data-kind', 'discarded');
+      const tries = attempts;
+      await pass(ALL_RETRIES_MS);
+      await user.click(screen.getByRole('button', { name: 'Done' }));
+      await waitFor(() => expect(screen.queryByRole('form', { name: /^Editing / })).toBeNull());
+      expect(attempts).toBe(tries);
+      expect(c.kept()).toBe(c.wasKept);
     });
 
     it('holds only the field that met something newer, and the rest goes', async () => {

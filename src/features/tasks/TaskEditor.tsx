@@ -58,9 +58,9 @@ function listFields(fields: readonly SavedField[]): string {
 function conflictNotice(held: readonly SavedField[]): string {
   const end = 'If the app closes first, they may be lost.';
   if (held.length === 1 && held[0] === 'description') {
-    return `This description was changed elsewhere while your words waited to save. They are shown here and have not been sent. Edit them or press Done to save them over the newer text. ${end}`;
+    return `This description was changed elsewhere while your words waited to save. They are shown here and have not been sent. Edit them or press Done to save them over the newer text, or press Discard my words to keep the newer text. ${end}`;
   }
-  return `The ${listFields(held)} changed elsewhere while your edits waited to save. They are shown here and have not been sent. Edit them or press Done to save them over the newer ones. ${end}`;
+  return `The ${listFields(held)} changed elsewhere while your edits waited to save. They are shown here and have not been sent. Edit them or press Done to save them over the newer ones, or press Discard my words to keep the newer ones. ${end}`;
 }
 
 export function TaskEditor({ task }: { task: Task }) {
@@ -78,6 +78,8 @@ export function TaskEditor({ task }: { task: Task }) {
   const [templateState, setTemplateState] = useState<string | null>(null);
   const [templateBusy, setTemplateBusy] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
+  // Bumped when the description editor has to be built again, because it is built once from its value.
+  const [rebuilt, setRebuilt] = useState(0);
 
   const nameRef = useRef<HTMLInputElement | null>(null);
   const projectRef = useRef<HTMLSelectElement | null>(null);
@@ -126,7 +128,7 @@ export function TaskEditor({ task }: { task: Task }) {
     // click that closes) is a save like the rest.
     const newer = await holdNewer(s, task.id);
     if (newer) {
-      showError(`“${newer.name}” was changed elsewhere while an edit waited to save, so the edit to its ${listFields(newer.fields)} wasn't sent. Open the task to choose what to keep. If the app closes first, your edit may be lost.`);
+      showError(`“${newer.name}” was changed elsewhere while an edit waited to save, so the edit to its ${listFields(newer.fields)} wasn't sent. Open the task's editor to choose what to keep. If the app closes first, your edit may be lost.`);
     }
     const cur = latest.current;
     const trimmed = s.name.trim();
@@ -250,7 +252,7 @@ export function TaskEditor({ task }: { task: Task }) {
     if (f === 'name') nameRef.current?.focus();
     else if (f === 'project') projectRef.current?.focus();
     else if (f === 'description') descRef.current?.focus();
-  }, [session]);
+  }, [session, rebuilt]);
 
   const track = (field: EditField) => ({
     onFocus: () => {
@@ -289,6 +291,48 @@ export function TaskEditor({ task }: { task: Task }) {
   }
 
   const usable = snapshot.projects.filter((p) => !p.archived || p.id === task.projectId);
+  /** Gives up the values that met newer ones: the editor goes back to what is stored now. */
+  async function discardHeld(): Promise<void> {
+    const fields = heldFields(session);
+    if (fields.length === 0) return;
+    const stored = await storedTask(task.id).catch(() => undefined);
+    const now = stored ?? latest.current;
+    for (const f of fields) {
+      session.dirty[f] = false;
+      session.conflict[f] = false;
+      session.base = rebase(session.base, f, storedFields(now));
+      switch (f) {
+        case 'name':
+          session.name = now.name;
+          setName(now.name);
+          setNameError(null);
+          break;
+        case 'project':
+          session.projectId = null;
+          setProjectId(now.projectId);
+          break;
+        case 'tags':
+          session.tags = null;
+          setTags(now.tags);
+          break;
+        case 'description':
+          session.description = now.description;
+          // The held words' draft goes too, or the next launch would find them and bring them back.
+          if (draftTimer.current !== null) {
+            window.clearTimeout(draftTimer.current);
+            draftTimer.current = null;
+          }
+          draftDoc.current = null;
+          session.draftChain = session.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
+          break;
+      }
+    }
+    // The cursor goes to the first field given up, in the form's order (tags have no single place to put it).
+    session.focus = fields.find((f): f is EditField => f !== 'tags') ?? 'name';
+    setRebuilt((n) => n + 1);
+    session.report({ kind: 'discarded' });
+  }
+
   const restoreName = (): void => {
     const valid = latest.current.name;
     setName(valid);
@@ -376,6 +420,7 @@ export function TaskEditor({ task }: { task: Task }) {
         )}
       </Field>
       <RichEditor
+        key={rebuilt}
         ref={descRef}
         label="Description"
         value={session.description}
@@ -409,9 +454,15 @@ export function TaskEditor({ task }: { task: Task }) {
           {shown.kind === 'saved' && 'Saved'}
           {shown.kind === 'rejected' && shown.message}
           {shown.kind === 'conflict' && conflictNotice(held)}
+          {shown.kind === 'discarded' && 'Discarded. What is stored now is shown.'}
           {shown.kind === 'failed' && (shown.willRetry ? 'Not saved. Your changes are still here and will be sent again.' : 'Not saved. Your changes are still here. Edit or press Done to try again.')}
         </span>
         <div className="editor-buttons">
+          {shown.kind === 'conflict' && held.length > 0 && (
+            <Button small aria-describedby={statusId} onClick={() => void discardHeld()}>
+              Discard my words
+            </Button>
+          )}
           <Button small disabled={templateBusy} onClick={() => void saveAsTemplate()}>
             Save as template
           </Button>

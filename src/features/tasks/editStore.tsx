@@ -61,7 +61,8 @@ export type SaveStatus =
   | { kind: 'saved' }
   | { kind: 'rejected'; message: string }
   | { kind: 'failed'; willRetry: boolean }
-  | { kind: 'conflict' };
+  | { kind: 'conflict' }
+  | { kind: 'discarded' };
 
 export interface EditSession {
   name: string;
