@@ -66,13 +66,15 @@ describe('earnings and the clock', () => {
   it('the amount holds still while seconds pass, and the session clock keeps counting', async ({ signal }) => {
     boot(demoState());
     await advance(100);
-    const clock = (): string => ticker().getByTestId('session-clock').textContent ?? '';
+    // Finding the card by role walks the whole page, about 20 times what a tick costs, so find it once.
+    const logo = ticker();
+    const clock = (): string => logo.getByTestId('session-clock').textContent ?? '';
     const seen = new Set<string>();
     const amounts = new Set<string>();
     for (let i = 0; i < 120; i += 1) {
       await tick(signal);
       seen.add(clock());
-      amounts.add(ticker().getByTestId('billable-now').textContent ?? '');
+      amounts.add(logo.getByTestId('billable-now').textContent ?? '');
     }
     expect(seen.size).toBe(120);
     expect([...amounts]).toEqual(['$315.00']);
