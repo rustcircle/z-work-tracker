@@ -282,6 +282,26 @@ describe('a save that failed as the editor closed', () => {
       expect(saveState()).toHaveAttribute('data-kind', 'conflict');
     });
 
+    it('an editor still open, whose save failed, holds its retry back too', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+      state = demoState();
+      bootApp(state);
+      await user.click(await screen.findByRole('button', { name: 'Edit Brand guidelines' }));
+      await user.click(box());
+      storeDown = true;
+      await user.keyboard(' failed words');
+      await pass(1000);
+      expect(attempts).toBeGreaterThan(0);
+      expect(saveState()).toHaveAttribute('data-kind', 'failed');
+      await arrivesElsewhere();
+      storeDown = false;
+      await pass(ALL_RETRIES_MS);
+      expect(saved()).toContain('From another device');
+      expect(saved()).not.toContain('failed words');
+      expect(box()).toHaveTextContent('failed words');
+      expect(saveState()).toHaveAttribute('data-kind', 'conflict');
+    });
+
     it('the save on the blur of the close click holds back too, with no failed save before it', async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
       state = demoState();
