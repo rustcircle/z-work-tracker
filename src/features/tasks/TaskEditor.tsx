@@ -10,7 +10,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
-import type { RichDoc, Task, TaskPatch, TemplateInput } from '../../lib/types';
+import type { RichDoc, Snapshot, Task, TaskPatch, TemplateInput } from '../../lib/types';
 import { TagPicker } from './TagPicker';
 import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
@@ -86,9 +86,11 @@ export function TaskEditor({ task }: { task: Task }) {
   const doSave = useCallback(async (): Promise<boolean> => {
     const s = session;
     if (!hasUnsaved(s) && !s.dirty.name) return true;
-    // Nobody is looking at a closed editor, so its old words must not replace newer ones that arrived from
-    // elsewhere while it waited. They stay in the draft, for the user to see and choose when they reopen it.
-    if (s.closed && s.dirty.description && !s.conflict) {
+    // The words must not replace newer ones that arrived from elsewhere since they were started, whoever is
+    // looking: nobody looks at a closed editor or a retry, and even an open one only shows the text it began
+    // with. They stay in the draft, for the user to see and choose. The first save on closing (the blur of
+    // the click that closes) is a save like the rest.
+    if (s.dirty.description && !s.conflict) {
       let stored: Task | undefined;
       try {
         stored = await storedTask(task.id);
@@ -119,7 +121,13 @@ export function TaskEditor({ task }: { task: Task }) {
       // An empty list clears the tags: only patch_task does that, update_task ignores it.
       ...(s.dirty.tags && s.tags ? { tags: s.tags } : {}),
     };
-    const ok = await act(() => api.patchTask(task.id, patch));
+    // The stored task as this save left it: what the next unsaved words are edited from.
+    const out: { snapshot?: Snapshot } = {};
+    const ok = await act(async () => {
+      const snapshot = await api.patchTask(task.id, patch);
+      out.snapshot = snapshot;
+      return snapshot;
+    });
     if (!ok) {
       // A task deleted elsewhere can never take this save. Trying again would only repeat the error.
       const gone = await storedTask(task.id).then(
@@ -139,6 +147,8 @@ export function TaskEditor({ task }: { task: Task }) {
       return false;
     }
     s.failures = 0;
+    const after = out.snapshot?.tasks.find((t) => t.id === task.id);
+    if (after) latest.current = after;
     if (s.rev === sentRev) {
       // The description is saved for real, so the stashed copy is no longer needed. Anything typed since
       // (the revision moved on) keeps its draft.
@@ -151,7 +161,7 @@ export function TaskEditor({ task }: { task: Task }) {
     } else {
       // Typing went on during this save, and the next one is edited from what this one stored.
       if (sendDescription) {
-        const stored = await storedTask(task.id).catch(() => undefined);
+        const stored = after ?? (await storedTask(task.id).catch(() => undefined));
         if (stored) s.base = stored.description;
       }
       schedule();
@@ -175,10 +185,12 @@ export function TaskEditor({ task }: { task: Task }) {
   }
 
   function touch(field: keyof EditSession['dirty']): void {
-    // The first unsaved change of the description: what it is edited from.
-    if (field === 'description' && !session.dirty.description) session.base = latest.current.description;
-    // Going on editing words shown as not sent is the choice to save them.
-    if (field === 'description') session.conflict = false;
+    if (field === 'description') {
+      // The first unsaved change of the description: what it is edited from. Going on editing words shown as
+      // not sent is the choice to save them, over what is stored now.
+      if (!session.dirty.description || session.conflict) session.base = latest.current.description;
+      session.conflict = false;
+    }
     session.dirty[field] = true;
     session.rev += 1;
     session.failures = 0;
@@ -378,12 +390,18 @@ export function TaskEditor({ task }: { task: Task }) {
             small
             variant="primary"
             onClick={() => {
-              // Done on words that met newer text is the choice to save them.
-              session.conflict = false;
-              // A failed save keeps the editor open, so what was typed is not lost.
-              void flush().then((saved) => {
-                if (saved) store.close(task.id);
-              });
+              void (async () => {
+                // The blur of this very click may have started a save that holds the words back: it settles first.
+                await session.queue.catch(() => undefined);
+                // Done on words that met newer text is the choice to save them, over what is stored now.
+                if (session.conflict) {
+                  const stored = await storedTask(task.id).catch(() => undefined);
+                  session.base = (stored ?? latest.current).description;
+                  session.conflict = false;
+                }
+                // A failed save keeps the editor open, so what was typed is not lost.
+                if (await flush()) store.close(task.id);
+              })();
             }}
           >
             Done

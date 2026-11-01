@@ -254,7 +254,7 @@ describe('a save that failed as the editor closed', () => {
     }
     const saveState = () => within(form()).getByTestId('save-state');
 
-    it('P1: retries used up, newer text arrives, reopening still sends nothing and says so', async () => {
+    it('with the retries used up and newer text arriving, reopening sends nothing and says so', async () => {
       const user = await closeOnAFailedSave(' failed words');
       await pass(ALL_RETRIES_MS);
       await arrivesElsewhere();
@@ -268,7 +268,7 @@ describe('a save that failed as the editor closed', () => {
       expect(saveState()).toHaveTextContent('changed elsewhere');
     });
 
-    it('P2: reopening inside the retry delay sends nothing either, now or when the retry comes due', async () => {
+    it('reopening inside the retry delay sends nothing either, now or when the retry comes due', async () => {
       const user = await closeOnAFailedSave(' failed words');
       await arrivesElsewhere();
       storeDown = false;
@@ -280,6 +280,85 @@ describe('a save that failed as the editor closed', () => {
       expect(saved()).toContain('From another device');
       expect(saved()).not.toContain('failed words');
       expect(saveState()).toHaveAttribute('data-kind', 'conflict');
+    });
+
+    it('the save on the blur of the close click holds back too, with no failed save before it', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+      state = demoState();
+      bootApp(state);
+      await user.click(await screen.findByRole('button', { name: 'Edit Brand guidelines' }));
+      await user.click(box());
+      await user.keyboard(' mine');
+      await arrivesElsewhere();
+      await toggleEditor(user);
+      await pass(ALL_RETRIES_MS);
+      expect(saved()).toContain('From another device');
+      expect(saved()).not.toContain('mine');
+      await toggleEditor(user);
+      expect(box()).toHaveTextContent('mine');
+      expect(saveState()).toHaveAttribute('data-kind', 'conflict');
+    });
+  });
+
+  describe('ordinary saves never look like a conflict', () => {
+    /** Boots with the editor open on the description, with the store working. */
+    async function openOnDescription() {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
+      state = demoState();
+      bootApp(state);
+      await user.click(await screen.findByRole('button', { name: 'Edit Brand guidelines' }));
+      await user.click(box());
+      return user;
+    }
+    const saveState = () => within(form()).getByTestId('save-state');
+
+    it('a second edit after the first one saved goes out as it is', async () => {
+      const user = await openOnDescription();
+      await user.keyboard(' first');
+      await pass(2000);
+      expect(saved()).toContain('first');
+      await user.keyboard(' second');
+      await pass(2000);
+      expect(saved()).toContain('first second');
+      expect(saveState()).toHaveAttribute('data-kind', 'saved');
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('typing on while a save is under way does not make the next one a conflict', async () => {
+      const user = await openOnDescription();
+      const impl = vi.mocked(api.patchTask).getMockImplementation();
+      if (!impl) throw new Error('patchTask is not spied on');
+      let land: () => void = () => undefined;
+      vi.mocked(api.patchTask).mockImplementationOnce(
+        (...args) =>
+          new Promise((resolve, reject) => {
+            land = () => void impl(...args).then(resolve, reject);
+          }),
+      );
+      await user.keyboard(' first');
+      await pass(1000);
+      await user.keyboard(' second');
+      await act(async () => land());
+      await pass(2000);
+      expect(saved()).toContain('first second');
+      expect(saveState()).toHaveAttribute('data-kind', 'saved');
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('words that went out late, by a retry, are the ground for the next edit after reopening', async () => {
+      const user = await closeOnAFailedSave(' first');
+      storeDown = false;
+      await pass(ALL_RETRIES_MS);
+      expect(saved()).toContain('first');
+      await toggleEditor(user);
+      await user.click(box());
+      await user.keyboard(' second');
+      await pass(2000);
+      // The caret lands at the start of a reopened editor, so the order is not the point.
+      expect(saved()).toContain('second');
+      expect(saved()).toContain('first');
+      expect(saveState()).toHaveAttribute('data-kind', 'saved');
+      expect(screen.queryByRole('alert')).toBeNull();
     });
   });
 
