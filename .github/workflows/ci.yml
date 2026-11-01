@@ -104,7 +104,9 @@ jobs:
             echo "::warning title=Rust audit skipped::The advisory database could not be fetched, so Rust dependencies were not audited."
             exit 0
           fi
-          # The threshold for low ratings is in .cargo/audit.toml.
+          # All ratings for the log: from src-tauri, .cargo/audit.toml doesn't apply and the result doesn't count.
+          (cd src-tauri && cargo audit --no-fetch --db "$RUNNER_TEMP/advisory-db" --file Cargo.lock) || true
+          # From the root, .cargo/audit.toml leaves out low ratings. This is the run that can fail the job.
           cargo audit --no-fetch --db "$RUNNER_TEMP/advisory-db" --file src-tauri/Cargo.lock
 
   # The core only: it has Unix-only file handling that the Windows job never compiles.
