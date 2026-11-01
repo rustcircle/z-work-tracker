@@ -1136,12 +1136,13 @@ fn get_audit(core: CoreState<'_>, entity_id: Option<String>) -> CmdResult<Vec<Au
 }
 
 #[tauri::command(async)]
-fn sync_now(core: CoreState<'_>) -> CmdResult<Snapshot> {
+fn sync_now(app: AppHandle, core: CoreState<'_>) -> CmdResult<Snapshot> {
     let svc = core.svc()?;
-    {
+    let changed = {
         let _cycle = guard(&core.cycle_lock);
-        run_cycle(&svc, &RealIo);
-    }
+        run_cycle(&svc, &RealIo)
+    };
+    after_cycle(&app, &core, &svc, changed);
     let snapshot = guard(&svc).snapshot();
     Ok(snapshot)
 }
@@ -1421,9 +1422,27 @@ fn run_chores(app: &AppHandle, core: &Core) {
     }
 }
 
+/// Whether someone is looking at the window. Open behind another app reports as visible, so it needs focus.
 fn main_window_in_view(app: &AppHandle) -> bool {
-    app.get_webview_window("main")
-        .is_some_and(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false))
+    app.get_webview_window("main").is_some_and(|w| {
+        w.is_visible().unwrap_or(false)
+            && !w.is_minimized().unwrap_or(false)
+            && w.is_focused().unwrap_or(false)
+    })
+}
+
+/// What every sync cycle owes the tray and the user, whoever started it.
+fn after_cycle(app: &AppHandle, core: &Core, svc: &Mutex<Service>, changed: bool) {
+    if changed {
+        refresh_tray(app, core);
+    }
+    // The banner covers a window in view. Nobody sees that in the tray, so say it there too.
+    let alerts = guard(svc).take_pause_alerts();
+    if !main_window_in_view(app) {
+        for text in alerts {
+            notify(app, &text);
+        }
+    }
 }
 
 fn notify(app: &AppHandle, text: &str) {
@@ -1511,16 +1530,7 @@ fn spawn_sync(app: AppHandle, core: Arc<Core>, svc: Arc<Mutex<Service>>) {
             };
             let failed = guard(&svc).any_target_failed();
             schedule.cycle_done(clock(), failed);
-            if changed {
-                refresh_tray(&app, &core);
-            }
-            // The banner covers a window in view. Nobody sees that in the tray, so say it there too.
-            let alerts = guard(&svc).take_pause_alerts();
-            if !main_window_in_view(&app) {
-                for text in alerts {
-                    notify(&app, &text);
-                }
-            }
+            after_cycle(&app, &core, &svc, changed);
             // Status also changes without data changing, so the UI always hears about it.
             let _ = app.emit("state-changed", ());
         }
