@@ -271,6 +271,26 @@ test.describe('words that meet newer text', () => {
     await expect(editor(page)).toHaveCount(0);
   });
 
+  test('an Enter held down on Done across the second is one press, and chose nothing', async ({ page }) => {
+    await open(page, 'seed=demo');
+    const form = await typedThenNewer(page);
+    await form.getByRole('button', { name: 'Done' }).focus();
+    // The first Enter comes with the notice, inside its first second.
+    await page.keyboard.down('Enter');
+    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
+    await page.clock.runFor(1100);
+    // Held on, the key repeats: each repeat is a keydown of a key that has been down all along.
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    await page.waitForTimeout(100);
+    await heldOpen(page, form);
+    await page.keyboard.press('Enter');
+    await settled(page);
+    expect(await stored(page)).toContain('mine');
+    await expect(editor(page)).toHaveCount(0);
+  });
+
   test('a press dragged off Done speaks for no later key', async ({ page }) => {
     await open(page, 'seed=demo');
     await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();

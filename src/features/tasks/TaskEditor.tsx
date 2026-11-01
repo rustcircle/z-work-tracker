@@ -610,6 +610,10 @@ export function TaskEditor({ task }: { task: Task }) {
             onPointerDown={() => {
               heldAtPress.current = readHeldFields(session);
             }}
+            onKeyDown={(e) => {
+              // A key held down repeats, and each repeat would click again. Only the press that began it is one.
+              if (e.repeat) e.preventDefault();
+            }}
             onClick={(e) => {
               // The second click of a double click comes too soon after the first to be a choice of what that one held.
               if (e.detail > 1) return;
