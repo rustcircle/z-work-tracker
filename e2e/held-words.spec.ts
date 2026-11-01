@@ -225,6 +225,81 @@ test.describe('words that meet newer text', () => {
     await expect(editor(page)).toHaveCount(0);
   });
 
+  test('a press dragged off Done speaks for no later key', async ({ page }) => {
+    await open(page, 'seed=demo');
+    await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
+    const form = editor(page);
+    const done = form.getByRole('button', { name: 'Done' });
+    await done.scrollIntoViewIfNeeded();
+    const b = await done.boundingBox();
+    if (!b) throw new Error('Done has no box');
+    // Nothing is held at this press, and with the mouse let go elsewhere it never becomes a click.
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width / 2, b.y - 150);
+    await page.mouse.up();
+    await expect(form).toBeVisible();
+    await form.getByRole('textbox', { name: 'Description' }).click();
+    await page.keyboard.type(' mine');
+    await arrive(page);
+    await settled(page);
+    await heldOpen(page, form);
+    await done.focus();
+    await page.keyboard.press('Enter');
+    await settled(page);
+    expect(await stored(page)).toContain('mine');
+    await expect(editor(page)).toHaveCount(0);
+  });
+
+  test('an edit to a task deleted elsewhere goes in a notice with its words', async ({ page }) => {
+    const found = await open(page, 'seed=demo');
+    await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
+    await editor(page).getByRole('textbox', { name: 'Description' }).click();
+    await page.keyboard.type(' mine');
+    await page.evaluate(async () => {
+      window.__mock.tasks = window.__mock.tasks.filter((t) => t.id !== 't-guide');
+      await window.__mockEmit('state-changed');
+    });
+    const notice = page.getByTestId('notice');
+    await expect(notice).toContainText('no longer exists');
+    await expect(notice).toContainText('mine');
+    await expect(editor(page)).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await settled(page);
+    expect(await page.evaluate(() => Object.keys(window.__mock.drafts))).toEqual([]);
+    await expectClean(page, found);
+  });
+
+  test('a closed editor whose saves keep failing has a banner until a later success sends the words', async ({ page }) => {
+    const found = await open(page, 'seed=demo');
+    await page.evaluate(() => {
+      const w = window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a: unknown, o: unknown) => Promise<unknown> }; __down?: boolean };
+      const real = w.__TAURI_INTERNALS__.invoke;
+      w.__down = true;
+      w.__TAURI_INTERNALS__.invoke = (c, a, o) => (w.__down && c === 'patch_task' ? Promise.reject({ code: 'io', message: 'the data file is locked' }) : real(c, a, o));
+    });
+    await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
+    await editor(page).getByRole('textbox', { name: 'Description' }).click();
+    await page.keyboard.type(' mine');
+    // The first failure brings up the error banner, which moves the page: the click waits until it has.
+    await page.clock.runFor(1000);
+    await expect(page.getByRole('alert')).toContainText('the data file is locked');
+    await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
+    await expect(editor(page)).toHaveCount(0);
+    await page.clock.runFor(70_000);
+    const banner = page.getByTestId('unsent-banner');
+    await expect(banner).toContainText('could not be saved yet');
+    expect(await stored(page)).not.toContain('mine');
+    await page.evaluate(() => {
+      (window as unknown as { __down?: boolean }).__down = false;
+    });
+    await page.getByRole('button', { name: 'Hide earnings' }).click();
+    await expect(banner).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    expect(await stored(page)).toContain('mine');
+    await expectClean(page, found);
+  });
+
   test('Discard on several held fields restores them all, and puts the cursor on the first', async ({ page }) => {
     await page.setViewportSize({ width: 980, height: 660 });
     await open(page, 'seed=demo&theme=dark');
