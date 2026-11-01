@@ -35,7 +35,6 @@ use z_work_core::tray::{
     CloseDecision, ToggleRoute, TrayAction, TrayCache, TrayState, close_decision, toggle_route,
     tray_state,
 };
-use z_work_core::validate::parse_zone;
 use z_work_core::view::Snapshot;
 use z_work_core::{CoreError, SystemClock, csv, xlsx};
 
