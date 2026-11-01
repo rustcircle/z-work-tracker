@@ -2768,7 +2768,8 @@ mod tests {
         if std::env::var_os("ZWT_WRITE_PARITY").is_some() {
             std::fs::write(PATH, &body).unwrap();
         }
-        let want = std::fs::read_to_string(PATH).unwrap();
+        // A checkout may turn line endings into CRLF. Only the content is pinned.
+        let want = std::fs::read_to_string(PATH).unwrap().replace("\r\n", "\n");
         assert_eq!(
             body, want,
             "run with ZWT_WRITE_PARITY=1, then check it with vitest"

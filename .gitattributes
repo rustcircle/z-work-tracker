@@ -1,0 +1,14 @@
+# Windows runners check out with core.autocrlf=true, which would rewrite text files. These must not change.
+
+# The Rust and TypeScript tests hold both sides to these files.
+fixtures/*.json text eol=lf
+
+# As downloaded: fonts/SOURCE.md records its SHA-256, and the installer ships it.
+src-tauri/crates/z-work-core/fonts/OFL.txt -text
+
+# Git already detects these as binary. This keeps it from guessing.
+*.ttf binary
+*.xlsx binary
+*.png binary
+*.ico binary
+*.icns binary
