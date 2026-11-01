@@ -8,10 +8,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { boot, polyfillDom } from '../../components/testKit';
 import { demoState } from '../../mocks/demoSeed';
 
+// Vitest does not stop a test body that runs out of time. Left going, its act() calls overlap the next test's, which
+// leaves React's act depth above zero, and from then on no render flushes: amounts freeze and new trees stay empty.
+// So a loop stops at its next tick once its test has timed out.
 const advance = (ms: number) =>
   act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
   });
+const tick = async (signal: AbortSignal): Promise<void> => {
+  signal.throwIfAborted();
+  await advance(1000);
+};
 
 const ticker = () => within(screen.getByRole('article', { name: 'Logo concepts' }));
 const todayLine = (): string => screen.getByTestId('summary-today').textContent ?? '';
@@ -56,14 +63,14 @@ describe('earnings and the clock', () => {
     expect(todayLine()).toContain('$315.00');
   });
 
-  it('the amount holds still while seconds pass, and the session clock keeps counting', async () => {
+  it('the amount holds still while seconds pass, and the session clock keeps counting', async ({ signal }) => {
     boot(demoState());
     await advance(100);
     const clock = (): string => ticker().getByTestId('session-clock').textContent ?? '';
     const seen = new Set<string>();
     const amounts = new Set<string>();
     for (let i = 0; i < 120; i += 1) {
-      await advance(1000);
+      await tick(signal);
       seen.add(clock());
       amounts.add(ticker().getByTestId('billable-now').textContent ?? '');
     }
@@ -72,12 +79,12 @@ describe('earnings and the clock', () => {
     expect(todayLine()).toContain('$315.00');
   });
 
-  it('steps up when billable time steps, in the ticker and in the totals together', async () => {
+  it('steps up when billable time steps, in the ticker and in the totals together', async ({ signal }) => {
     boot(demoState());
     await advance(100);
     // React sets the next timer after each render, so the test moves a second at a time like the clock does.
     const run = async (secs: number): Promise<void> => {
-      for (let i = 0; i < secs; i += 1) await advance(1000);
+      for (let i = 0; i < secs; i += 1) await tick(signal);
     };
     await run(4 * 60);
     expect(ticker().getByTestId('billable-now')).toHaveTextContent('$315.00');
@@ -104,5 +111,24 @@ describe('earnings and the clock', () => {
     // 30 more minutes counted: 3h25 + 30m = 3h55m, rounded up to 4h00m.
     expect(ticker().getByTestId('billable-now')).toHaveTextContent('$360.00');
     Reflect.deleteProperty(document, 'visibilityState');
+  });
+
+  describe('after a test runs out of time', () => {
+    it.fails('stand-in: a body that outlasts its limit', async ({ signal }) => {
+      boot(demoState());
+      await advance(100);
+      for (let i = 0; i < 20_000; i += 1) await tick(signal);
+    }, 50);
+
+    it('the next test still renders, and its amounts still step', async ({ signal }) => {
+      const errors = vi.spyOn(console, 'error');
+      boot(demoState());
+      await advance(100);
+      expect(ticker().getByTestId('billable-now')).toHaveTextContent('$315.00');
+      for (let i = 0; i < 310; i += 1) await tick(signal);
+      expect(ticker().getByTestId('billable-now')).toHaveTextContent('$337.50');
+      expect(errors.mock.calls.flat().join(' ')).not.toMatch(/overlapping act/);
+      errors.mockRestore();
+    });
   });
 });
