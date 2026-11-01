@@ -54,6 +54,8 @@ jobs:
           WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
+          # The cache restores src-tauri/target, so an installer from an earlier version could still be there.
+          Remove-Item 'src-tauri\target\release\bundle\nsis\*-setup.exe' -Force -ErrorAction SilentlyContinue
           # The same order as scripts/windows-sign.mjs chooses in.
           $label = 'UNSIGNED'
           if ($env:AZURE_SIGNING_ACCOUNT) {

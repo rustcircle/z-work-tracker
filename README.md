@@ -561,19 +561,20 @@ $env:SIGNTOOL_PATH = (Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\
 pnpm tauri build --bundles nsis
 ```
 
-Or on GitHub, which never needs the certificate on another machine's disk for longer than the build: put the two secrets in the `windows-signing` environment, then run **Windows build** from the Actions tab. The first command reads the file and pipes it straight into the secret, and the second asks for the password:
+Or on GitHub, which never needs the certificate on another machine's disk for longer than the build: put the two secrets in the `windows-signing` environment, then run **Windows build** from the Actions tab. The first command creates the environment, which is needed once. The second reads the file and pipes it straight into the secret, and the third asks for the password:
 
 ```powershell
+gh api -X PUT repos/rustcircle/z-work-tracker/environments/windows-signing
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\zWorkTracker-signing\zWorkTracker-signing.pfx")) | gh secret set WINDOWS_CERT_PFX_BASE64 --env windows-signing --repo rustcircle/z-work-tracker
 gh secret set WINDOWS_CERT_PASSWORD --env windows-signing --repo rustcircle/z-work-tracker
 ```
 
 The artifact's name then ends in `-self-signed`. With no secrets the workflow still succeeds and the name ends in `-UNSIGNED`.
 
-**5. Check it,** on a PC set up as in step 3. `signtool` comes with the Windows SDK; `Get-AuthenticodeSignature` is part of Windows, so it's enough on a PC without the SDK:
+**5. Check it,** on a PC set up as in step 3. `signtool` comes with the Windows SDK, isn't on the PATH, and is found as in step 4. `Get-AuthenticodeSignature` is part of Windows, so it's enough on a PC without the SDK:
 
 ```powershell
-signtool verify /pa /v .\zWorkTracker_0.1.0_x64-setup.exe
+& $env:SIGNTOOL_PATH verify /pa /v .\zWorkTracker_0.1.0_x64-setup.exe
 Get-AuthenticodeSignature .\zWorkTracker_0.1.0_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
 ```
 
@@ -601,7 +602,7 @@ pnpm package:windows
 unset WINDOWS_CERT_PASSWORD
 ```
 
-It reports the signatures of the installer and of what's inside it, and fails if any is missing. **What has been tested:** this was run with a throwaway test certificate that has since been deleted, and `osslsigncode verify` accepted the installer and, unpacked from it, `zWorkTracker.exe`, `uninstall.exe` and `WebView2Loader.dll`, each with a DigiCert timestamp. PFX files using the encryption Windows may export (3DES or AES-256) opened fine. **Not tested:** Windows itself accepting those signatures.
+It reports the signatures of the installer and of what's inside it, and fails if any is missing or can't be checked. **What has been tested:** this was run with a throwaway test certificate that has since been deleted, and `osslsigncode verify` accepted the installer and, unpacked from it, `zWorkTracker.exe`, `uninstall.exe` and `WebView2Loader.dll`, each with a DigiCert timestamp. PFX files using the encryption Windows may export (3DES or AES-256) opened fine. **Not tested:** Windows itself accepting those signatures.
 
 ### Windows installer from GitHub
 

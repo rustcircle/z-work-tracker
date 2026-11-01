@@ -90,8 +90,15 @@ if (bad.length) {
   console.error(`The app needs DLLs Windows does not ship: ${bad.join(', ')}`);
   process.exit(1);
 }
-const missed = [...(hasCertificate(installerPath) ? [] : ['the installer']), ...(inside ?? []).filter((f) => !f.signed).map((f) => f.name)];
-if (signingWanted && missed.length) {
-  console.error(`Signing was asked for, but these are unsigned: ${missed.join(', ')}`);
-  process.exit(1);
+if (signingWanted) {
+  if (inside === null) {
+    console.error('Signing was asked for, but the files inside the installer could not be checked. It needs 7-Zip: brew install sevenzip');
+    process.exit(1);
+  }
+  const absent = ['zWorkTracker.exe', 'uninstall.exe'].filter((n) => !inside.some((f) => f.name === n));
+  const missed = [...(hasCertificate(installerPath) ? [] : ['the installer']), ...inside.filter((f) => !f.signed).map((f) => f.name)];
+  if (absent.length || missed.length) {
+    console.error(`Signing was asked for, but these are unsigned: ${[...missed, ...absent.map((n) => `${n} (not found)`)].join(', ')}`);
+    process.exit(1);
+  }
 }
