@@ -5373,6 +5373,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
  "user-idle",
+ "window-vibrancy",
  "winreg 0.55.0",
  "z-work-core",
  "z-work-session",

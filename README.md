@@ -283,7 +283,7 @@ CSV has `record_type` rows: `segment` rows carry raw UTC, zone times and exact d
 
 **Light** (default), **Solarized Light**, **Solarized Dark** and **Dark**, chosen in Settings per device. The OS theme isn't followed. Project colours stay as you chose them in every theme.
 
-**Mica**, under Appearance, lets the Windows 11 backdrop show faintly through the page background in Light and Dark. Solarized stays opaque, and so do panels with text. It's off by default, and on anything older than Windows 11 the switch is disabled and says why.
+**Mica**, under Appearance, lets the Windows 11 backdrop show faintly through the page background in Light and Dark. Solarized stays opaque, and so do panels with text. It's off by default, and on anything older than Windows 11 the switch is disabled and says why. If Windows refuses the backdrop, the page stays opaque and the switch is disabled for that run. Windows can also accept it and draw a plain fill instead, for example with Transparency effects off. The app can't detect that, so about 10% of that fill shows through the page background. Panels with text stay opaque.
 
 ### Folder sync on OneDrive and Google Drive
 

@@ -896,22 +896,46 @@ fn window_ready(app: AppHandle) {
 }
 
 /// Windows 11's backdrop. The page turns transparent only for the themes it suits.
-/// Returns false when the backdrop was asked for and could not be applied.
+/// Returns false when the backdrop was asked for and Windows refused it, so the caller can keep the
+/// page opaque. This calls window-vibrancy itself because tauri's `set_effects` runs the same call on
+/// the UI thread and discards its result.
+///
+/// What a true can't promise: Windows also accepts the request when it then draws a plain fill instead
+/// of the material, for example with Transparency effects off. The page's 10% then shows that fill, or,
+/// if nothing paints behind the window at all, whatever Windows leaves there. Panels with text stay opaque,
+/// and the page's colours keep their contrast over black and white.
 #[cfg(windows)]
 fn apply_mica(app: &AppHandle, on: bool) -> bool {
-    use tauri::utils::config::WindowEffectsConfig;
-    use tauri::window::Effect;
+    /// The UI thread is busy for longer than this only if something is badly wrong. Opaque is safe.
+    const WAIT: Duration = Duration::from_secs(2);
     let Some(w) = app.get_webview_window("main") else {
         return !on;
     };
-    let effects = on.then(|| WindowEffectsConfig {
-        effects: vec![Effect::Mica],
-        ..WindowEffectsConfig::default()
+    let (tx, rx) = mpsc::channel();
+    let window = w.clone();
+    // On the UI thread, as tauri does it. Called from there, as at launch, this runs before it returns.
+    let asked = w.run_on_main_thread(move || {
+        let result = if on {
+            window_vibrancy::apply_mica(&window, None)
+        } else {
+            // Windows too old to have Mica has nothing to clear.
+            let _ = window_vibrancy::clear_mica(&window);
+            Ok(())
+        };
+        let _ = tx.send(result);
     });
-    match w.set_effects(effects) {
-        Ok(()) => true,
-        Err(e) => {
+    if let Err(e) = asked {
+        eprintln!("Mica could not be applied: {e}");
+        return !on;
+    }
+    match rx.recv_timeout(WAIT) {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
             eprintln!("Mica could not be applied: {e}");
+            !on
+        }
+        Err(e) => {
+            eprintln!("Mica did not answer: {e}");
             !on
         }
     }

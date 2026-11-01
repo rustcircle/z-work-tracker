@@ -53,6 +53,8 @@ iana-time-zone = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
+# Already built as a dependency of tauri. Called directly because tauri discards its result.
+window-vibrancy = "0.8"
 
 [target.'cfg(windows)'.dependencies.winreg]
 version = "0.55"
