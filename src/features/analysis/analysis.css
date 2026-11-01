@@ -91,6 +91,8 @@
 .a-dot { stroke: var(--surface); stroke-width: 1; }
 .a-hover-area { fill: transparent; }
 .a-hit { cursor: pointer; }
+.a-cell:focus { outline: none; }
+.a-cell:focus-visible { stroke: var(--focus); stroke-width: 2.5; paint-order: stroke; }
 .a-hit:hover .a-mark, .a-hit:focus-visible .a-mark, .a-slice.a-hit:hover { stroke: var(--text); stroke-width: 1.5; }
 .a-hit:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .a-marker-line { stroke: var(--axis); stroke-width: 1; stroke-dasharray: 3 3; }

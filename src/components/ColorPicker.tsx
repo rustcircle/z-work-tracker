@@ -54,9 +54,10 @@ function Swatches({ label, colors, value, onPick }: { label: string; colors: rea
   const stop = selected >= 0 ? selected : 0;
   const move = (e: KeyboardEvent<HTMLButtonElement>, i: number): void => {
     const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
-    if (step === 0) return;
+    // Home and End go to the first and the last, as in any radio group.
+    if (step === 0 && e.key !== 'Home' && e.key !== 'End') return;
     e.preventDefault();
-    const next = (i + step + colors.length) % colors.length;
+    const next = e.key === 'Home' ? 0 : e.key === 'End' ? colors.length - 1 : (i + step + colors.length) % colors.length;
     const color = colors[next];
     if (!color) return;
     onPick(color);

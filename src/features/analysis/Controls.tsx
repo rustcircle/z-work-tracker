@@ -1,6 +1,7 @@
 // Range, comparison, basis and filters.
 import { useEffect, useMemo, useState } from 'react';
 
+import { onRadioKeyDown } from '../../components/ui';
 import { BANDS } from '../../lib/split';
 import { OUTSIDE, NO_FILTERS, type Filters } from './engine';
 import type { Basis } from './mctx';
@@ -66,9 +67,9 @@ export function Controls(p: ControlsProps) {
   return (
     <div className="a-controls" role="group" aria-label="Analysis controls">
       <div className="a-row a-wrap">
-        <div className="a-seg" role="radiogroup" aria-label="Range">
+        <div className="a-seg" role="radiogroup" aria-label="Range" onKeyDown={onRadioKeyDown}>
           {KINDS.map((k) => (
-            <button key={k.kind} type="button" role="radio" aria-checked={range.kind === k.kind} className={`a-seg-btn ${range.kind === k.kind ? 'is-on' : ''}`} onClick={() => setKind(k.kind)}>
+            <button key={k.kind} type="button" role="radio" aria-checked={range.kind === k.kind} tabIndex={range.kind === k.kind ? 0 : -1} className={`a-seg-btn ${range.kind === k.kind ? 'is-on' : ''}`} onClick={() => setKind(k.kind)}>
               {k.label}
             </button>
           ))}
@@ -102,9 +103,9 @@ export function Controls(p: ControlsProps) {
         ) : null}
       </div>
       <div className="a-row a-wrap">
-        <div className="a-seg" role="radiogroup" aria-label="Time basis">
+        <div className="a-seg" role="radiogroup" aria-label="Time basis" onKeyDown={onRadioKeyDown}>
           {(['billable', 'exact'] as const).map((b) => (
-            <button key={b} type="button" role="radio" aria-checked={p.basis === b} disabled={b === 'billable' && !p.billableAvailable} className={`a-seg-btn ${p.basis === b ? 'is-on' : ''}`} onClick={() => p.setBasis(b)}>
+            <button key={b} type="button" role="radio" aria-checked={p.basis === b} tabIndex={p.basis === b ? 0 : -1} disabled={b === 'billable' && !p.billableAvailable} className={`a-seg-btn ${p.basis === b ? 'is-on' : ''}`} onClick={() => p.setBasis(b)}>
               {b === 'billable' ? 'Billable' : 'Exact'}
             </button>
           ))}

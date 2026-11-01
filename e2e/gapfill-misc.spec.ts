@@ -165,3 +165,75 @@ test.describe('tag shortcut', () => {
     });
   }
 });
+
+test.describe('keyboard', () => {
+  test('the heatmaps drill down from the keyboard with one tab stop', async ({ page }) => {
+    const found = await open(page, 'seed=demo');
+    await page.getByRole('tab', { name: 'Analysis' }).click();
+    const heat = page.getByRole('group', { name: /^Heatmap of logged time by weekday and hour/ });
+    await heat.scrollIntoViewIfNeeded();
+    const stops = heat.locator('[role="button"][tabindex="0"]');
+    await expect(stops).toHaveCount(1);
+    await stops.focus();
+    await expect(page.getByRole('tooltip')).toBeVisible();
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowLeft');
+    await expect(stops).toHaveCount(1);
+    await page.keyboard.press('Enter');
+    const panel = page.getByRole('dialog', { name: /^Drill-down:/ });
+    await expect(panel).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(panel).toBeHidden();
+
+    const cal = page.getByRole('group', { name: /^Calendar heatmap/ });
+    await cal.scrollIntoViewIfNeeded();
+    await expect(cal.locator('[role="button"][tabindex="0"]')).toHaveCount(1);
+    await cal.locator('[role="button"][tabindex="0"]').focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: /^Drill-down:/ })).toBeVisible();
+    await expectClean(page, found);
+  });
+
+  test('radio groups answer arrow keys: theme, analysis range, colours', async ({ page }) => {
+    const found = await open(page, 'seed=demo');
+    await page.getByRole('tab', { name: 'Settings' }).click();
+    await page.getByRole('radio', { name: 'Light', exact: true }).focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'solarizedLight');
+    await page.keyboard.press('End');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await page.keyboard.press('Home');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+
+    await page.getByRole('tab', { name: 'Projects' }).click();
+    await page.getByRole('button', { name: 'New project' }).click();
+    const colours = page.getByRole('form', { name: 'New project' }).getByRole('radiogroup', { name: /colour/i });
+    await colours.getByRole('radio').first().focus();
+    await page.keyboard.press('End');
+    await expect(colours.getByRole('radio').last()).toBeFocused();
+    await expect(colours.getByRole('radio').last()).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Home');
+    await expect(colours.getByRole('radio').first()).toHaveAttribute('aria-checked', 'true');
+
+    await page.getByRole('tab', { name: 'Analysis' }).click();
+    const range = page.getByRole('radiogroup', { name: 'Range' });
+    await range.getByRole('radio', { checked: true }).focus();
+    await page.keyboard.press('Home');
+    await expect(range.getByRole('radio').first()).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('ArrowRight');
+    await expect(range.getByRole('radio').nth(1)).toHaveAttribute('aria-checked', 'true');
+    await expectClean(page, found);
+  });
+
+  test('shift colours are a radio group with arrow keys too', async ({ page }) => {
+    const found = await open(page, 'seed=demo');
+    await page.getByRole('tab', { name: 'Settings' }).click();
+    await page.getByRole('button', { name: /Add shift|New shift/ }).first().click();
+    const colours = page.getByRole('radiogroup').filter({ has: page.getByRole('radio', { name: /^Colour #/ }) }).last();
+    await colours.getByRole('radio').first().focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(colours.getByRole('radio').nth(1)).toBeFocused();
+    await expect(colours.getByRole('radio').nth(1)).toHaveAttribute('aria-checked', 'true');
+    await expectClean(page, found);
+  });
+});

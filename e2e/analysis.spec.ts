@@ -215,7 +215,8 @@ test.describe('glossary, insights, privacy and sections', () => {
       /^Scheduled and worked hours per shift/,
       /^Hours by band in Lisbon/,
     ]) {
-      await expect(page.getByRole('img', { name: label }).first(), String(label)).toBeAttached();
+      // The two heatmaps with a drill-down are keyboard groups of cells, not a single image.
+      await expect(page.getByRole('img', { name: label }).or(page.getByRole('group', { name: label })).first(), String(label)).toBeAttached();
     }
     const table = card(page, 'Hours over time');
     await table.getByText('View data').click();

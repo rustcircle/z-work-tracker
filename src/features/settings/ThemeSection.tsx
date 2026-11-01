@@ -2,7 +2,7 @@ import { useAppState } from '../../app/store';
 import { api } from '../../lib/api';
 import { MICA_THEMES, THEMES, THEME_LABELS } from '../../lib/themes';
 import type { Theme } from '../../lib/types';
-import { Switch } from '../../components/ui';
+import { Switch, onRadioKeyDown } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 
 const ORDER: Theme[] = ['light', 'solarizedLight', 'solarizedDark', 'dark'];
@@ -12,12 +12,12 @@ export function ThemeSection() {
   const { act } = useCommands();
   return (
     <div>
-      <div className="theme-grid" role="radiogroup" aria-label="Theme">
+      <div className="theme-grid" role="radiogroup" aria-label="Theme" onKeyDown={onRadioKeyDown}>
         {ORDER.map((t) => {
           const tok = THEMES[t];
           const on = snapshot.prefs.theme === t;
           return (
-            <button key={t} type="button" role="radio" aria-checked={on} className={`theme-card ${on ? 'on' : ''}`} onClick={() => void act(() => api.setTheme(t))}>
+            <button key={t} type="button" role="radio" aria-checked={on} tabIndex={on ? 0 : -1} className={`theme-card ${on ? 'on' : ''}`} onClick={() => void act(() => api.setTheme(t))}>
               <span className="theme-preview" style={{ background: tok.bg, borderColor: tok.border }} aria-hidden="true">
                 <span style={{ background: tok.surface, borderColor: tok.border }} className="theme-preview-card">
                   <span style={{ background: tok.accent }} />

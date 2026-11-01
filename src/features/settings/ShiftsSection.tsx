@@ -6,7 +6,7 @@ import { PROJECT_PALETTE } from '../../lib/color';
 import { cityOf, dayOf, zoneLabel } from '../../lib/tz';
 import type { ShiftVersion } from '../../lib/types';
 import { WEEKDAY_NAMES } from '../../components/format';
-import { Badge, Button, ConfirmDialog, Field, Swatch } from '../../components/ui';
+import { Badge, Button, ConfirmDialog, Field, Swatch, onRadioKeyDown } from '../../components/ui';
 import { IconPlus } from '../../components/icons';
 import { useCommands } from '../../components/useCommands';
 import { ZonePickerDialog } from '../zones';
@@ -43,9 +43,9 @@ function ShiftForm({ initial, onDone }: { initial: ShiftDraft; onDone: () => voi
           <span className="field-label" id="shift-colour">
             Colour
           </span>
-          <div className="swatches" role="radiogroup" aria-labelledby="shift-colour">
-            {PROJECT_PALETTE.map((c) => (
-              <button key={c} type="button" role="radio" aria-checked={d.color.toLowerCase() === c} aria-label={`Colour ${c}`} className={`swatch-btn ${d.color.toLowerCase() === c ? 'on' : ''}`} style={{ background: c }} onClick={() => set('color', c)} />
+          <div className="swatches" role="radiogroup" aria-labelledby="shift-colour" onKeyDown={onRadioKeyDown}>
+            {PROJECT_PALETTE.map((c, i) => (
+              <button key={c} type="button" role="radio" aria-checked={d.color.toLowerCase() === c} tabIndex={d.color.toLowerCase() === c || (i === 0 && !(PROJECT_PALETTE as readonly string[]).includes(d.color.toLowerCase())) ? 0 : -1} aria-label={`Colour ${c}`} className={`swatch-btn ${d.color.toLowerCase() === c ? 'on' : ''}`} style={{ background: c }} onClick={() => set('color', c)} />
             ))}
           </div>
         </div>

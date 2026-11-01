@@ -2,9 +2,10 @@
 // from classes in analysis.css (theme variables), so every chart follows the active theme and the
 // bundle stays CSP clean. Project marks use the project's exact colour; marks for concepts that
 // belong to no project use one vivid colour plus one pattern per concept, in every chart.
-import { useEffect, useId, useLayoutEffect, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useState, type FocusEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
 import { readableText } from '../../lib/color';
+import { dayCellMove, hourCellMove, isActivateKey } from './heatKeys';
 
 export type Concept = 'worked' | 'paused' | 'target' | 'previous' | 'outside';
 export const CONCEPT_LABEL: Record<Concept, string> = {
@@ -629,6 +630,10 @@ export function HeatLegend({ label }: { label: string }) {
 }
 
 export function WeekdayHourHeat({ cells, max, rowLabels, tipFor, ariaLabel, onSelect }: { cells: readonly number[]; max: number; rowLabels: readonly string[]; tipFor: (row: number, hour: number) => string[]; ariaLabel: string; onSelect?: (row: number, hour: number) => void }) {
+  // One tab stop for the whole grid (the last cell focused, or the first one with time in it).
+  const [active, setActive] = useState<number | null>(null);
+  const firstFilled = Math.max(0, cells.findIndex((v) => v > 0));
+  const stop = active !== null && active < cells.length ? active : firstFilled;
   return (
     <ChartBox>
       {(width, tip) => {
@@ -638,7 +643,7 @@ export function WeekdayHourHeat({ cells, max, rowLabels, tipFor, ariaLabel, onSe
         const ch = clamp(cw * 1.1, 14, 26);
         const height = top + ch * rowLabels.length + 6;
         return (
-          <svg width={width} height={height} role="img" aria-label={ariaLabel} className="a-svg">
+          <svg width={width} height={height} role={onSelect ? 'group' : 'img'} aria-label={ariaLabel} className="a-svg">
             {Array.from({ length: 24 }, (_, h) =>
               h % 3 === 0 ? (
                 <text key={h} x={left + h * cw + cw / 2} y={12} textAnchor="middle" className="a-axis-text">
@@ -654,6 +659,31 @@ export function WeekdayHourHeat({ cells, max, rowLabels, tipFor, ariaLabel, onSe
                 {Array.from({ length: 24 }, (_, h) => {
                   const v = cells[row * 24 + h] as number;
                   const idx = heatIndex(v, max);
+                  const at = row * 24 + h;
+                  const keys = onSelect
+                    ? {
+                        role: 'button' as const,
+                        tabIndex: at === stop ? 0 : -1,
+                        'aria-label': tipFor(row, h).join(', '),
+                        'data-cell': at,
+                        onFocus: (e: FocusEvent<SVGRectElement>) => {
+                          setActive(at);
+                          tip.show(e, tipFor(row, h));
+                        },
+                        onBlur: () => tip.hide(),
+                        onKeyDown: (e: KeyboardEvent<SVGRectElement>) => {
+                          if (isActivateKey(e.key)) {
+                            e.preventDefault();
+                            onSelect(row, h);
+                            return;
+                          }
+                          const to = hourCellMove(e.key, e.ctrlKey || e.metaKey, row, h, rowLabels.length);
+                          if (!to) return;
+                          e.preventDefault();
+                          e.currentTarget.ownerSVGElement?.querySelector<SVGRectElement>(`[data-cell="${to.row * 24 + to.hour}"]`)?.focus();
+                        },
+                      }
+                    : {};
                   return (
                     <rect
                       key={h}
@@ -662,9 +692,10 @@ export function WeekdayHourHeat({ cells, max, rowLabels, tipFor, ariaLabel, onSe
                       width={cw - 1}
                       height={ch - 1}
                       rx={2}
-                      className={`${idx < 0 ? 'heat-empty' : `heat-${idx}`} ${onSelect ? 'a-hit' : ''}`}
+                      className={`${idx < 0 ? 'heat-empty' : `heat-${idx}`} ${onSelect ? 'a-hit a-cell' : ''}`}
                       onPointerMove={(e) => tip.show(e, tipFor(row, h))}
                       {...(onSelect ? { onClick: () => onSelect(row, h) } : {})}
+                      {...keys}
                     />
                   );
                 })}
@@ -684,6 +715,9 @@ export interface CalDay {
 }
 
 export function CalendarHeat({ days, max, weekdayOf, tipFor, ariaLabel, onSelect }: { days: readonly CalDay[]; max: number; weekdayOf: (n: number) => number; tipFor: (d: CalDay) => string[]; ariaLabel: string; onSelect?: (d: CalDay) => void }) {
+  const [active, setActive] = useState<number | null>(null);
+  const firstFilled = Math.max(0, days.findIndex((d) => d.secs > 0));
+  const stop = active !== null && active < days.length ? active : firstFilled;
   return (
     <ChartBox>
       {(width, tip) => {
@@ -702,7 +736,7 @@ export function CalendarHeat({ days, max, weekdayOf, tipFor, ariaLabel, onSelect
           }
         });
         return (
-          <svg width={width} height={height} role="img" aria-label={ariaLabel} className="a-svg">
+          <svg width={width} height={height} role={onSelect ? 'group' : 'img'} aria-label={ariaLabel} className="a-svg">
             {monthLabels.map((m) => (
               <text key={m.x} x={m.x} y={11} className="a-axis-text">
                 {m.t}
@@ -717,6 +751,30 @@ export function CalendarHeat({ days, max, weekdayOf, tipFor, ariaLabel, onSelect
               const col = Math.floor((i + lead) / 7);
               const row = (i + lead) % 7;
               const idx = heatIndex(d.secs, max);
+              const keys = onSelect
+                ? {
+                    role: 'button' as const,
+                    tabIndex: i === stop ? 0 : -1,
+                    'aria-label': tipFor(d).join(', '),
+                    'data-cell': i,
+                    onFocus: (e: FocusEvent<SVGRectElement>) => {
+                      setActive(i);
+                      tip.show(e, tipFor(d));
+                    },
+                    onBlur: () => tip.hide(),
+                    onKeyDown: (e: KeyboardEvent<SVGRectElement>) => {
+                      if (isActivateKey(e.key)) {
+                        e.preventDefault();
+                        onSelect(d);
+                        return;
+                      }
+                      const to = dayCellMove(e.key, i, days.length);
+                      if (to === null) return;
+                      e.preventDefault();
+                      e.currentTarget.ownerSVGElement?.querySelector<SVGRectElement>(`[data-cell="${to}"]`)?.focus();
+                    },
+                  }
+                : {};
               return (
                 <rect
                   key={d.day}
@@ -725,9 +783,10 @@ export function CalendarHeat({ days, max, weekdayOf, tipFor, ariaLabel, onSelect
                   width={cell - 1.5}
                   height={cell - 1.5}
                   rx={2}
-                  className={`${idx < 0 ? 'heat-empty' : `heat-${idx}`} ${onSelect ? 'a-hit' : ''}`}
+                  className={`${idx < 0 ? 'heat-empty' : `heat-${idx}`} ${onSelect ? 'a-hit a-cell' : ''}`}
                   onPointerMove={(e) => tip.show(e, tipFor(d))}
                   {...(onSelect ? { onClick: () => onSelect(d) } : {})}
+                  {...keys}
                 />
               );
             })}
