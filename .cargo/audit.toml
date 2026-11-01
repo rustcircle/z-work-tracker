@@ -1,0 +1,4 @@
+# Read by cargo audit when it runs from the repository root (ci.yml). See the audit job there.
+[advisories]
+# Vulnerabilities rated low by CVSS don't fail the audit. One with no CVSS rating still does.
+severity_threshold = "medium"
