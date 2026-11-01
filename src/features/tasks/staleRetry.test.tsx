@@ -314,6 +314,17 @@ describe('a save that failed as the editor closed', () => {
       return user;
     }
 
+    it('warns that held words can be lost if the app closes first, in the banner and in the editor', async () => {
+      // Replay at the next launch drops a draft that is older than the stored text, so held words do not survive a restart.
+      const user = await closeOnAFailedSave(' failed words');
+      await arrivesElsewhere();
+      storeDown = false;
+      await pass(ALL_RETRIES_MS);
+      expect(screen.getByRole('alert')).toHaveTextContent('If the app closes first, your edit may be lost');
+      await toggleEditor(user);
+      expect(saveState()).toHaveTextContent('If the app closes first, they may be lost');
+    });
+
     it('Discard my words gives the newer text back and forgets the held words', async () => {
       const user = await reopenedOnHeldWords();
       const discard = screen.getByRole('button', { name: 'Discard my words' });
