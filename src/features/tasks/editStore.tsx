@@ -96,6 +96,8 @@ export interface EditSession {
   conflict: Record<SavedField, boolean>;
   /** Held values Done has chosen to send regardless, for one save only. No retry repeats that on its own. */
   overriding: Record<SavedField, boolean>;
+  /** Held values whose notice has been on screen long enough for a press of Done to be a choice about them. */
+  holdRead: Record<SavedField, boolean>;
   /** A save is on its way, so what is stored may already include it. */
   saving: boolean;
   /** An editor is on screen for this draft. */
@@ -109,6 +111,11 @@ export interface EditSession {
 /** The unsaved fields that met newer stored values and wait for the user to choose. */
 export function heldFields(s: EditSession): SavedField[] {
   return SAVED_FIELDS.filter((f) => s.dirty[f] && s.conflict[f]);
+}
+
+/** The held fields Done can send regardless: their notice has been up for long enough to have been read. */
+export function readHeldFields(s: EditSession): SavedField[] {
+  return heldFields(s).filter((f) => s.holdRead[f]);
 }
 
 /** The unsaved fields whose last save failed, and go when one works. A blank name never does: it is refused, not sent. */
@@ -135,6 +142,7 @@ export function newSession(task: Task, report: (status: SaveStatus) => void): Ed
     expected: storedFields(task),
     conflict: { name: false, project: false, description: false, tags: false },
     overriding: { name: false, project: false, description: false, tags: false },
+    holdRead: { name: false, project: false, description: false, tags: false },
     saving: false,
     shown: false,
     report,

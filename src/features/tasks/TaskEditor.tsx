@@ -6,7 +6,8 @@
 // Each save carries the value this editor last showed or saved for its fields. The backend compares
 // them in the same step as the write and refuses any field it holds something else in, so a save
 // can't replace text nobody here has seen. A refused value stays in the draft, shown and held, until
-// Done sends it regardless or Discard gives it up. Typing on it changes neither.
+// Done sends it regardless or Discard gives it up. Typing on it changes neither. A press of Done in the
+// first second of the notice says nothing about it, as focus may well be on Done already.
 //
 // The editor keeps a local draft. Live updates re-render it but never overwrite unsaved values or
 // move focus. A field with nothing unsaved shows the newer value, from then on the one it expects.
@@ -19,13 +20,15 @@ import { TagPicker } from './TagPicker';
 import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
-import { MAX_RETRIES, SAVED_FIELDS, hasUnsaved, heldFields, newSession, sameValue, settle, storedFields, useEditStore, type EditField, type SaveStatus, type SavedField } from './editStore';
+import { MAX_RETRIES, SAVED_FIELDS, hasUnsaved, heldFields, newSession, readHeldFields, sameValue, settle, storedFields, useEditStore, type EditField, type SaveStatus, type SavedField } from './editStore';
 import { errorCode, errorMessage } from '../../lib/errorMessage';
 
 export const AUTOSAVE_MS = 600;
 /** How soon typed description text is stashed on disk, so a Windows shutdown in the next second loses nothing. */
 export const DRAFT_MS = 300;
 export const RETRY_BASE_MS = 2000;
+/** How long a hold notice is up before a press of Done counts as a choice about what it says. */
+export const HOLD_READ_MS = 1000;
 
 /** "name", "name and tags", "name, project and tags". */
 function listFields(fields: readonly SavedField[]): string {
@@ -93,8 +96,10 @@ export function TaskEditor({ task }: { task: Task }) {
   // late stash can never land after the clear that follows a successful save.
   const draftTimer = useRef<number | null>(null);
   const draftDoc = useRef<RichDoc | null>(null);
-  // The fields held when Done was pressed, before the blur of that press could hold anything more.
+  // The fields read as held when Done was pressed, before the blur of that press could hold anything more.
   const heldAtPress = useRef<SavedField[] | null>(null);
+  // Each field's second of being named in the notice on this screen.
+  const holdTimers = useRef(new Map<SavedField, number>());
   // The latest stored task: the name to fall back on when a blank one is refused.
   const latest = useRef(task);
   // A field with nothing unsaved shows what is stored. If the user types first, or is composing text now, the field
@@ -422,6 +427,37 @@ export function TaskEditor({ task }: { task: Task }) {
   const held = heldFields(session);
   const shown: SaveStatus = held.length > 0 && (status.kind === 'idle' || status.kind === 'saved' || status.kind === 'discarded') ? { kind: 'conflict' } : status;
 
+  // A field's second starts when the notice first names it, and a field no longer held starts again if it comes back.
+  const heldKey = held.join();
+  useEffect(() => {
+    const timers = holdTimers.current;
+    for (const f of SAVED_FIELDS) {
+      const timer = timers.get(f);
+      if (!heldKey.split(',').includes(f)) {
+        window.clearTimeout(timer);
+        timers.delete(f);
+        session.holdRead[f] = false;
+      } else if (timer === undefined && !session.holdRead[f]) {
+        timers.set(
+          f,
+          window.setTimeout(() => {
+            timers.delete(f);
+            session.holdRead[f] = true;
+          }, HOLD_READ_MS),
+        );
+      }
+    }
+  }, [heldKey, session]);
+  // Off this screen the notice is not being read, so an editor opened again gives it its second again.
+  useEffect(() => {
+    const timers = holdTimers.current;
+    return () => {
+      for (const timer of timers.values()) window.clearTimeout(timer);
+      timers.clear();
+      session.holdRead = { name: false, project: false, description: false, tags: false };
+    };
+  }, [session]);
+
   return (
     <form
       className="task-editor"
@@ -546,7 +582,7 @@ export function TaskEditor({ task }: { task: Task }) {
             small
             variant="primary"
             onPointerDown={() => {
-              heldAtPress.current = heldFields(session);
+              heldAtPress.current = readHeldFields(session);
             }}
             onClick={(e) => {
               // The second click of a double click comes too soon after the first to be a choice of what that one held.
@@ -554,7 +590,8 @@ export function TaskEditor({ task }: { task: Task }) {
               // Only what was on screen as held before this press is the user's to send regardless. A keyboard press
               // has no pointer-down, and any blur of its own came with an earlier key. It reads no list either, as the
               // list of a press dragged off this button is still here, and `detail` is 0 for a click of no pointer.
-              const chosen = (e.detail > 0 ? heldAtPress.current : null) ?? heldFields(session);
+              // Nor is a notice not yet read: it stays up, for a press after that.
+              const chosen = (e.detail > 0 ? heldAtPress.current : null) ?? readHeldFields(session);
               heldAtPress.current = null;
               void (async () => {
                 // The blur of this very press may have started a save that holds more back: it settles first.

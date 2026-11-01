@@ -8,6 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { boot as bootApp, polyfillDom } from '../../components/testKit';
+import { HOLD_READ_MS } from './TaskEditor';
 import { api } from '../../lib/api';
 import { demoState } from '../../mocks/demoSeed';
 import type { MockState } from '../../mocks/ipcMock';
@@ -60,6 +61,8 @@ const saveState = () => within(form()).getByTestId('save-state');
 const kind = () => saveState().getAttribute('data-kind');
 const discardButton = () => within(form()).queryByRole('button', { name: 'Discard my words' });
 const countOf = (cmd: string) => state.calls.filter((c) => c.cmd === cmd).length;
+/** The fields the notice names, in the form's order. */
+const heldNow = () => ['name', 'project', 'description', 'tags'].filter((f) => saveState().textContent?.split('Press Done')[0]?.includes(f));
 
 /** Another device's text lands in the store, and this page hears of it. */
 async function arrive(change: () => void = () => void (guide().description = elsewhere)) {
@@ -93,7 +96,7 @@ function gateNextSave(): () => void {
   return () => land();
 }
 
-/** Words typed, newer text in, and the autosave has met it: the notice is on screen. */
+/** Words typed, newer text in, and the autosave has met it: the notice is on screen, and has been long enough to read. */
 async function holdWords(): Promise<User> {
   const user = await openEditor();
   await user.click(box());
@@ -101,6 +104,7 @@ async function holdWords(): Promise<User> {
   await arrive();
   await pass(1000);
   expect(kind()).toBe('conflict');
+  await pass(HOLD_READ_MS);
   return user;
 }
 
@@ -307,6 +311,7 @@ describe('QC-2: Done', () => {
     });
     await pass(1000);
     expect(kind()).toBe('conflict');
+    await pass(HOLD_READ_MS);
     await user.click(box());
     await user.keyboard(' mine');
     await arrive();
@@ -1032,6 +1037,114 @@ describe('QC-F: a refused save that lands after the field was given up', () => {
   });
 });
 
+describe('a press of Done just as the notice appears', () => {
+  const doneButton = () => within(form()).getByRole('button', { name: 'Done' });
+  /** Words typed, newer text in, Done focused, and the autosave has only just met it: the notice is up, unread. */
+  async function justHeld(): Promise<User> {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    await arrive();
+    doneButton().focus();
+    await pass(600);
+    expect(kind()).toBe('conflict');
+    return user;
+  }
+
+  it('Enter chooses nothing, the notice stays, and Enter a second later saves', async () => {
+    const user = await justHeld();
+    await user.keyboard('{Enter}');
+    await pass(100);
+    expect(storedText()).toContain('From another');
+    expect(storedText()).not.toContain('mine');
+    expect(kind()).toBe('conflict');
+    expect(saveState()).toHaveTextContent('changed elsewhere');
+    expect(doneButton()).toHaveFocus();
+    await pass(1000);
+    await user.keyboard('{Enter}');
+    await pass(100);
+    expect(storedText()).toContain('mine');
+    expect(editorOpen()).toBe(false);
+  });
+
+  it('a click chooses nothing either, and one a second later saves', async () => {
+    const user = await justHeld();
+    await user.click(doneButton());
+    await pass(100);
+    expect(storedText()).not.toContain('mine');
+    expect(kind()).toBe('conflict');
+    await pass(1000);
+    await user.click(doneButton());
+    await pass(100);
+    expect(storedText()).toContain('mine');
+    expect(editorOpen()).toBe(false);
+  });
+
+  it('the first Enter of a save that brings the notice on leaves a second Enter unread too', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    await arrive();
+    doneButton().focus();
+    await user.keyboard('{Enter}');
+    await pass(0);
+    expect(kind()).toBe('conflict');
+    await user.keyboard('{Enter}');
+    await pass(100);
+    expect(storedText()).not.toContain('mine');
+    expect(kind()).toBe('conflict');
+  });
+
+  it('typing on does not make the notice any newer', async () => {
+    const user = await holdWords();
+    await user.click(box());
+    await user.keyboard(' more');
+    await pass(100);
+    await user.click(doneButton());
+    await pass(100);
+    expect(storedText()).toContain('more');
+  });
+
+  it('a field held later has its own second, and the one read goes', async () => {
+    const user = await holdWords();
+    await user.click(nameBox());
+    await user.keyboard(' renamed');
+    await arrive(() => {
+      guide().name = 'Renamed elsewhere';
+    });
+    await pass(600);
+    expect(heldNow()).toEqual(['name', 'description']);
+    await user.click(doneButton());
+    await pass(100);
+    expect(storedText()).toContain('mine');
+    expect(guide().name).toBe('Renamed elsewhere');
+    expect(editorOpen()).toBe(true);
+    expect(saveState()).toHaveTextContent('name');
+    await pass(1000);
+    await user.click(doneButton());
+    await pass(100);
+    expect(guide().name).toContain('renamed');
+    expect(editorOpen()).toBe(false);
+  });
+
+  it('coming back to an editor is a notice appearing again', async () => {
+    const user = await holdWords();
+    await toggle(user);
+    await pass(2000);
+    await toggle(user);
+    await pass(10);
+    expect(kind()).toBe('conflict');
+    await user.click(doneButton());
+    await pass(100);
+    expect(storedText()).not.toContain('mine');
+    expect(kind()).toBe('conflict');
+    await pass(1000);
+    await user.click(doneButton());
+    await pass(100);
+    expect(storedText()).toContain('mine');
+  });
+});
+
 describe('QC-G: a press on Done dragged off the button', () => {
   const doneButton = () => within(form()).getByRole('button', { name: 'Done' });
   /** Pressed on Done and released elsewhere: no click comes of it. */
@@ -1054,6 +1167,7 @@ describe('QC-G: a press on Done dragged off the button', () => {
     await arrive();
     await pass(1000);
     expect(kind()).toBe('conflict');
+    await pass(HOLD_READ_MS);
     await pressEnterOnDone(user);
     await pass(2000);
     expect(storedText()).toContain('mine');
