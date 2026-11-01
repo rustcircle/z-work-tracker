@@ -77,8 +77,13 @@ pub struct Kept {
 /// The words kept, or `None` for a file that is damaged. An error says it couldn't be read at all, which may
 /// only mean something else has it open. Unlike a draft, this is the only copy, so none of it is shrugged off.
 pub fn read_kept(dir: &Path) -> std::io::Result<Option<Vec<Kept>>> {
-    match fs::read(dir.join(KEPT_FILE)) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+    let mut bytes = Vec::new();
+    let read = persist::with_local_retry(|| {
+        bytes = fs::read(dir.join(KEPT_FILE))?;
+        Ok(())
+    });
+    match read {
+        Ok(()) => Ok(serde_json::from_slice(&bytes).ok()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(Vec::new())),
         Err(e) => Err(e),
     }
@@ -94,7 +99,8 @@ pub fn write_kept(dir: &Path, kept: &[&Kept]) -> Result<(), CoreError> {
         }
     }
     let bytes = serde_json::to_vec(kept)?;
-    persist::write_atomic(&path, &dir.join(format!("{KEPT_FILE}.tmp")), &bytes)?;
+    let tmp = dir.join(format!("{KEPT_FILE}.tmp"));
+    persist::with_local_retry(|| persist::write_atomic(&path, &tmp, &bytes))?;
     Ok(())
 }
 

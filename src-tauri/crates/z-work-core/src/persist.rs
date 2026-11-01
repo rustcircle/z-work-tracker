@@ -94,7 +94,7 @@ fn write_new(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 /// Antivirus or backup tools can hold a file for a moment. Retried for about half a second.
-fn with_local_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+pub(crate) fn with_local_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     let mut wait = 50;
     for _ in 0..3 {
         match op() {

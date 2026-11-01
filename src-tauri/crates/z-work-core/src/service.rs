@@ -61,6 +61,8 @@ pub struct Service {
     kept_out: BTreeMap<String, Kept>,
     /// Their file couldn't be read or moved aside at this launch, so this run writes nothing over it.
     kept_file_stuck: bool,
+    /// The user has been told that their kept words may not outlast this run.
+    told_kept_at_risk: bool,
     /// When this launch began. Nothing it had to write can have reached another device by then.
     opened: Ts,
     /// Drafts put back at this launch, as stored, until something else replaces them.
@@ -139,6 +141,7 @@ impl Service {
             mica_available: false,
             kept_out: BTreeMap::new(),
             kept_file_stuck: false,
+            told_kept_at_risk: false,
             opened: now,
             recovered: BTreeMap::new(),
         };
@@ -669,15 +672,27 @@ impl Service {
         }
     }
 
-    /// Writes the words kept out of the store to their file, or removes it if none are left.
-    fn save_kept(&self) -> Result<(), CoreError> {
-        if self.kept_file_stuck {
-            return Err(CoreError::StoreUnavailable(
+    /// Writes the words kept out of the store to their file, or removes it if none are left. Words it won't
+    /// take may last only as long as their notices, so that gets said, once until a write works again.
+    fn save_kept(&mut self) -> Result<(), CoreError> {
+        let written = if self.kept_file_stuck {
+            Err(CoreError::StoreUnavailable(
                 "the file of kept words can't be read".to_owned(),
-            ));
+            ))
+        } else {
+            let all: Vec<&Kept> = self.kept_out.values().collect();
+            crate::drafts::write_kept(&self.paths.dir, &all)
+        };
+        if written.is_ok() {
+            self.told_kept_at_risk = false;
+        } else if !self.kept_out.is_empty() && !self.told_kept_at_risk {
+            self.told_kept_at_risk = true;
+            self.notify(
+                "warning",
+                "Words kept for you in a notice can't be written to the data folder just now, so they may not come back at the next launch. Copy any you want from their notice before you close the app.".to_owned(),
+            );
         }
-        let all: Vec<&Kept> = self.kept_out.values().collect();
-        crate::drafts::write_kept(&self.paths.dir, &all)
+        written
     }
 
     /// Words of a draft the store won't take. A launch cut short after it wrote them finds that draft again.
@@ -3830,6 +3845,70 @@ mod tests {
         assert!(s.snapshot().revision > kept.revision);
     }
 
+    fn told_to_copy(s: &Service) -> usize {
+        s.snapshot()
+            .notices
+            .iter()
+            .filter(|n| n.message.contains("before you close the app"))
+            .count()
+    }
+
+    #[test]
+    fn words_kept_while_their_file_cannot_be_read_are_said_to_be_at_risk() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        drop(open(dir.path(), &clock));
+        let path = dir.path().join("z-work-kept-words.json");
+        std::fs::create_dir(&path).unwrap();
+        let mut s = open(dir.path(), &clock);
+        assert_eq!(told_to_copy(&s), 0, "nothing is at risk yet");
+        s.keep_unsaved_words("gone", "Old name", Some("New name"), None);
+        assert_eq!(told_to_copy(&s), 1);
+        s.keep_unsaved_words("gone 2", "Other name", Some("Other new name"), None);
+        assert_eq!(told_to_copy(&s), 1, "once is enough");
+        assert_eq!(kept_notices(&s).len(), 2);
+    }
+
+    #[test]
+    fn words_put_back_that_lose_while_their_file_cannot_be_written_are_said_to_be_at_risk() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(30);
+        let mut s = open(here.path(), &clock);
+        let blocker = here.path().join("z-work-kept-words.json.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        clock.advance(1);
+        edited_elsewhere(&mut s, &mut other, &t, "From another device");
+        assert_eq!(kept_notices(&s).len(), 1);
+        assert_eq!(told_to_copy(&s), 1);
+        assert!(kept_words(here.path()).is_empty());
+        std::fs::remove_dir(&blocker).unwrap();
+        s.on_exit().unwrap();
+        assert_eq!(kept_words(here.path()), ["Typed here"]);
+    }
+
+    #[test]
+    fn nothing_is_said_of_a_failed_write_when_no_words_are_left_to_lose() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.keep_unsaved_words("gone", "Old name", Some("New name"), None);
+        let blocker = dir.path().join("z-work-kept-words.json");
+        let id = s.snapshot().notices[0].id.clone();
+        // With nothing left the file only has to go, and a folder in its place can't.
+        std::fs::remove_file(&blocker).unwrap();
+        std::fs::create_dir(&blocker).unwrap();
+        std::fs::write(blocker.join("in the way"), "x").unwrap();
+        s.dismiss_notice(&id);
+        assert!(s.snapshot().notices.is_empty());
+    }
+
     #[test]
     fn words_stay_a_draft_until_their_own_file_has_them() {
         let here = tempfile::tempdir().unwrap();
@@ -3847,12 +3926,14 @@ mod tests {
         std::fs::create_dir(&blocker).unwrap();
         let s = open(here.path(), &clock);
         assert_eq!(kept_notices(&s).len(), 1);
+        assert_eq!(told_to_copy(&s), 1);
         assert!(!crate::drafts::read(here.path()).is_empty());
         assert!(kept_words(here.path()).is_empty());
         drop(s);
         std::fs::remove_dir(&blocker).unwrap();
         let s = open(here.path(), &clock);
         assert_eq!(kept_notices(&s).len(), 1);
+        assert_eq!(told_to_copy(&s), 0);
         assert_eq!(kept_words(here.path()), ["Typed here"]);
         assert!(crate::drafts::read(here.path()).is_empty());
     }
