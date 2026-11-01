@@ -15,7 +15,7 @@ import { TagPicker } from './TagPicker';
 import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
-import { useEditStore, type EditField, type EditSession } from './editStore';
+import { hasUnsaved, useEditStore, type EditField, type EditSession } from './editStore';
 import { errorMessage } from '../../lib/errorMessage';
 
 export const AUTOSAVE_MS = 600;
@@ -32,7 +32,7 @@ export function TaskEditor({ task }: { task: Task }) {
   const store = useEditStore();
   const statusId = useId();
 
-  const session = store.session(task.id, (): EditSession => ({ name: task.name, description: task.description, projectId: null, tags: null, dirty: { name: false, project: false, description: false, tags: false }, focus: null, rev: 0, queue: Promise.resolve(true), failures: 0 }));
+  const session = store.session(task.id, (): EditSession => ({ name: task.name, description: task.description, projectId: null, tags: null, dirty: { name: false, project: false, description: false, tags: false }, focus: null, rev: 0, queue: Promise.resolve(true), failures: 0, timer: null, draftChain: Promise.resolve(), closed: false }));
   const [name, setName] = useState(session.name);
   const [projectId, setProjectId] = useState(session.projectId ?? task.projectId);
   const [tags, setTags] = useState<string[]>(session.tags ?? task.tags);
@@ -44,12 +44,10 @@ export function TaskEditor({ task }: { task: Task }) {
   const nameRef = useRef<HTMLInputElement | null>(null);
   const projectRef = useRef<HTMLSelectElement | null>(null);
   const descRef = useRef<RichEditorHandle | null>(null);
-  const timer = useRef<number | null>(null);
   // Durable local draft of the description as it is typed (never synced). One writer at a time, in order, so a
   // late stash can never land after the clear that follows a successful save.
   const draftTimer = useRef<number | null>(null);
   const draftDoc = useRef<RichDoc | null>(null);
-  const draftChain = useRef<Promise<void>>(Promise.resolve());
   // The latest stored task: the name to fall back on when a blank one is refused.
   const latest = useRef(task);
   useEffect(() => {
@@ -57,11 +55,11 @@ export function TaskEditor({ task }: { task: Task }) {
   });
 
   const clearTimer = useCallback(() => {
-    if (timer.current !== null) {
-      window.clearTimeout(timer.current);
-      timer.current = null;
+    if (session.timer !== null) {
+      window.clearTimeout(session.timer);
+      session.timer = null;
     }
-  }, []);
+  }, [session]);
 
   /** Writes the pending draft now. The autosave is the real save, so a failed stash is dropped rather than shown. */
   const flushDraft = useCallback((): void => {
@@ -72,8 +70,8 @@ export function TaskEditor({ task }: { task: Task }) {
     const doc = draftDoc.current;
     if (doc === null) return;
     draftDoc.current = null;
-    draftChain.current = draftChain.current.then(() => api.stashDraft(task.id, doc)).catch(() => undefined);
-  }, [task.id]);
+    session.draftChain = session.draftChain.then(() => api.stashDraft(task.id, doc)).catch(() => undefined);
+  }, [session, task.id]);
 
   const stashSoon = (doc: RichDoc): void => {
     draftDoc.current = doc;
@@ -112,15 +110,16 @@ export function TaskEditor({ task }: { task: Task }) {
       // The description is saved for real, so the stashed copy is no longer needed. Anything typed since
       // (the revision moved on) keeps its draft.
       if (s.dirty.description && draftDoc.current === null && draftTimer.current === null) {
-        draftChain.current = draftChain.current.then(() => api.clearDraft(task.id)).catch(() => undefined);
+        s.draftChain = s.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
       }
       s.dirty = { name: s.dirty.name && !nameOk, project: false, description: false, tags: false };
       setStatus((prev) => (prev.kind === 'rejected' ? prev : { kind: 'saved' }));
+      store.saved(task.id, s);
     } else schedule();
     return true;
   // `schedule` is declared below and only reads refs, so it is safe to leave out.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [act, session, task.id]);
+  }, [act, session, store, task.id]);
 
   const flush = useCallback((): Promise<boolean> => {
     clearTimer();
@@ -132,7 +131,7 @@ export function TaskEditor({ task }: { task: Task }) {
 
   function schedule(delay = AUTOSAVE_MS): void {
     clearTimer();
-    timer.current = window.setTimeout(() => void flush(), delay);
+    session.timer = window.setTimeout(() => void flush(), delay);
   }
 
   function touch(field: keyof EditSession['dirty']): void {
@@ -151,6 +150,13 @@ export function TaskEditor({ task }: { task: Task }) {
     },
     [clearTimer, flush],
   );
+
+  // Changes left unsaved by the editor before this one are this one's to finish, so the result shows here.
+  useEffect(() => {
+    if (hasUnsaved(session)) schedule();
+    // `schedule` only reads the session and refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
 
   // Give focus back to the field that had it, or to the name when the editor was just opened.
   useEffect(() => {

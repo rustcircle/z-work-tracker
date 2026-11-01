@@ -1,7 +1,9 @@
 // Which tasks have their editor open, and each editor's unsaved draft. The draft lives here rather
 // than in the editor so that a card that moves in the list (a state change re-groups it) can rebuild
-// its editor without losing what was typed. The store also fans out "save now" requests: from the
-// backend's flush event (window hiding, app quitting) and from the page becoming hidden.
+// its editor without losing what was typed. A draft with unsaved changes also outlives closing the
+// editor, so there is only ever one draft per task: a retry always sends its latest text, and reopening
+// shows what failed to save. The store also fans out "save now" requests: from the backend's flush
+// event (window hiding, app quitting) and from the page becoming hidden.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { events } from '../../lib/api';
@@ -25,12 +27,25 @@ export interface EditSession {
   queue: Promise<boolean>;
   /** Failed saves in a row, for the retry delay. */
   failures: number;
+  /** The next autosave or retry. Lives here so that rebuilt editors share one, and it outlives a closed editor. */
+  timer: number | null;
+  /** Stashed drafts are written one at a time, in order, across rebuilds. */
+  draftChain: Promise<void>;
+  /** The editor was closed with changes still unsaved. */
+  closed: boolean;
+}
+
+/** Whether a save still has something to send. A blank name never does: it is refused, not sent. */
+export function hasUnsaved(s: EditSession): boolean {
+  return (s.dirty.name && s.name.trim() !== '') || s.dirty.project || s.dirty.description || s.dirty.tags;
 }
 
 interface EditStoreApi {
   editing: ReadonlySet<string>;
   open: (id: string, focus?: EditField) => void;
   close: (id: string) => void;
+  /** Tells the store a save landed, so a closed editor's draft can go once nothing is left in it. */
+  saved: (id: string, s: EditSession) => void;
   /** The draft for a task, created from `init` the first time. Mutated in place by the editor. */
   session: (id: string, init: () => EditSession) => EditSession;
   register: (id: string, flush: () => Promise<unknown>) => () => void;
@@ -59,7 +74,12 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     setEditing((s) => (s.has(id) ? s : new Set(s).add(id)));
   }, []);
   const close = useCallback((id: string) => {
-    sessions.current.delete(id);
+    const s = sessions.current.get(id);
+    if (s) {
+      if (s.dirty.name && s.name.trim() === '') s.dirty.name = false;
+      if (hasUnsaved(s)) s.closed = true;
+      else sessions.current.delete(id);
+    }
     pendingFocus.current.delete(id);
     setEditing((s) => {
       if (!s.has(id)) return s;
@@ -67,6 +87,12 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
       n.delete(id);
       return n;
     });
+  }, []);
+  const saved = useCallback((id: string, s: EditSession) => {
+    if (s.closed && !hasUnsaved(s) && sessions.current.get(id) === s) {
+      sessions.current.delete(id);
+      flushers.current.delete(id);
+    }
   }, []);
   const session = useCallback((id: string, init: () => EditSession) => {
     let s = sessions.current.get(id);
@@ -76,13 +102,24 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
       if (f) s.focus = f;
       pendingFocus.current.delete(id);
       sessions.current.set(id, s);
+    } else if (s.closed) {
+      // Reopened with something unsaved: that stays, and the rest catches up with the stored task.
+      const fresh = init();
+      if (!s.dirty.name) s.name = fresh.name;
+      if (!s.dirty.description) s.description = fresh.description;
+      if (!s.dirty.project) s.projectId = fresh.projectId;
+      if (!s.dirty.tags) s.tags = fresh.tags;
+      s.closed = false;
     }
     return s;
   }, []);
   const register = useCallback((id: string, flush: () => Promise<unknown>) => {
     flushers.current.set(id, flush);
     return () => {
-      if (flushers.current.get(id) === flush) flushers.current.delete(id);
+      if (flushers.current.get(id) !== flush) return;
+      // Unsaved changes keep their way out, so a window hiding or the app quitting still tries to send them.
+      const s = sessions.current.get(id);
+      if (!s || !hasUnsaved(s)) flushers.current.delete(id);
     };
   }, []);
   const flushAll = useCallback(async () => {
@@ -102,6 +139,6 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     };
   }, [flushAll]);
 
-  const api = useMemo<EditStoreApi>(() => ({ editing, open, close, session, register, flushAll }), [editing, open, close, session, register, flushAll]);
+  const api = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, session, register, flushAll }), [editing, open, close, saved, session, register, flushAll]);
   return <Ctx.Provider value={api}>{children}</Ctx.Provider>;
 }
