@@ -49,7 +49,7 @@ describe('first-run wizard', () => {
     await screen.findByTestId('setup-wizard');
     expect(step()).toBe('welcome');
     expect(heading()).toHaveTextContent('Welcome');
-    expect(heading()).toHaveFocus();
+    await waitFor(() => expect(heading()).toHaveFocus());
     expect(screen.queryByRole('tab', { name: 'Timeline' })).toBeNull();
     // Neither the sync opt-in nor the client zone question appears next to it.
     expect(screen.queryByText(/Sync between your computers/i)).toBeNull();
