@@ -537,6 +537,7 @@ describe('an edit to a task deleted elsewhere', () => {
   const noticesShown = () => screen.queryAllByTestId('notice').map((n) => n.textContent ?? '');
   async function deleteIt() {
     state.tasks = state.tasks.filter((t) => t.id !== 't-guide');
+    state.revision += 1;
     await act(() => emit('state-changed'));
     await pass(5000);
   }
@@ -631,6 +632,24 @@ describe('found in review of the fixes', () => {
     expect(JSON.stringify(state.drafts['t-guide'])).toContain('mine');
   });
 
+  it('stashes that keep failing get another try from whatever goes through a save next, as held words count on them', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    const stash = vi.spyOn(api, 'stashDraft');
+    stash.mockRejectedValueOnce({ code: 'io', message: 'the drafts file is locked' });
+    stash.mockRejectedValueOnce({ code: 'io', message: 'the drafts file is locked' });
+    await user.keyboard(' mine');
+    await pass(400);
+    await arrive();
+    await pass(1000);
+    expect(kind()).toBe('conflict');
+    expect(stash).toHaveBeenCalledTimes(2);
+    expect(state.drafts['t-guide']).toBeUndefined();
+    await toggle(user);
+    await pass(100);
+    expect(JSON.stringify(state.drafts['t-guide'] ?? null)).toContain('mine');
+  });
+
   it('a key typed while a save finds the task gone leaves no stash, so dismissed words stay dismissed', async () => {
     const user = await openEditor();
     await user.click(box());
@@ -672,6 +691,27 @@ describe('found in review of the fixes', () => {
     await done(user);
     await pass(100);
     expect(unsent()).toHaveLength(0);
+  });
+
+  it('a refusal after the retries ran out stops later writes from trying that edit', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    storeDown = true;
+    await toggle(user);
+    await pass(ALL_RETRIES_MS);
+    storeDown = false;
+    vi.mocked(api.patchTask).mockRejectedValueOnce({ code: 'validation', message: 'A description can be this long at most' });
+    const hideEarnings = () => user.click(screen.getByRole('button', { name: 'Hide earnings' }));
+    const before = tries();
+    await hideEarnings();
+    await pass(100);
+    expect(tries()).toBe(before + 1);
+    expect(unsent()[0]).toHaveTextContent("can't be saved: A description can be this long at most");
+    await hideEarnings();
+    await pass(100);
+    expect(tries()).toBe(before + 1);
+    expect(storedText()).not.toContain('mine');
   });
 
   it('the second click of a double click on Done chooses nothing', async () => {

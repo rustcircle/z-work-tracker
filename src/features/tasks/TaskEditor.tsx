@@ -179,6 +179,7 @@ export function TaskEditor({ task }: { task: Task }) {
       tags: s.dirty.tags && !s.conflict.tags && s.tags !== null,
     };
     if (s.dirty.name && trimmed === '') s.report({ kind: 'rejected', message: `A task needs a name, so “${cur.name}” is kept.` });
+    if (s.dirty.description && s.conflict.description) stashAgain();
     if (!SAVED_FIELDS.some((f) => send[f])) {
       if (heldFields(s).length > 0) s.report({ kind: 'conflict' });
       return true;
