@@ -91,12 +91,15 @@ function Toolbar({ editor }: { editor: Editor }) {
 
 export interface RichEditorHandle {
   focus: () => void;
+  /** Shows another stored document in place, keeping focus. False, and nothing changed, while the user is composing text. */
+  replace: (doc: RichDoc) => boolean;
 }
 
 /**
  * The editable description field. `label` names the editing surface for assistive technology. The
  * editor is built once from `value` and never re-initialised from props, so a re-render (a clock
- * tick, a fresh snapshot) cannot move the caret or overwrite what is being typed.
+ * tick, a fresh snapshot) cannot move the caret or overwrite what is being typed. Only `replace`
+ * changes its text from outside, and that is neither an edit nor a step to undo.
  */
 export function RichEditor({
   label,
@@ -142,7 +145,18 @@ export function RichEditor({
       },
     });
   }, [editor, labelId, describedBy, error]);
-  useImperativeHandle(ref, () => ({ focus: () => editor?.commands.focus('end') }), [editor]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus: () => editor?.commands.focus('end'),
+      replace: (doc) => {
+        if (!editor || editor.view.composing) return false;
+        editor.chain().setMeta('addToHistory', false).setContent(docToEditorContent(doc), { emitUpdate: false }).run();
+        return true;
+      },
+    }),
+    [editor],
+  );
   return (
     <div className={`rt ${error ? 'rt-invalid' : ''}`}>
       <span id={labelId} className="field-label">
