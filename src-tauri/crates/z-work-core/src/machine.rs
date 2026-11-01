@@ -1525,6 +1525,7 @@ pub(crate) mod tests {
     #[test]
     fn a_patch_with_a_stale_expected_value_is_refused_field_by_field() {
         let (mut s, p, t) = base();
+        s.seed_tags();
         let other = s
             .create_project(&ctx("2026-01-01T09:00:00Z"), &project_input("Other"))
             .unwrap();
@@ -1565,6 +1566,7 @@ pub(crate) mod tests {
     #[test]
     fn every_field_can_be_refused_and_gives_back_what_is_stored() {
         let (mut s, p, t) = base();
+        s.seed_tags();
         let other = s
             .create_project(&ctx("2026-01-01T09:00:00Z"), &project_input("Other"))
             .unwrap();
@@ -1618,6 +1620,7 @@ pub(crate) mod tests {
     #[test]
     fn a_stored_value_equal_to_what_is_being_saved_is_success() {
         let (mut s, p, t) = base();
+        s.seed_tags();
         let other = s
             .create_project(&ctx("2026-01-01T09:00:00Z"), &project_input("Other"))
             .unwrap();
