@@ -7,7 +7,9 @@
 // values held back whose editor is not on screen, so a notice can say so for as long as that lasts.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-import { events } from '../../lib/api';
+import { useAppState } from '../../app/store';
+import { api, events } from '../../lib/api';
+import { docPlainText } from '../../lib/docText';
 import { sameJson } from '../../lib/sameJson';
 import type { RichDoc, StoredFields, Task } from '../../lib/types';
 
@@ -134,14 +136,21 @@ export function hasUnsaved(s: EditSession): boolean {
   return (s.dirty.name && s.name.trim() !== '') || s.dirty.project || s.dirty.description || s.dirty.tags;
 }
 
+/** What the user typed and no save has taken, as plain text. A project or tags are not words, and say nothing here. */
+function unsavedWords(s: EditSession): string {
+  const name = s.dirty.name ? s.name.trim() : '';
+  const description = s.dirty.description ? docPlainText(s.description) : '';
+  return [name, description].filter((w) => w !== '').join('\n');
+}
+
 interface EditStoreApi {
   editing: ReadonlySet<string>;
   open: (id: string, focus?: EditField) => void;
   close: (id: string) => void;
   /** Tells the store a save landed, so a closed editor's draft can go once nothing is left in it. */
   saved: (id: string, s: EditSession) => void;
-  /** Drops a draft whose task no longer exists. */
-  forget: (id: string, s: EditSession) => void;
+  /** Ends a draft whose task no longer exists: no save can take it, so a notice shows its words. */
+  taskGone: (id: string, s: EditSession) => void;
   /** The fields held back, by task, while no editor is on screen to say so. */
   heldAway: ReadonlyMap<string, readonly SavedField[]>;
   /** Tells the store a draft's holds or its editor may have changed. */
@@ -161,6 +170,7 @@ export function useEditStore(): EditStoreApi {
 }
 
 export function EditStoreProvider({ children }: { children: ReactNode }) {
+  const { snapshot, act } = useAppState();
   const [editing, setEditing] = useState<ReadonlySet<string>>(new Set());
   const [heldAway, setHeldAway] = useState<ReadonlyMap<string, readonly SavedField[]>>(new Map());
   const sessions = useRef(new Map<string, EditSession>());
@@ -205,18 +215,30 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
       return next;
     });
   }, []);
-  const forget = useCallback((id: string, s: EditSession) => {
-    if (sessions.current.get(id) === s) {
-      sessions.current.delete(id);
+  const taskGone = useCallback(
+    (id: string, s: EditSession) => {
+      if (sessions.current.get(id) !== s) return;
+      const words = unsavedWords(s);
+      if (s.timer !== null) window.clearTimeout(s.timer);
+      s.timer = null;
+      s.dirty = { name: false, project: false, description: false, tags: false };
+      close(id);
       flushers.current.delete(id);
-    }
-    setHeldAway((was) => {
-      if (!was.has(id)) return was;
-      const next = new Map(was);
-      next.delete(id);
-      return next;
-    });
-  }, []);
+      setHeldAway((was) => {
+        if (!was.has(id)) return was;
+        const next = new Map(was);
+        next.delete(id);
+        return next;
+      });
+      // The stashed copy goes only once the notice has them. If that fails the next launch tells of them instead.
+      s.draftChain = s.draftChain
+        .then(async () => {
+          if (words === '' || (await act(() => api.keepUnsavedWords(id, s.expected.name, words)))) await api.clearDraft(id);
+        })
+        .catch(() => undefined);
+    },
+    [act, close],
+  );
   const session = useCallback((id: string, init: () => EditSession) => {
     let s = sessions.current.get(id);
     if (!s) {
@@ -257,6 +279,14 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     await Promise.all([...flushers.current.values()].map((f) => f().then(() => undefined)));
   }, []);
 
+  // A task can go with no save to find that out: held values wait for the user, and retries can run out. A save on its
+  // way finds out for itself.
+  useEffect(() => {
+    for (const [id, s] of [...sessions.current]) {
+      if (!s.saving && hasUnsaved(s) && !snapshot.tasks.some((t) => t.id === id)) taskGone(id, s);
+    }
+  }, [snapshot.tasks, heldAway, taskGone]);
+
   // The backend asks for a save when the window hides or the app quits; so does a hidden page.
   useEffect(() => {
     const unlisten = events.onFlushEdits(() => void flushAll());
@@ -270,6 +300,6 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     };
   }, [flushAll]);
 
-  const api = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, forget, heldAway, noteHeld, session, register, flushAll }), [editing, open, close, saved, forget, heldAway, noteHeld, session, register, flushAll]);
-  return <Ctx.Provider value={api}>{children}</Ctx.Provider>;
+  const value = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, taskGone, heldAway, noteHeld, session, register, flushAll }), [editing, open, close, saved, taskGone, heldAway, noteHeld, session, register, flushAll]);
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

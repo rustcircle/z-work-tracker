@@ -456,15 +456,32 @@ run(async () => {
   check('Discard my words keeps the newer text', r4.discarded === true);
 
   // Run 5: the notice was left up through all of that. It comes back, and only dismissing it ends the words.
+  // Then an edit to a task deleted elsewhere, which no save can ever take.
   out = join(work, 'r5.json');
   app = launch(exe, `
 const notice = () => document.querySelector('button[aria-label*="Words before the restart"]');
+const form = () => document.querySelector('form.task-editor');
 run(async () => {
   await until(notice, 'the notice to come back');
-  const r = { notices: (await inv('get_snapshot')).notices.map((n) => n.message) };
+  let s = await inv('get_snapshot');
+  const r = { notices: s.notices.map((n) => n.message) };
   notice().click();
   await until(() => !notice(), 'the notice to go');
   r.dismissed = true;
+  const doomed = await inv('create_task', { input: { name: 'Smoke doomed', projectId: s.tasks.find((x) => x.name === 'Smoke task').projectId, description: null, tags: [] } });
+  await inv('smoke_emit_changed');
+  await until(() => document.querySelector('button[aria-label="Edit Smoke doomed"]'), 'the doomed task');
+  document.querySelector('button[aria-label="Edit Smoke doomed"]').click();
+  await until(form, 'its editor');
+  form().querySelector('[aria-multiline="true"]').focus();
+  document.execCommand('insertText', false, 'Words on a doomed task');
+  await inv('delete_draft', { id: doomed.id });
+  await inv('smoke_emit_changed');
+  await until(() => document.querySelector('button[aria-label*="Words on a doomed task"]'), 'the notice with the words');
+  r.goneClosed = !form();
+  r.goneAlerts = [...document.querySelectorAll('[role="alert"]')].map((a) => a.textContent);
+  s = await inv('get_snapshot');
+  r.goneNotices = s.notices.map((n) => n.message);
   await wait(300);
   return r;
 }).then(() => inv('quit_app'));
@@ -478,7 +495,9 @@ run(async () => {
   const exit5 = await withTimeout(app.exited, 15000);
   check('and quit cleanly again', exit5 !== 'timeout' && exit5.code === 0, JSON.stringify(exit5));
   check('typing and saving on a task leaves the words its notice shows, and the notice comes back', r4.noticeStays === true && r5.notices?.some((m) => /Words before the restart/.test(m)), JSON.stringify(r5.notices));
-  check('dismissing the notice ends those words, and leaves no draft behind', r5.dismissed === true && !existsSync(join(dataDir, 'z-work-drafts.json')) && !existsSync(join(dataDir, 'z-work-kept-words.json')));
+  const keptNow = JSON.parse(readFileSync(join(dataDir, 'z-work-kept-words.json'), 'utf8'));
+  check('dismissing the notice ends those words, and leaves no draft behind', r5.dismissed === true && !existsSync(join(dataDir, 'z-work-drafts.json')) && !JSON.stringify(keptNow).includes('Words before the restart'));
+  check('an edit to a task deleted elsewhere goes in a notice with its words, and outlasts the run', r5.goneClosed === true && r5.goneAlerts?.length === 0 && r5.goneNotices?.length === 1 && /no longer exists/.test(r5.goneNotices[0]) && keptNow.length === 1 && keptNow[0].because === 'taskGone' && /Words on a doomed task/.test(keptNow[0].words), JSON.stringify([r5.goneAlerts, r5.goneNotices]));
   return true;
 }
 

@@ -564,43 +564,49 @@ impl Service {
         let mut restored = Vec::new();
         let mut kept = Vec::new();
         for (task_id, draft) in all {
-            let Some(task) = self
-                .file
-                .data
-                .tasks
-                .get_mut(&task_id)
-                .filter(|t| t.is_live())
-            else {
-                continue;
-            };
-            let saved = crate::subtasks::assign_ids(&draft.description, Some(&task.description))
-                == task.description;
+            let stored = self.file.data.tasks.get_mut(&task_id);
+            let saved = stored.as_ref().is_some_and(|t| {
+                crate::subtasks::assign_ids(&draft.description, Some(&t.description))
+                    == t.description
+            });
             if saved || crate::validate::check_description(&draft.description).is_err() {
                 continue;
             }
-            let own = task.description_stamp.by == device;
-            if draft.base == task.description || (own && draft.at > task.description_stamp.at) {
-                let ctx = Ctx {
-                    now: draft.at,
-                    device: &device,
-                };
-                task.description =
-                    crate::subtasks::assign_ids(&draft.description, Some(&task.description));
-                task.description_stamp = ctx.next(&task.description_stamp);
-                crate::machine::clear_missing_active(task, &ctx);
-                restored.push(task.name.clone());
-                self.recovered.insert(
-                    task_id,
-                    Draft {
-                        description: task.description.clone(),
-                        ..draft
-                    },
-                );
-            } else if !crate::subtasks::plain_text(&draft.description)
+            let because = match stored {
+                Some(task) if task.is_live() => {
+                    let own = task.description_stamp.by == device;
+                    if draft.base == task.description
+                        || (own && draft.at > task.description_stamp.at)
+                    {
+                        let ctx = Ctx {
+                            now: draft.at,
+                            device: &device,
+                        };
+                        task.description = crate::subtasks::assign_ids(
+                            &draft.description,
+                            Some(&task.description),
+                        );
+                        task.description_stamp = ctx.next(&task.description_stamp);
+                        crate::machine::clear_missing_active(task, &ctx);
+                        restored.push(task.name.clone());
+                        self.recovered.insert(
+                            task_id,
+                            Draft {
+                                description: task.description.clone(),
+                                ..draft
+                            },
+                        );
+                        continue;
+                    }
+                    KeptBecause::ChangedElsewhere
+                }
+                _ => KeptBecause::TaskGone,
+            };
+            if !crate::subtasks::plain_text(&draft.description)
                 .trim()
                 .is_empty()
             {
-                kept.push((task_id, task.name.clone(), draft));
+                kept.push((task_id, because, draft));
             }
         }
         if !restored.is_empty() {
@@ -613,8 +619,8 @@ impl Service {
             );
         }
         let mut stay = BTreeMap::new();
-        for (task_id, name, draft) in kept {
-            self.keep_words(&task_id, name, &draft, KeptBecause::ChangedElsewhere);
+        for (task_id, because, draft) in kept {
+            self.keep_draft(&task_id, &draft, because);
             stay.insert(task_id, draft);
         }
         stay
@@ -648,10 +654,16 @@ impl Service {
     }
 
     /// Words of a draft the store won't take. A launch cut short after it wrote them finds that draft again.
-    fn keep_words(&mut self, task_id: &str, name: String, draft: &Draft, because: KeptBecause) {
+    fn keep_draft(&mut self, task_id: &str, draft: &Draft, because: KeptBecause) {
+        let name = self
+            .file
+            .data
+            .tasks
+            .get(task_id)
+            .map_or("a deleted task", |t| t.name.as_str());
         let kept = Kept {
             task_id: task_id.to_owned(),
-            name,
+            name: name.to_owned(),
             words: crate::subtasks::plain_text(&draft.description),
             at: draft.at,
             because,
@@ -661,6 +673,18 @@ impl Service {
         if !self.kept_out.values().any(known) {
             self.notify_kept_out(kept);
         }
+    }
+
+    /// The words of an edit that no save can take, because its task no longer exists.
+    pub fn keep_unsaved_words(&mut self, task_id: &str, name: &str, words: &str) {
+        self.notify_kept_out(Kept {
+            task_id: task_id.to_owned(),
+            name: name.to_owned(),
+            words: words.to_owned(),
+            at: self.now(),
+            because: KeptBecause::TaskGone,
+        });
+        let _ = self.save_kept();
     }
 
     /// Tells of words the store won't take, in the only place left to read them.
@@ -679,24 +703,27 @@ impl Service {
         self.notify("warning", message);
     }
 
-    /// Words put back at launch lose to a later edit from elsewhere when the first sync brings it. That
-    /// edit stands, as any other does, and the words go in a notice rather than vanish.
+    /// Words put back at launch lose to a later edit from elsewhere when the first sync brings it, or to
+    /// the task being deleted. That stands, as any other edit does, and the words go in a notice rather
+    /// than vanish.
     fn check_recovered(&mut self) {
         if self.recovered.is_empty() {
             return;
         }
         let device = self.file.device_id.clone();
         for (task_id, draft) in std::mem::take(&mut self.recovered) {
-            let Some(task) = self.file.data.tasks.get(&task_id).filter(|t| t.is_live()) else {
-                continue;
+            let task = self.file.data.tasks.get(&task_id).filter(|t| t.is_live());
+            let because = match task {
+                None => KeptBecause::TaskGone,
+                Some(task) if task.description == draft.description => {
+                    self.recovered.insert(task_id, draft);
+                    continue;
+                }
+                Some(task) if task.description_stamp.by != device => KeptBecause::ChangedElsewhere,
+                Some(_) => continue,
             };
-            if task.description == draft.description {
-                self.recovered.insert(task_id, draft);
-            } else if task.description_stamp.by != device {
-                let name = task.name.clone();
-                self.keep_words(&task_id, name, &draft, KeptBecause::ChangedElsewhere);
-                let _ = self.save_kept();
-            }
+            self.keep_draft(&task_id, &draft, because);
+            let _ = self.save_kept();
         }
     }
 
@@ -3417,6 +3444,113 @@ mod tests {
         let words = kept_notices(&s);
         assert_eq!(words.len(), 1);
         assert!(words[0].contains("Second words"));
+    }
+
+    #[test]
+    fn a_draft_on_a_task_deleted_elsewhere_is_shown_until_dismissed() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        clock.advance(3);
+        other.delete_draft(&t).unwrap();
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(60);
+        let s = open(here.path(), &clock);
+        let words = kept_notices(&s);
+        assert_eq!(words.len(), 1);
+        assert!(words[0].contains("Typed here"));
+        assert!(words[0].contains("“T”"));
+        assert!(words[0].contains("no longer exists"));
+        drop(s);
+        let mut s = open(here.path(), &clock);
+        let id = s.snapshot().notices[0].id.clone();
+        s.dismiss_notice(&id);
+        drop(s);
+        let s = open(here.path(), &clock);
+        assert!(s.snapshot().notices.is_empty());
+    }
+
+    #[test]
+    fn a_draft_already_saved_or_empty_on_a_task_deleted_elsewhere_is_nothing_to_tell() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        let empty = s
+            .create_task(&tinput(
+                "Empty",
+                &s.file().data.tasks[&t].project_id.clone(),
+            ))
+            .unwrap();
+        s.patch_task(
+            &t,
+            &TaskPatch {
+                description: Some(doc("Saved")),
+                ..TaskPatch::default()
+            },
+            &TaskExpected::default(),
+        )
+        .unwrap();
+        s.stash_draft(&t, &doc("Saved"), &shown).unwrap();
+        s.stash_draft(&empty, &Value::Null, &Value::Null).unwrap();
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        clock.advance(3);
+        other.delete_draft(&t).unwrap();
+        other.delete_draft(&empty).unwrap();
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        s.on_exit().unwrap();
+        drop(s);
+        let s = open(here.path(), &clock);
+        assert!(s.snapshot().notices.is_empty());
+    }
+
+    #[test]
+    fn words_put_back_at_launch_whose_task_the_first_sync_deletes_are_shown_not_lost() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        let shown = s.file().data.tasks[&t].description.clone();
+        clock.advance(2);
+        s.stash_draft(&t, &doc("Typed here"), &shown).unwrap();
+        s.on_exit().unwrap();
+        drop(s);
+        clock.advance(30);
+        other.delete_draft(&t).unwrap();
+        clock.advance(30);
+        let mut s = open(here.path(), &clock);
+        assert_eq!(s.file().data.tasks[&t].description, doc("Typed here"));
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert!(!s.file().data.tasks[&t].is_live());
+        let words = kept_notices(&s);
+        assert_eq!(words.len(), 1);
+        assert!(words[0].contains("Typed here"));
+        assert!(words[0].contains("no longer exists"));
+    }
+
+    #[test]
+    fn words_the_page_gives_up_on_a_gone_task_are_shown_until_dismissed() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.keep_unsaved_words("gone", "Old name", "New name\nTyped here");
+        let words = kept_notices(&s);
+        assert_eq!(words.len(), 1);
+        assert!(words[0].contains("“Old name”"));
+        assert!(words[0].contains("New name\nTyped here"));
+        s.on_exit().unwrap();
+        drop(s);
+        let mut s = open(dir.path(), &clock);
+        assert_eq!(kept_notices(&s), words, "the same again at the next launch");
+        let id = s.snapshot().notices[0].id.clone();
+        s.dismiss_notice(&id);
+        assert!(kept_words(dir.path()).is_empty());
     }
 
     #[test]

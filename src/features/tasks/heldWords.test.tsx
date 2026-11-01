@@ -406,6 +406,85 @@ describe('QC-4: a closed editor whose retry holds', () => {
   });
 });
 
+describe('an edit to a task deleted elsewhere', () => {
+  const noticesShown = () => screen.queryAllByTestId('notice').map((n) => n.textContent ?? '');
+  async function deleteIt() {
+    state.tasks = state.tasks.filter((t) => t.id !== 't-guide');
+    await act(() => emit('state-changed'));
+    await pass(5000);
+  }
+
+  it('typed words go in a notice that says why, and nothing else is left up', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    await deleteIt();
+    expect(editorOpen()).toBe(false);
+    const shown = noticesShown();
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toContain('mine');
+    expect(shown[0]).toContain('“Brand guidelines”');
+    expect(shown[0]).toContain('no longer exists');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(state.drafts['t-guide']).toBeUndefined();
+  });
+
+  it('so do held words, which had no save left to find out', async () => {
+    await holdWords();
+    await deleteIt();
+    const shown = noticesShown();
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toContain('mine');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(state.drafts['t-guide']).toBeUndefined();
+  });
+
+  it('so does a new name', async () => {
+    const user = await openEditor();
+    await user.type(nameBox(), ' v2');
+    await deleteIt();
+    const shown = noticesShown();
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toContain('Brand guidelines v2');
+  });
+
+  it('so do words of a closed editor whose retries ran out, with no save under way', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    storeDown = true;
+    await toggle(user);
+    await pass(ALL_RETRIES_MS);
+    const tries = countOf('patch_task');
+    await deleteIt();
+    expect(noticesShown()[0]).toContain('mine');
+    expect(countOf('patch_task')).toBe(tries);
+  });
+
+  it('so do words of a save that finds out first, as the page has not heard yet', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    state.tasks = state.tasks.filter((t) => t.id !== 't-guide');
+    await pass(2000);
+    expect(noticesShown()[0]).toContain('mine');
+    expect(editorOpen()).toBe(false);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(state.drafts['t-guide']).toBeUndefined();
+  });
+
+  it('says nothing for an editor with nothing unsaved', async () => {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    await pass(2000);
+    expect(kind()).toBe('saved');
+    await deleteIt();
+    expect(noticesShown()).toEqual([]);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
 describe('QC-5: a save', () => {
   it('reads nothing back: no get_snapshot of its own', async () => {
     const user = await openEditor();

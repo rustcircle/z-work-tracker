@@ -854,6 +854,20 @@ fn clear_draft(core: CoreState<'_>, task_id: String) -> CmdResult<()> {
     Ok(guard(&*core.svc()?).clear_draft(&task_id)?)
 }
 
+/// The words of an edit whose task no longer exists, shown in a notice. Doesn't trigger a sync.
+#[tauri::command(async)]
+fn keep_unsaved_words(
+    core: CoreState<'_>,
+    task_id: String,
+    name: String,
+    words: String,
+) -> CmdResult<Snapshot> {
+    let svc = core.svc()?;
+    let mut s = guard(&svc);
+    s.keep_unsaved_words(&task_id, &name, &words);
+    Ok(s.snapshot())
+}
+
 #[tauri::command(async)]
 fn set_setup_step(app: AppHandle, core: CoreState<'_>, step: u32) -> CmdResult<Snapshot> {
     Ok(core.change(&app, |s| s.set_setup_step(step))?.1)
@@ -1709,6 +1723,7 @@ pub fn run() {
         request_remote_pause,
         stash_draft,
         clear_draft,
+        keep_unsaved_words,
         set_setup_step,
         finish_setup,
         set_mica,
@@ -1783,6 +1798,7 @@ pub fn run() {
         request_remote_pause,
         stash_draft,
         clear_draft,
+        keep_unsaved_words,
         set_setup_step,
         finish_setup,
         set_mica,

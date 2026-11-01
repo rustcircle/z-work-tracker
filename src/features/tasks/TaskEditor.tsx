@@ -60,7 +60,7 @@ export function TaskEditor({ task }: { task: Task }) {
   const { snapshot, adopt, showError } = useAppState();
   const { act } = useCommands();
   const store = useEditStore();
-  const { saved: savedInStore, forget, noteHeld } = store;
+  const { saved: savedInStore, taskGone, noteHeld } = store;
   const statusId = useId();
   const [status, setStatus] = useState<SaveStatus>({ kind: 'idle' });
 
@@ -195,14 +195,10 @@ export function TaskEditor({ task }: { task: Task }) {
         s.overriding[f] = false;
       }
       // A task deleted elsewhere can never take this save. Trying again would only repeat the error.
-      const gone = await api.getSnapshot().then(
-        (snap) => !snap.tasks.some((t) => t.id === task.id),
-        () => false,
-      );
-      if (gone) {
-        s.dirty = { name: false, project: false, description: false, tags: false };
-        s.draftChain = s.draftChain.then(() => api.clearDraft(task.id)).catch(() => undefined);
-        forget(task.id, s);
+      const fresh = await api.getSnapshot().catch(() => null);
+      if (fresh && !fresh.tasks.some((t) => t.id === task.id)) {
+        adopt(fresh);
+        taskGone(task.id, s);
         return false;
       }
       s.failures += 1;
@@ -232,7 +228,7 @@ export function TaskEditor({ task }: { task: Task }) {
     return true;
   // `schedule` is declared below and only reads the session.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [act, forget, savedInStore, session, task.id]);
+  }, [act, adopt, taskGone, savedInStore, session, task.id]);
 
   const flush = useCallback((): Promise<boolean> => {
     clearTimer();

@@ -117,6 +117,8 @@ export const api = {
   /** `expected` is the stored description the words were typed over: only that may be replaced at the next launch. */
   stashDraft: (taskId: string, description: RichDoc, expected: RichDoc) => invoke<void>('stash_draft', { taskId, description, expected }),
   clearDraft: (taskId: string) => invoke<void>('clear_draft', { taskId }),
+  /** The words of an edit whose task no longer exists: a notice shows them until it is dismissed. */
+  keepUnsavedWords: (taskId: string, name: string, words: string) => invoke<Snapshot>('keep_unsaved_words', { taskId, name, words }),
   setSetupStep: (step: number) => invoke<Snapshot>('set_setup_step', { step }),
   finishSetup: () => invoke<Snapshot>('finish_setup'),
   /** The page has painted: the native window may be shown. Errors are ignored by the caller. */

@@ -1102,6 +1102,9 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
     case 'clear_draft':
       delete s.drafts[a.taskId as string];
       return null;
+    case 'keep_unsaved_words':
+      s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'warning', message: `Your unsaved words on “${a.name as string}” were not saved, because the task no longer exists. Copy your words from here if you want them, as dismissing this notice ends them: ${a.words as string}` });
+      return snapshot(s);
     case 'set_setup_step':
       s.setupStep = Math.max(0, Math.trunc(a.step as number));
       return snapshot(s);
