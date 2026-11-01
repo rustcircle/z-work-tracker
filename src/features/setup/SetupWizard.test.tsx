@@ -270,6 +270,9 @@ describe('run setup again', () => {
     await user.click(await screen.findByRole('tab', { name: 'Settings' }));
     await user.click(await screen.findByRole('button', { name: 'Run setup again' }));
     const dialog = screen.getByRole('dialog', { name: 'Run setup again?' });
+    // It says what quitting mid-step does: the app doesn't undo it.
+    expect(dialog.textContent).toMatch(/quit the app in the middle of a step, what you already picked there stays/);
+    expect(dialog.textContent).not.toMatch(/kept only/);
     expect(screen.queryByTestId('setup-wizard')).toBeNull();
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByTestId('setup-wizard')).toBeNull();

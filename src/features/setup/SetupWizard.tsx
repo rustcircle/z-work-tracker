@@ -241,7 +241,7 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
           <div className="wizard-body">
             <p className="lead">Welcome to zWorkTracker. It times your work, one task at a time, and keeps everything on this computer.</p>
             <p>A few quick choices make it yours. Every step has a sensible default, you can skip any of them, and everything can be changed later in Settings. Nothing here logs any time.</p>
-            {rerun && <p className="wizard-note">This is the setup again, for settings only. A setting changes when you press Next on its step; Skip, Back and Exit put back what the step showed when you opened it. Projects and shifts are not part of it, and your tasks and logged time are never touched.</p>}
+            {rerun && <p className="wizard-note">This is the setup again, for settings only. Next keeps what you picked on a step; Skip, Back and Exit put back what it showed when you opened it. If you quit the app in the middle of a step, what you already picked there stays. Projects and shifts are not part of it, and your tasks and logged time are never touched.</p>}
           </div>
         )}
 
