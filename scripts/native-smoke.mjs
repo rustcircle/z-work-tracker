@@ -331,6 +331,128 @@ run(async () => {
   store = readStore();
   check('--quit closed the running segment', Object.values(store.data.segments).every((s) => s.end) && Object.values(store.data.tasks).find((t) => t.name === 'Smoke after crash')?.pauseReason?.kind === 'appQuit');
   check('one backup file exists', existsSync(join(dataDir, 'z-work-data.json.bak')));
+
+  // Run 4: words that met newer text, on the real backend. First a draft left over a description another device
+  // has changed since, stamped older than the draft, which the launch must not put over it.
+  store = readStore();
+  const heldTask = Object.values(store.data.tasks).find((t) => t.name === 'Smoke task');
+  const para = (text) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+  const iso = (ago) => new Date(Date.now() - ago * 1000).toISOString().slice(0, 19) + 'Z';
+  heldTask.description = para('Text from another device');
+  heldTask.descriptionStamp = { at: iso(120), by: 'another-device' };
+  writeFileSync(join(dataDir, 'z-work-data.json'), JSON.stringify(store));
+  writeFileSync(join(dataDir, 'z-work-drafts.json'), JSON.stringify({ [heldTask.id]: { description: para('Words before the restart'), at: iso(60), base: LIST } }));
+  out = join(work, 'r4.json');
+  app = launch(exe, `
+const para = (text) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+const has = (doc, text) => JSON.stringify(doc).includes(text);
+const form = () => document.querySelector('form.task-editor');
+const kind = () => form()?.querySelector('[data-testid="save-state"]')?.dataset.kind;
+const box = () => form().querySelector('[aria-multiline="true"]');
+const stored = async (id) => (await inv('get_snapshot')).tasks.find((x) => x.id === id);
+const type = (text) => { box().focus(); document.execCommand('insertText', false, text); };
+const open = async (name) => { document.querySelector('button[aria-label="Edit ' + name + '"]').click(); await until(form, 'the editor'); };
+run(async () => {
+  await until(() => /Smoke task/.test(document.body.innerText), 'task');
+  const r = {};
+  let s = await inv('get_snapshot');
+  const t = s.tasks.find((x) => x.name === 'Smoke task');
+  const id = t.id;
+  r.replayKept = has(t.description, 'Text from another device') && !has(t.description, 'Words before the restart');
+  r.replayNotices = s.notices.map((n) => n.message);
+  await until(() => /Words before the restart/.test(document.body.innerText), 'the words on screen in a notice');
+  r.draftsAfterLaunch = await inv('get_snapshot').then(() => true);
+
+  // The command: per field, what is stored comes back, and the rest of the patch goes.
+  const stale = para('What an editor last showed');
+  let a = await inv('patch_task', { id, patch: { name: 'Smoke renamed', description: para('Not sent') }, expected: { name: 'Smoke task', description: stale } });
+  r.cmdConflicts = a.conflicts;
+  r.cmdStoredText = has(a.stored.description, 'Text from another device');
+  r.cmdStoredName = a.stored.name;
+  r.cmdSnapshotName = a.snapshot.tasks.find((x) => x.id === id).name;
+  a = await inv('patch_task', { id, patch: { description: a.stored.description }, expected: { description: stale } });
+  r.cmdEqual = a.conflicts;
+  a = await inv('patch_task', { id, patch: { name: 'Smoke task' } });
+  r.cmdNoExpected = [a.conflicts, a.stored.name];
+  r.revisionRises = a.snapshot.revision > s.revision;
+  a = await inv('patch_task', { id, patch: { name: 'Nope' }, expected: { name: 'Older', description: stale } });
+  r.cmdOtherFieldIgnored = a.conflicts;
+  try { await inv('patch_task', { id, patch: { name: '  ' }, expected: { name: 'Smoke task' } }); r.cmdBlank = 'accepted'; } catch (e) { r.cmdBlank = e.code; }
+  await inv('smoke_emit_changed');
+  await wait(300);
+
+  // The editor: words typed, newer text arrives, and the real autosave is refused.
+  await open('Smoke task');
+  type(' real words');
+  await inv('patch_task', { id, patch: { description: para('Newer from elsewhere') } });
+  await inv('smoke_emit_changed');
+  await until(() => kind() === 'conflict', 'the hold');
+  r.held = has((await stored(id)).description, 'Newer from elsewhere') && !has((await stored(id)).description, 'real words');
+  r.heldNotice = form().querySelector('[data-testid="save-state"]').innerText;
+  r.heldShown = box().innerText;
+  type(' typed on');
+  await wait(1500);
+  r.typingKeepsHold = kind() === 'conflict' && has((await stored(id)).description, 'Newer from elsewhere');
+  r.discardOffered = Boolean(button('Discard my words'));
+
+  // Closed with the words held: a banner says so, and it outlives another action.
+  document.querySelector('button[aria-label="Edit Smoke task"]').click();
+  await until(() => !form(), 'the editor to close');
+  await until(() => document.querySelector('[data-testid="held-banner"]'), 'the banner');
+  await inv('set_mica', { on: false });
+  await inv('smoke_emit_changed');
+  await wait(300);
+  r.bannerStays = Boolean(document.querySelector('[data-testid="held-banner"]'));
+  await open('Smoke task');
+  r.reopenedHeld = kind() === 'conflict' && !document.querySelector('[data-testid="held-banner"]');
+
+  // Done after the notice is the choice, and sends no expected value.
+  button('Done').click();
+  await until(() => !form(), 'Done to close');
+  r.doneOverrides = has((await stored(id)).description, 'real words') && has((await stored(id)).description, 'typed on') && !has((await stored(id)).description, 'Newer from elsewhere');
+
+  // A clean editor shows newer text, and a save goes from it.
+  await open('Smoke task');
+  await inv('patch_task', { id, patch: { description: para('Clean follows') } });
+  await inv('smoke_emit_changed');
+  await until(() => /Clean follows/.test(box().innerText), 'the newer text in a clean editor');
+  type(' and on');
+  await until(() => kind() === 'saved', 'the save');
+  r.cleanFollows = has((await stored(id)).description, 'Clean follows') && has((await stored(id)).description, 'and on');
+
+  // Discard keeps the newer text.
+  type(' to give up');
+  await inv('patch_task', { id, patch: { description: para('Keep me') } });
+  await inv('smoke_emit_changed');
+  await until(() => kind() === 'conflict', 'the second hold');
+  button('Discard my words').click();
+  await until(() => kind() === 'discarded', 'the discard');
+  r.discarded = /Keep me/.test(box().innerText) && !/give up/.test(box().innerText) && has((await stored(id)).description, 'Keep me');
+  await wait(800);
+  return r;
+}).then(() => inv('quit_app'));
+`, out);
+  const r4 = await waitFile(out);
+  check('words that met newer text ran on the real backend', r4 && !r4.error, r4?.error ?? '');
+  if (!r4 || r4.error) {
+    app.child.kill();
+    return false;
+  }
+  const exit4 = await withTimeout(app.exited, 15000);
+  check('and quit cleanly', exit4 !== 'timeout' && exit4.code === 0, JSON.stringify(exit4));
+  check('a draft never replaces newer text at launch, and a notice shows the words', r4.replayKept === true && r4.replayNotices?.length === 1 && /Words before the restart/.test(r4.replayNotices[0]) && /changed elsewhere/.test(r4.replayNotices[0]), JSON.stringify(r4.replayNotices));
+  check('the leftover draft is gone after that launch', !existsSync(join(dataDir, 'z-work-drafts.json')));
+  check('patch_task refuses only the stale field, gives back what is stored, and applies the rest', JSON.stringify(r4.cmdConflicts) === '["description"]' && r4.cmdStoredText === true && r4.cmdStoredName === 'Smoke renamed' && r4.cmdSnapshotName === 'Smoke renamed', JSON.stringify(r4.cmdConflicts));
+  check('a stored value equal to the one saved is success, and no expected value changes nothing', JSON.stringify(r4.cmdEqual) === '[]' && JSON.stringify(r4.cmdNoExpected) === JSON.stringify([[], 'Smoke task']));
+  check('an expected value for a field not sent is no concern, and a stale name alone conflicts', JSON.stringify(r4.cmdOtherFieldIgnored) === '["name"]', JSON.stringify(r4.cmdOtherFieldIgnored));
+  check('a task can never become nameless through a patch', r4.cmdBlank === 'validation', r4.cmdBlank);
+  check('snapshot revisions rise with changes', r4.revisionRises === true);
+  check('the real autosave is refused: the newer text stays, the words stay shown, the notice is up', r4.held === true && /changed elsewhere/.test(r4.heldNotice) && /real words/.test(r4.heldShown), r4.heldNotice);
+  check('typing on keeps the hold and the newer text', r4.typingKeepsHold === true && r4.discardOffered === true);
+  check('a closed editor with held words leaves a banner that outlives other actions', r4.bannerStays === true && r4.reopenedHeld === true);
+  check('Done after the notice saves the words over the newer text', r4.doneOverrides === true);
+  check('a clean editor shows newer text and saves on from it', r4.cleanFollows === true);
+  check('Discard my words keeps the newer text', r4.discarded === true);
   return true;
 }
 
