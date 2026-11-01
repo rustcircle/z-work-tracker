@@ -156,6 +156,8 @@ export interface MockState {
   drafts: Record<string, RichDoc>;
   /** Randomness for replacing a clashing colour, in [0, 1). Defaults to a fixed seed so runs repeat. */
   random?: () => number;
+  /** Moves with every snapshot built, so one built earlier reads as older, as the backend's count of changes does. */
+  revision: number;
   nextId: number;
   /** Launch-scoped, like the Rust service: false until the first task of this launch has started. */
   warm: boolean;
@@ -213,6 +215,7 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     drafts: {},
     nextId: 1,
     warm: false,
+    revision: 0,
     lastWorked: null,
   };
 }
@@ -582,6 +585,7 @@ function snapshot(s: MockState): Snapshot {
       feeCurrency: p.feeCurrency ?? null,
       figures: figures.get(p.id) ?? { exactSecs: 0, pauseSecs: 0, billableSecs: 0, thinkingSecs: 0, effectiveHourlyCents: null, timeValueCents: {}, budget: null },
     })),
+    revision: (s.revision += 1),
     tasks: s.tasks.map((t) => {
       const tt = totals.get(t.id);
       return {

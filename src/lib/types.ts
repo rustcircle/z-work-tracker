@@ -499,6 +499,8 @@ export interface Settings {
 }
 
 export interface Snapshot {
+  /** The backend's count of committed changes when this was built. A lower count than one already adopted is an older reply. */
+  revision: number;
   now: string;
   deviceId: string;
   deviceName: string;

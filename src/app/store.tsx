@@ -74,12 +74,19 @@ export function useLiveSec(): number {
   return useContext(LiveCtx);
 }
 
-function createClock(): ClockApi & { setAwake: (awake: boolean) => void; setSkew: (ms: number) => void } {
+function createClock(): ClockApi & { setAwake: (awake: boolean) => void; setSkew: (ms: number) => void; admit: (revision: number) => boolean } {
   let awake = true;
   let skew = 0;
+  let newest = -1;
   const listeners = new Set<(awake: boolean) => void>();
   return {
     readNow: () => Math.floor((Date.now() + skew) / 1000),
+    // Replies can overtake each other on the way here, so an older snapshot never replaces a newer one.
+    admit: (revision) => {
+      if (revision < newest) return false;
+      newest = revision;
+      return true;
+    },
     setSkew: (ms) => {
       skew = ms;
     },
@@ -146,6 +153,7 @@ export function AppProvider({ children, fallback }: { children: ReactNode; fallb
 
   const adopt = useCallback(
     (s: Snapshot) => {
+      if (!clock.admit(s.revision)) return;
       clock.setSkew(parseIso(s.now) * 1000 - Date.now());
       setSnapshot(s);
       // New data: everything derived from the time is worked out afresh.

@@ -37,6 +37,7 @@ export interface Spec {
 export function mkSnapshot(spec: Spec): Snapshot {
   let n = 0;
   return {
+    revision: 0,
     now: spec.now,
     deviceId: 'dev',
     deviceName: 'Test PC',
