@@ -52,13 +52,14 @@ export function unsentAwayNotice(name: string, unsent: readonly SavedField[]): s
   return `Your edit to the ${listFields(unsent)} of “${name}” could not be saved yet. It is still here and will be sent again. Opening the task's editor shows it and tries again. If the app closes first, ${end}.`;
 }
 
-/** What the status line says while unsaved values wait for the user to choose. */
+/** What the status line says while unsaved values wait for the user to choose. The editor shows one value per field, so it can't show the newer one beside them. */
 function conflictNotice(held: readonly SavedField[]): string {
   const end = ifTheAppCloses(held, 'they come back as a notice at the next launch', 'they are lost');
+  const both = held.includes('description') || held.includes('name') ? ' To see both, copy your words, press Discard my words, and paste them back.' : '';
   if (held.length === 1 && held[0] === 'description') {
-    return `This description was changed elsewhere while your words waited to save. They are shown here and have not been sent. Typing on does not send them. Press Done to save them over the newer text, or press Discard my words to keep the newer text. ${end}`;
+    return `This description was changed elsewhere while your words waited to save. They are shown here and have not been sent. Typing on does not send them. Press Done to save them over the newer text, which you can't read first, or press Discard my words to keep the newer text.${both} ${end}`;
   }
-  return `The ${listFields(held)} changed elsewhere while your edits waited to save. They are shown here and have not been sent. Typing on does not send them. Press Done to save them over the newer ones, or press Discard my words to keep the newer ones. ${end}`;
+  return `The ${listFields(held)} changed elsewhere while your edits waited to save. They are shown here and have not been sent. Typing on does not send them. Press Done to save them over the newer ones, which you can't read first, or press Discard my words to keep the newer ones.${both} ${end}`;
 }
 
 export function TaskEditor({ task }: { task: Task }) {

@@ -809,6 +809,31 @@ describe('never nameless or unassigned', () => {
 });
 
 describe('what the notices say', () => {
+  it('says the newer text cannot be read first, and how to see both', async () => {
+    const user = await holdWords();
+    expect(saveState()).toHaveTextContent("Press Done to save them over the newer text, which you can't read first");
+    expect(saveState()).toHaveTextContent('To see both, copy your words, press Discard my words, and paste them back');
+    await user.type(nameBox(), ' v2');
+    await arrive(() => {
+      guide().name = 'Renamed elsewhere';
+    });
+    await pass(1000);
+    expect(saveState()).toHaveTextContent("Press Done to save them over the newer ones, which you can't read first");
+    expect(saveState()).toHaveTextContent('To see both, copy your words, press Discard my words, and paste them back');
+  });
+
+  it('the way it gives to see both works: the words paste back over the newer text and save', async () => {
+    const user = await holdWords();
+    await user.click(discardButton() as HTMLElement);
+    expect(box()).toHaveTextContent('From another device');
+    await user.click(box());
+    await user.keyboard(' mine');
+    await pass(2000);
+    expect(kind()).toBe('saved');
+    expect(storedText()).toContain('From another device');
+    expect(storedText()).toContain(' mine');
+  });
+
   it('held words are said to come back as a notice, and other fields to be lost, if the app closes first', async () => {
     const user = await holdWords();
     expect(saveState()).toHaveTextContent('If the app closes first, they come back as a notice at the next launch');
