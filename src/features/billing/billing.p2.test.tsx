@@ -141,7 +141,8 @@ describe('summaries', () => {
     await user.click(screen.getByRole('button', { name: 'Void A-001' }));
     await user.click(within(await screen.findByRole('dialog', { name: 'Void A-001?' })).getByRole('button', { name: 'Void summary' }));
     await waitFor(() => expect(calls('void_summary')).toEqual([{ id: 'summary-1002' }]));
-    expect(await screen.findByRole('listitem', { name: 'A-001, voided' })).toHaveFocus();
+    const voided = await screen.findByRole('listitem', { name: 'A-001, voided' });
+    await waitFor(() => expect(voided).toHaveFocus());
     expect(screen.queryByRole('button', { name: 'Void A-001' })).toBeNull();
   });
 
