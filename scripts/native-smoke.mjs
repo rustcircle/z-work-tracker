@@ -428,6 +428,9 @@ run(async () => {
   button('Discard my words').click();
   await until(() => kind() === 'discarded', 'the discard');
   r.discarded = /Keep me/.test(box().innerText) && !/give up/.test(box().innerText) && has((await stored(id)).description, 'Keep me');
+  document.querySelector('button[aria-label^="Dismiss notice"]').click();
+  await until(() => !/Words before the restart/.test(document.body.innerText), 'the notice to go');
+  r.dismissed = true;
   await wait(800);
   return r;
 }).then(() => inv('quit_app'));
@@ -441,7 +444,7 @@ run(async () => {
   const exit4 = await withTimeout(app.exited, 15000);
   check('and quit cleanly', exit4 !== 'timeout' && exit4.code === 0, JSON.stringify(exit4));
   check('a draft never replaces newer text at launch, and a notice shows the words', r4.replayKept === true && r4.replayNotices?.length === 1 && /Words before the restart/.test(r4.replayNotices[0]) && /changed elsewhere/.test(r4.replayNotices[0]), JSON.stringify(r4.replayNotices));
-  check('the leftover draft is gone after that launch', !existsSync(join(dataDir, 'z-work-drafts.json')));
+  check('dismissing the notice ends those words, and leaves no draft behind', r4.dismissed === true && !existsSync(join(dataDir, 'z-work-drafts.json')));
   check('patch_task refuses only the stale field, gives back what is stored, and applies the rest', JSON.stringify(r4.cmdConflicts) === '["description"]' && r4.cmdStoredText === true && r4.cmdStoredName === 'Smoke renamed' && r4.cmdSnapshotName === 'Smoke renamed', JSON.stringify(r4.cmdConflicts));
   check('a stored value equal to the one saved is success, and no expected value changes nothing', JSON.stringify(r4.cmdEqual) === '[]' && JSON.stringify(r4.cmdNoExpected) === JSON.stringify([[], 'Smoke task']));
   check('an expected value for a field not sent is no concern, and a stale name alone conflicts', JSON.stringify(r4.cmdOtherFieldIgnored) === '["name"]', JSON.stringify(r4.cmdOtherFieldIgnored));
