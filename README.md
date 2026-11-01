@@ -6,7 +6,7 @@ A desktop app for Windows 11 that accounts for labor hours by project and task. 
 
 It runs locally. It makes no network calls and sends no telemetry. Data leaves the machine only if you choose a OneDrive or Google Drive folder for sync.
 
-Status: phase 2 build. It has been run and tested on macOS, and the Windows installer has been built, but the only thing to run on Windows so far is a CI run of the test gates: **the app itself has never run on real Windows**, and that CI run predates phase 2. See [Known limitations](#known-limitations).
+Status: phase 2 build. It has been run and tested on macOS, and the Windows installer has been built, but the only thing to run on Windows so far is the CI test gates: **the app itself has never run on real Windows**. See [Known limitations](#known-limitations).
 
 ![Timeline](docs/images/timeline-light.png)
 
@@ -689,7 +689,7 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 
 **Built for one PC at a time.** Use the app on one PC at a time. Sync carries your work from one PC to the next, but it doesn't make two PCs safe to edit side by side. If you switch PCs before sync has finished, for example because PC A goes offline before its folder has uploaded, and you edit the same field on both, the later save wins and the other text disappears from both PCs with no notice. Neither PC can warn you, because neither has seen the other's text when it saves. So let sync finish before you switch. The app can only say it wrote to the sync folder, so check that OneDrive or Google Drive has finished uploading.
 
-**Not verified on real Windows.** The only thing to run on Windows so far is a CI run of phase 1's test gates. The app itself has never run there. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, signing, Segoe UI rendering and shutdown handling. See the [checklist](#manual-windows-test-checklist).
+**Not verified on real Windows.** What has run on Windows is the CI test gates, on `windows-latest`. A green run covers the type check, lint, unit tests, and the Rust format, lint and tests, which run on Windows itself. It also covers the Playwright tests, which run against the IPC mock and so don't drive the real backend. It says nothing about the installer or the app on a real desktop. The app itself has never run there. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, signing, Segoe UI rendering and shutdown handling. See the [checklist](#manual-windows-test-checklist).
 
 **Verified only on macOS or against a mock.**
 
