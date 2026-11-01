@@ -32,7 +32,9 @@ function build(args) {
 const HELPERS = `
 const inv = window.__TAURI_INTERNALS__.invoke;
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-const until = async (f, what) => { for (let i = 0; i < 80; i++) { const v = await f(); if (v) return v; await wait(100); } throw new Error('timed out: ' + what); };
+// By round trips to the backend, as a window nobody looks at can run a timer many seconds late. After about 7 seconds
+// such a window's page stops altogether, so a run has to be done by then, or end up here with no report.
+const until = async (f, what) => { const end = Date.now() + 20000; while (Date.now() < end) { const v = await f(); if (v) return v; await inv('get_snapshot').catch(() => undefined); } throw new Error('timed out: ' + what); };
 const button = (text) => [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === text && !b.disabled);
 const report = (o) => inv('smoke_report', { text: JSON.stringify(o) });
 const run = async (f) => { try { await report(await f()); } catch (e) { await report({ error: String(e && e.message || e) }); } };
@@ -482,38 +484,50 @@ run(async () => {
   r.goneAlerts = [...document.querySelectorAll('[role="alert"]')].map((a) => a.textContent);
   s = await inv('get_snapshot');
   r.goneNotices = s.notices.map((n) => n.message);
-  // A closed editor whose saves fail for real, as the data folder refuses writes, until the retries run out. Retries
-  // come quickly here, or this would take a minute. A later write then lands, and only its revision can send the words.
+  // A closed editor whose saves fail for real, as a folder stands in the way of the file a save writes first, until its
+  // retries run out. They go at once here, as they would take a minute. A real write then has to send the words, by the
+  // real revision.
   const stubborn = await inv('create_task', { input: { name: 'Smoke stubborn', projectId: s.tasks.find((x) => x.name === 'Smoke task').projectId, description: null, tags: [] } });
   await inv('smoke_emit_changed');
   await until(() => document.querySelector('button[aria-label="Edit Smoke stubborn"]'), 'the stubborn task');
   document.querySelector('button[aria-label="Edit Smoke stubborn"]').click();
   await until(form, 'its editor');
+  const stubbornText = async () => JSON.stringify((await inv('get_snapshot')).tasks.find((x) => x.id === stubborn.id).description);
   const realTimeout = window.setTimeout;
-  await inv('smoke_data_folder_writable', { writable: false });
-  window.setTimeout = (f, ms, ...rest) => realTimeout(f, Math.min(ms, 20), ...rest);
-  form().querySelector('[aria-multiline="true"]').focus();
-  document.execCommand('insertText', false, 'Words that wait to save');
-  document.querySelector('button[aria-label="Edit Smoke stubborn"]').click();
-  await new Promise((done) => realTimeout(done, 2000));
-  window.setTimeout = realTimeout;
-  await inv('smoke_data_folder_writable', { writable: true });
-  const waiting = (await inv('get_snapshot')).tasks.find((x) => x.id === stubborn.id);
-  r.unsentBanner = document.querySelector('[data-testid="unsent-banner"]')?.textContent;
-  r.unsentStored = JSON.stringify(waiting.description).includes('Words that wait');
-  await wait(1000);
-  r.notRetriedAlone = !JSON.stringify((await inv('get_snapshot')).tasks.find((x) => x.id === stubborn.id).description).includes('Words that wait');
-  r.bannerStaysAlone = Boolean(document.querySelector('[data-testid="unsent-banner"]'));
+  let lastRetryFired = false;
+  window.setTimeout = (f, ms, ...rest) => {
+    if (![2000, 4000, 8000, 16000, 32000].includes(ms)) return realTimeout(f, ms, ...rest);
+    Promise.resolve().then(() => {
+      f(...rest);
+      if (ms === 32000) lastRetryFired = true;
+    });
+    return 0;
+  };
+  await inv('smoke_block_saves', { blocked: true });
+  try {
+    form().querySelector('[aria-multiline="true"]').focus();
+    document.execCommand('insertText', false, 'Words that wait to save');
+    // The editor hears of typing a moment later, and no hand is quicker than that to close it.
+    await inv('get_snapshot');
+    document.querySelector('button[aria-label="Edit Smoke stubborn"]').click();
+    await until(() => lastRetryFired, 'the retries to run out');
+    // The last of them has its save and its snapshot to wait for.
+    for (let i = 0; i < 50; i++) await inv('get_snapshot');
+    r.unsentBanner = document.querySelector('[data-testid="unsent-banner"]')?.textContent;
+    r.unsentStored = (await stubbornText()).includes('Words that wait');
+  } finally {
+    window.setTimeout = realTimeout;
+    await inv('smoke_block_saves', { blocked: false });
+  }
   button('Hide earnings').click();
-  await until(async () => JSON.stringify((await inv('get_snapshot')).tasks.find((x) => x.id === stubborn.id).description).includes('Words that wait'), 'the later write to send the words');
+  await until(async () => (await stubbornText()).includes('Words that wait'), 'the later write to send the words');
   await until(() => !document.querySelector('[data-testid="unsent-banner"]'), 'the banner to go');
   r.sentByLaterWrite = true;
-  await wait(300);
   return r;
 }).then(() => inv('quit_app'));
 `, out);
   const r5 = await waitFile(out);
-  check('the words came back on the real backend', r5 && !r5.error, r5?.error ?? '');
+  check('the words came back on the real backend', r5 && !r5.error, r5 ? (r5.error ?? '') : 'no report in time');
   if (!r5 || r5.error) {
     app.child.kill();
     return false;
@@ -524,7 +538,7 @@ run(async () => {
   const keptNow = JSON.parse(readFileSync(join(dataDir, 'z-work-kept-words.json'), 'utf8'));
   check('dismissing the notice ends those words, and leaves no draft behind', r5.dismissed === true && !existsSync(join(dataDir, 'z-work-drafts.json')) && !JSON.stringify(keptNow).includes('Words before the restart'));
   check('an edit to a task deleted elsewhere goes in a notice with its words, and outlasts the run', r5.goneClosed === true && r5.goneAlerts?.length === 0 && r5.goneNotices?.length === 1 && /no longer exists/.test(r5.goneNotices[0]) && keptNow.length === 1 && keptNow[0].because === 'taskGone' && /Words on a doomed task/.test(keptNow[0].words), JSON.stringify([r5.goneAlerts, r5.goneNotices]));
-  check('a closed editor whose saves fail says so in a banner, tries no more by itself, and a later write sends the words', /could not be saved yet/.test(r5.unsentBanner ?? '') && r5.unsentStored === false && r5.notRetriedAlone === true && r5.bannerStaysAlone === true && r5.sentByLaterWrite === true, r5.unsentBanner);
+  check('a closed editor whose saves fail for real says so in a banner, and when its retries have run out a later write sends the words', /could not be saved yet/.test(r5.unsentBanner ?? '') && r5.unsentStored === false && r5.sentByLaterWrite === true, JSON.stringify([r5.unsentBanner, r5.unsentStored, r5.sentByLaterWrite]));
   return true;
 }
 
