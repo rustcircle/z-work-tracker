@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
 
-import { SHOTS, expectClean, open } from './support';
+import { SHOTS, expectClean, open, refresh } from './support';
 
 const THEMES = [
   ['light', 'light'],
@@ -278,4 +278,40 @@ test.describe('shift versions', () => {
     expect(await page.evaluate(() => window.__mock.shifts.filter((v) => v.shiftId === 'sh-morning' && !v.deleted).length)).toBe(1);
     await expectClean(page, found);
   });
+});
+
+async function runElsewhere(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const t = window.__mock.tasks.find((x) => x.id === 't-logo');
+    const open = window.__mock.segments.find((x) => x.taskId === 't-logo' && x.end === null);
+    if (t && open) {
+      open.deviceId = 'other-device';
+      t.runningElsewhere = 'Office PC';
+    }
+  });
+  await refresh(page);
+}
+
+test.describe('task running on another computer', () => {
+  test('Pause it from here sends one request, never touches that segment, and shows it is waiting', async ({ page }) => {
+    const found = await open(page, 'seed=demo');
+    await runElsewhere(page);
+    const card = page.getByRole('article', { name: 'Logo concepts' });
+    await expect(card.getByRole('button', { name: 'Pause', exact: true })).toBeDisabled();
+    await card.getByRole('button', { name: /Pause it from here/ }).click();
+    await expect(card.getByText('Pause requested')).toBeVisible();
+    await expect(card.getByRole('button', { name: /Pause it from here/ })).toHaveCount(0);
+    const after = await page.evaluate(() => ({ reqs: window.__mock.pauseRequests.length, open: window.__mock.segments.filter((x) => x.taskId === 't-logo' && x.end === null).map((x) => x.deviceId) }));
+    expect(after).toEqual({ reqs: 1, open: ['other-device'] });
+    await expectClean(page, found);
+  });
+
+  for (const [theme, file] of THEMES) {
+    test(`stale task card in ${theme}`, async ({ page }) => {
+      await open(page, `seed=demo&theme=${theme}`);
+      await runElsewhere(page);
+      await expect(page.getByTestId('remote-pause')).toBeVisible();
+      await page.getByRole('article', { name: 'Logo concepts' }).screenshot({ path: path.join(SHOTS, `gapfill-remote-pause-${file}.png`) });
+    });
+  }
 });

@@ -13,7 +13,7 @@ import { useEditStore } from './editStore';
 import { LiveTicker } from './LiveTicker';
 import { TaskDetailsButton } from './TaskDetails';
 import { TaskEditor } from './TaskEditor';
-import { TaskTags, TaskTimeParts } from './TaskCardExtras';
+import { RemotePause, TaskTags, TaskTimeParts } from './TaskCardExtras';
 import { STATE_LABEL, controlsFor, pauseReasonText } from './taskLogic';
 
 interface Props {
@@ -108,6 +108,7 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
           Running on <strong>{task.runningElsewhere}</strong>. Time keeps counting there; you can stop it from here.
         </p>
       )}
+      {task.runningElsewhere && <RemotePause task={task} />}
       {reason && <p className="task-note task-note-pause">{reason}</p>}
       {task.state === 'paused' && !reason && <p className="task-note">Paused. Time is not being counted.</p>}
       {task.state === 'paused' && !launch.warm && <p className="task-note">After a restart, Resume asks for every field again and starts a new task that continues this one. This task stays as it is.</p>}

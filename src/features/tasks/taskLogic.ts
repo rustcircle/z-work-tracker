@@ -1,7 +1,7 @@
 // Pure rules for the task panel: form validation, which controls a card enables, and the wording of
 // pause reasons. Kept free of React so it is easy to test.
 import { docHasText } from '../../lib/docText';
-import type { LaunchState, PauseReason, Project, RequiredField, RichDoc, Tag, Task } from '../../lib/types';
+import type { LaunchState, PauseReason, PauseRequest, Project, RequiredField, RichDoc, Segment, Tag, Task } from '../../lib/types';
 
 export interface TaskDraft {
   name: string;
@@ -104,7 +104,7 @@ export function controlsFor(
     }
     case 'running':
       if (task.runningElsewhere) {
-        return { start: wrongState('a draft'), pause: off(`Running on ${task.runningElsewhere}. Pause it there.`), resume: wrongState('paused'), stop: on };
+        return { start: wrongState('a draft'), pause: off(`Running on ${task.runningElsewhere}. Pause it there, or ask for a pause from here.`), resume: wrongState('paused'), stop: on };
       }
       return { start: wrongState('a draft'), pause: on, resume: wrongState('paused'), stop: on };
     case 'paused':
@@ -138,3 +138,17 @@ export function pauseReasonText(reason: PauseReason | null, tasks: ReadonlyMap<s
 }
 
 export const STATE_LABEL: Record<Task['state'], string> = { draft: 'Draft', running: 'Running', paused: 'Paused', stopped: 'Stopped' };
+
+/**
+ * The pause request that is still waiting for a task running on another device, or null. A request belongs to
+ * one open segment: when the other device has stopped and started again, an older request no longer counts.
+ */
+export function waitingPauseRequest(task: Task, requests: readonly PauseRequest[], segments: readonly Pick<Segment, 'id' | 'segmentId' | 'taskId' | 'end'>[]): PauseRequest | null {
+  if (!task.runningElsewhere) return null;
+  const mine = requests.filter((r) => r.taskId === task.id);
+  if (mine.length === 0) return null;
+  const open = segments.filter((x) => x.taskId === task.id && x.end === null).flatMap((x) => [x.id, x.segmentId ?? x.id]);
+  // With the other device's open segment on screen, only a request about it counts; without it, the newest does.
+  const matching = open.length > 0 ? mine.filter((r) => open.includes(r.segmentId)) : mine;
+  return matching.reduce<PauseRequest | null>((best, r) => (best === null || r.at > best.at ? r : best), null);
+}

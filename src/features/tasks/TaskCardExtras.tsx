@@ -2,16 +2,17 @@
 // tag chips, billed and unbilled time, and the task-list items with their time and "Make active".
 import { useEffect, useId, useRef } from 'react';
 
-import { useAppState } from '../../app/store';
+import { useApp, useAppState } from '../../app/store';
 import { nextMarkIn, useStepNow } from '../../app/stepClock';
 import { api } from '../../lib/api';
 import { parseIso } from '../../lib/tz';
 import type { Segment, Task } from '../../lib/types';
-import { formatDuration } from '../../components/format';
+import { clockWithAbbr, formatDuration } from '../../components/format';
 import { Badge, Button } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { TagChips } from './TagPicker';
 import { hasOpenPiece, piecesOf, taskTime, type SubtaskRow } from './taskFigures';
+import { waitingPauseRequest } from './taskLogic';
 import './tasksP2.css';
 
 /** The task's live tags as chips, under the project. */
@@ -159,5 +160,35 @@ function SubtaskItemRow({ row, onMakeActive }: { row: SubtaskRow; onMakeActive: 
       )}
       {!row.canActivate && <span className="subtask-note subtask-saved-only">Saved items only</span>}
     </li>
+  );
+}
+
+/**
+ * For a task running on another computer: ask that computer to pause it. The request is saved and synced; the
+ * other computer's own record is never rewritten from here. Until it syncs the task still shows as running, and
+ * the time counted on it stops at the moment of the request.
+ */
+export function RemotePause({ task }: { task: Task }) {
+  const { snapshot } = useAppState();
+  const { zones } = useApp();
+  const { act } = useCommands();
+  const device = task.runningElsewhere;
+  if (!device) return null;
+  const waiting = waitingPauseRequest(task, snapshot.pauseRequests, snapshot.segments);
+  return (
+    <div className="remote-pause" data-testid="remote-pause">
+      {waiting ? (
+        <p role="status">
+          <Badge tone="warning">Pause requested</Badge> at {clockWithAbbr(Math.floor(Date.parse(waiting.at) / 1000), zones.my)}. It takes effect when <strong>{device}</strong> next syncs.
+        </p>
+      ) : (
+        <Button small onClick={() => void act(() => api.requestRemotePause(task.id))}>
+          Pause it from here <span className="visually-hidden">({task.name})</span>
+        </Button>
+      )}
+      <p className="field-hint">
+        {device}'s own record is not changed. Time on this task is counted only up to the moment of your request, and the task closes there the next time {device} syncs. Everything is kept in the history of changes.
+      </p>
+    </div>
   );
 }

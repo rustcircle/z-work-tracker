@@ -59,3 +59,12 @@ describe('audit wording', () => {
     expect(auditLine(entry({ by: 'other' }), 'UTC', 'dev', 'Office PC').by).toBe('another computer');
   });
 });
+
+describe('remote pause requests in the history', () => {
+  it('reads as a request made from this computer, with when it was asked for', () => {
+    expect(actionWords('requestPause')).toBe('pause requested from this computer for a task running elsewhere');
+    expect(summarize({ segmentId: 'seg-1', at: '2026-03-12T15:20:00Z' }, 'UTC')).toBe('asked at 2026-03-12 15:20');
+    const line = auditLine(entry({ entity: 'task', action: 'requestPause', before: null, after: { segmentId: 'seg-1', at: '2026-03-12T15:20:00Z' } }), 'UTC', 'dev', 'Mock PC');
+    expect(line).toMatchObject({ before: 'nothing', after: 'asked at 2026-03-12 15:20', by: 'this computer (Mock PC)' });
+  });
+});

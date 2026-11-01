@@ -16,6 +16,7 @@ const ACTION: Record<string, string> = {
   markBillable: 'marked billable',
   unmarkBillable: 'no longer billable',
   create: 'created',
+  requestPause: 'pause requested from this computer for a task running elsewhere',
 };
 const DECISION: Record<string, string> = { pending: 'waiting for an answer', keep: 'kept as work', drop: 'dropped', thinking: 'marked as thinking' };
 
@@ -84,6 +85,9 @@ export function summarize(value: unknown, zone: string): string {
     const kind = str(value.kind);
     return `${spanText(start, str(value.end), zone)}${kind ? ` (${GAP_KIND[kind] ?? kind})` : ''}`;
   }
+  // A pause request: the other computer's segment, and when it was asked for.
+  const requestedAt = str(value.at);
+  if (str(value.segmentId) !== null && requestedAt !== null && Object.keys(value).length === 2) return `asked at ${whenText(requestedAt, zone)}`;
   return pairs(value, zone);
 }
 
