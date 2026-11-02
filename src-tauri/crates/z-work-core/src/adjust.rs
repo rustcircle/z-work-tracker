@@ -138,7 +138,9 @@ impl Shared {
                 s.effective()
                     .is_some_and(|(a, b)| a < end && b.is_none_or(|b| b > start))
             })
-            .filter_map(|s| self.tasks.get(&s.task_id).map(|t| t.name.clone()))
+            .filter_map(|s| self.tasks.get(&s.task_id))
+            .filter(|t| t.is_live())
+            .map(|t| t.name.clone())
             .collect()
     }
 
@@ -328,12 +330,9 @@ impl Shared {
         id: &str,
         decision: GapDecision,
     ) -> Result<(), CoreError> {
-        let segment_id = self
-            .gaps
-            .get(id)
-            .ok_or(CoreError::NotFound("time away"))?
-            .segment_id
-            .clone();
+        let gap = self.gaps.get(id).ok_or(CoreError::NotFound("time away"))?;
+        let segment_id = gap.segment_id.clone();
+        self.live_task(&gap.task_id)?;
         if self.is_billed(&segment_id) {
             return Err(CoreError::Conflict(
                 "this time is on a billing summary; void that summary first".into(),
@@ -401,6 +400,12 @@ impl Shared {
                 "this time is on a billing summary; void that summary first".into(),
             ));
         }
+        let task_id = &self
+            .pauses
+            .get(id)
+            .ok_or(CoreError::NotFound("billable pause"))?
+            .task_id;
+        self.live_task(task_id)?;
         let pause = self
             .pauses
             .get_mut(id)

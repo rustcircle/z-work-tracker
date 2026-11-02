@@ -3042,4 +3042,23 @@ mod tests {
             at("2026-06-01T13:00:00Z").secs()
         );
     }
+
+    #[test]
+    fn a_task_deleted_with_its_time_reaches_no_sheet() {
+        let tz = parse_zone(ZONE).unwrap();
+        let from = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 12, 31).unwrap();
+        let text = |data: Shared| {
+            let src = source(data, "2027-02-01T00:00:00Z");
+            let sheets = metrics(&src, ZONE, tz, from, to, None).sheets();
+            serde_json::to_string(&sheets).unwrap()
+        };
+        let all = text(world());
+        assert!(all.contains("secretproject") && all.contains("Hidden tag"));
+        let mut data = world();
+        data.tasks.get_mut("secret").unwrap().discarded = Some(stamp());
+        let all = text(data);
+        assert!(!all.contains("secretproject"), "its project's row");
+        assert!(!all.contains("Hidden tag"), "its tag's row");
+    }
 }

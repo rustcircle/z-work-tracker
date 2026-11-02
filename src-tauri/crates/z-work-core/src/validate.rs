@@ -368,6 +368,9 @@ pub fn check_shared(s: &Shared, now: Ts) -> Result<(), CoreError> {
         ] {
             check_stamp(stamp, now)?;
         }
+        if let Some(stamp) = &t.discarded {
+            check_stamp(stamp, now)?;
+        }
         if let Some(at) = t.stopped_at {
             check_time(at, now, "a stop time")?;
         }
@@ -560,5 +563,28 @@ mod tests {
         assert!(check_description(&link).is_err());
         assert!(check_description(&json!({"type":"paragraph"})).is_err());
         assert!(check_description(&json!("<b>html</b>")).is_err());
+    }
+
+    #[test]
+    fn the_marker_of_a_task_deleted_with_its_time_is_checked_like_any_stamp() {
+        use crate::machine::tests::{ctx, project_input, task_input};
+        let c = ctx("2026-01-01T08:00:00Z");
+        let mut s = Shared::default();
+        let p = s.create_project(&c, &project_input("A")).unwrap();
+        let t = s.create_task(&c, &task_input("T", &p)).unwrap();
+        s.delete_task(&c, &t).unwrap();
+        check_shared(&s, c.now).unwrap();
+        let task = s.tasks.get_mut(&t).unwrap();
+        task.discarded = Some(Stamp {
+            at: c.now.later(MAX_SKEW_SECS + 1),
+            by: "x".into(),
+        });
+        assert!(check_shared(&s, c.now).is_err(), "a far future date");
+        let task = s.tasks.get_mut(&t).unwrap();
+        task.discarded = Some(Stamp {
+            at: c.now,
+            by: "x".repeat(MAX_ID_LEN + 1),
+        });
+        assert!(check_shared(&s, c.now).is_err(), "too long a device id");
     }
 }

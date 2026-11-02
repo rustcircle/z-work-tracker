@@ -174,6 +174,12 @@ run(async () => {
   r.summaryCsv = await inv('export_summary_csv', { id: bill.id });
   r.pdfSaved = await inv('export_pdf', { request: { projectId: p.id, from: day(4), to: day(2), zone: 'UTC', title: 'Smoke Ωμέγα 日本', includePrices: true } });
   r.pdf = r.pdfSaved.path;
+  try { await inv('delete_task', { id: taskId }); r.deleteRunning = 'accepted'; } catch (e) { r.deleteRunning = e.code; }
+  const gone = await inv('create_task', { input: { name: 'Smoke gone', projectId: p.id, description: null, tags: [] } });
+  await inv('add_manual_entry', { input: { taskId: gone.id, start: day(6) + 'T09:00:00Z', end: day(6) + 'T10:00:00Z', reason: 'smoke', allowOverlap: true } });
+  s = await inv('delete_task', { id: gone.id });
+  r.deletedShows = [s.tasks, s.rawSegments.map((x) => ({ id: x.taskId })), s.segments.map((x) => ({ id: x.taskId }))].map((l) => l.some((x) => x.id === gone.id));
+  r.deleteAudit = (await inv('get_audit', { entityId: gone.id })).map((a) => a.action);
   const tag = await inv('save_tag', { input: { name: 'Painted', color: '#ABCDEF' } });
   r.tagColor = tag.snapshot.tags.find((x) => x.id === tag.id)?.color;
   try { await inv('save_tag', { input: { name: 'Bad', color: 'red' } }); r.badTag = 'accepted'; } catch (e) { r.badTag = e.code; }
@@ -251,6 +257,7 @@ run(async () => {
   check('a PDF timesheet is written locally, with its font embedded and a map for copying', pdf.subarray(0, 5).toString() === '%PDF-' && pdf.includes('NotoSans-Regular') && pdf.includes('/ToUnicode'));
   check('the export names what the font lacks, and only that', JSON.stringify(r1.pdfSaved?.unprintable) === JSON.stringify(['日', '本']));
   check('tag colours are stored canonical and others refused', r1.tagColor === '#abcdef' && r1.badTag === 'validation', JSON.stringify([r1.tagColor, r1.badTag]));
+  check('a running task is not deleted, and a deleted one goes with its time and is audited', r1.deleteRunning === 'conflict' && r1.deletedShows?.every((shows) => !shows) && r1.deleteAudit?.[0] === 'delete', JSON.stringify([r1.deleteRunning, r1.deletedShows, r1.deleteAudit]));
 
   // Run 2: relaunch. Data and theme persist; start a task and get killed, simulating a crash.
   out = join(work, 'r2.json');

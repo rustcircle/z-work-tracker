@@ -476,6 +476,11 @@ fn delete_draft(app: AppHandle, core: CoreState<'_>, id: String) -> CmdResult<Sn
 }
 
 #[tauri::command(async)]
+fn delete_task(app: AppHandle, core: CoreState<'_>, id: String) -> CmdResult<Snapshot> {
+    Ok(core.change(&app, |s| s.delete_task(&id))?.1)
+}
+
+#[tauri::command(async)]
 fn start_task(app: AppHandle, core: CoreState<'_>, id: String) -> CmdResult<TransitionResult> {
     let (t, snapshot) = core.change(&app, |s| s.start_task(&id))?;
     Ok(TransitionResult {
@@ -1713,6 +1718,7 @@ pub fn run() {
         update_task,
         patch_task,
         delete_draft,
+        delete_task,
         start_task,
         resume_task,
         pause_task,
@@ -1788,6 +1794,7 @@ pub fn run() {
         update_task,
         patch_task,
         delete_draft,
+        delete_task,
         start_task,
         resume_task,
         pause_task,

@@ -28,6 +28,7 @@ pub struct ProjectView {
     pub budget_hours: Option<f64>,
     pub client_zone: Option<String>,
     pub created_at: Ts,
+    /// It has tasks or billing summaries, so it can only be archived.
     pub has_tasks: bool,
     pub billing_type: BillingType,
     pub fixed_fee_cents: Option<i64>,

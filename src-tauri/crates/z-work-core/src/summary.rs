@@ -72,6 +72,26 @@ impl Shared {
         self.billed_sets().0
     }
 
+    /// The references of the live summaries listing any of this task's time, in order.
+    pub(crate) fn summaries_listing(&self, task_id: &str) -> Vec<&str> {
+        let own_segment = |id: &String| self.segments.get(id).is_some_and(|s| s.task_id == task_id);
+        let own_pause = |id: &String| self.pauses.get(id).is_some_and(|p| p.task_id == task_id);
+        let mut references: Vec<&str> = self
+            .summaries
+            .values()
+            .filter(|b| !b.voided)
+            .filter(|b| {
+                b.rows.iter().any(|r| r.task_id == task_id)
+                    || b.segment_ids.iter().any(own_segment)
+                    || b.pause_ids.iter().any(own_pause)
+            })
+            .map(|b| b.reference.as_str())
+            .collect();
+        references.sort_unstable();
+        references.dedup();
+        references
+    }
+
     /// Unbilled, closed time of a project in a period. Time belongs to the day its segment started.
     pub fn summary_preview(&self, req: &SummaryRequest) -> Result<SummaryPreview, CoreError> {
         let tz: Tz = parse_zone(&req.zone)?;

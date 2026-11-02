@@ -125,6 +125,11 @@ pub struct Task {
     #[serde(default)]
     pub deleted: bool,
     pub deleted_stamp: Stamp,
+    /// Deleted on purpose, with all its logged time. Where `deleted` gives way to logged time, this
+    /// outranks everything and never clears. The segments stay in the file, for backups and merges,
+    /// and `is_live` keeps them from everything that reads them, even ones that arrive afterwards.
+    #[serde(default)]
+    pub discarded: Option<Stamp>,
     /// The task this one continues. Set once at creation, for traceability.
     #[serde(default)]
     pub continued_from: Option<String>,
@@ -148,10 +153,11 @@ pub struct Task {
 }
 
 impl Task {
-    /// A deleted draft is gone. If another device logged time on it meanwhile, the time wins.
+    /// A deleted draft is gone. If another device logged time on it meanwhile, the time wins. A task
+    /// deleted with its time is gone whatever happens to it, and that time with it.
     #[must_use]
     pub fn is_live(&self) -> bool {
-        !self.deleted || self.state != TaskState::Draft
+        self.discarded.is_none() && (!self.deleted || self.state != TaskState::Draft)
     }
 }
 

@@ -815,6 +815,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn time_on_a_task_deleted_with_it_counts_nowhere() {
+        let (mut s, _, t) = fixture(Some((0, RoundMethod::Nearest)));
+        seg(
+            &mut s,
+            &t,
+            "a",
+            "2026-02-02T10:00:00Z",
+            "2026-02-02T11:00:00Z",
+        );
+        assert_eq!(rows(&s, "UTC")[0].exact_secs, 3600);
+        let task = s.tasks.get_mut(&t).unwrap();
+        task.deleted = true;
+        task.discarded = Some(task.deleted_stamp.clone());
+        task.state = crate::model::TaskState::Paused;
+        assert!(rows(&s, "UTC").is_empty());
+    }
+
+    #[test]
     fn rate_change_mid_segment_splits_at_the_instant() {
         let (mut s, p, t) = fixture(Some((0, RoundMethod::Nearest)));
         rate(&mut s, &p, Some(6000), "EUR", "2026-01-01T00:00:00Z");

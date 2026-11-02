@@ -366,6 +366,9 @@ impl Service {
     pub fn delete_draft(&mut self, id: &str) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.delete_draft(c, id))
     }
+    pub fn delete_task(&mut self, id: &str) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.delete_task(c, id))
+    }
 
     fn with_beat<R>(f: &mut LocalFile, c: &Ctx<'_>, r: R) -> R {
         f.last_heartbeat = Some(c.now);
@@ -461,10 +464,19 @@ impl Service {
 
     fn copy_source(&self) -> Option<CopySource> {
         let data = &self.file.data;
-        let task = data
-            .tasks
-            .get(self.last_worked.as_ref()?)
-            .filter(|t| t.is_live())?;
+        let worked = self.last_worked.as_ref()?;
+        // If that one has been deleted since, whichever was worked last before it.
+        let task = data.tasks.get(worked).filter(|t| t.is_live()).or_else(|| {
+            data.segments
+                .values()
+                .filter(|s| data.tasks.get(&s.task_id).is_some_and(Task::is_live))
+                .filter_map(|s| {
+                    let (start, end) = s.effective()?;
+                    Some((end.unwrap_or(start), &s.task_id))
+                })
+                .max()
+                .and_then(|(_, id)| data.tasks.get(id))
+        })?;
         let project = data.projects.get(&task.project_id);
         Some(CopySource {
             task_id: task.id.clone(),
@@ -1068,8 +1080,9 @@ impl Service {
         project_figures(&self.file.data, tz, &|s: &Segment| source.end_of(s))
     }
 
-    /// Pauses by request not yet offered as a system notification, for a window that may be hidden. Each
-    /// is also a dismissible notice, so a person who doesn't see this still reads it in the app.
+    /// Pauses by request and timers a delete elsewhere stopped, not yet offered as a system notification,
+    /// for a window that may be hidden. Each is also a dismissible notice, so a person who doesn't see this
+    /// still reads it in the app.
     pub fn take_pause_alerts(&mut self) -> Vec<String> {
         std::mem::take(&mut self.pause_alerts)
     }
@@ -1396,6 +1409,15 @@ impl Service {
                 seg.end = Some(last_beat.unwrap_or(seg.start).max(seg.start));
             }
         }
+        // Timers running here on tasks just deleted elsewhere. `reconcile` closes them.
+        let own = self.file.device_id.as_str();
+        let timers_lost: Vec<(String, String)> = merged
+            .segments
+            .values()
+            .filter(|s| s.end.is_none() && s.device_id == own)
+            .filter_map(|s| merged.tasks.get(&s.task_id))
+            .filter_map(|t| Some((t.name.clone(), t.discarded.as_ref()?.by.clone())))
+            .collect();
         let mut known = self.file.remote_devices.clone();
         for (id, device) in seen {
             match known.get(&id) {
@@ -1422,6 +1444,7 @@ impl Service {
             f.data = merged;
             f.remote_devices = known;
             paused = f.data.pause_requests_due(c.device);
+            paused.retain(|due| f.data.live_task(&due.task_id).is_ok());
             f.data.reconcile(c);
             f.data.raise_reference_marks(&mut f.prefs.reference_marks);
             Ok(())
@@ -1432,6 +1455,14 @@ impl Service {
                 // Saved with the segment closed, so a later cycle finds nothing left to do for it.
                 for due in &paused {
                     let message = self.pause_request_message(due);
+                    self.pause_alerts.push(message.clone());
+                    self.notify("warning", message);
+                }
+                for (name, by) in &timers_lost {
+                    let device = self.device_name_of(by);
+                    let message = format!(
+                        "\"{name}\" was deleted on {device}, so its timer here has stopped. The time logged on it is gone from every view."
+                    );
                     self.pause_alerts.push(message.clone());
                     self.notify("warning", message);
                 }
@@ -1570,16 +1601,18 @@ impl Service {
     pub fn snapshot(&self) -> Snapshot {
         let data = &self.file.data;
         let own = self.file.device_id.as_str();
+        // A summary counts as a task here: it names its project, and a delete can leave it the last thing that does.
         let with_tasks: BTreeSet<&str> = data
             .tasks
             .values()
             .filter(|t| t.is_live())
             .map(|t| t.project_id.as_str())
+            .chain(data.summaries.values().map(|b| b.project_id.as_str()))
             .collect();
         let open_devices: BTreeSet<&str> = data
             .segments
             .values()
-            .filter(|s| s.end.is_none())
+            .filter(|s| s.end.is_none() && data.tasks.get(&s.task_id).is_some_and(Task::is_live))
             .map(|s| s.device_id.as_str())
             .collect();
 
@@ -1594,7 +1627,7 @@ impl Service {
         let projects = data
             .projects
             .values()
-            // A tombstoned project that gained a task on another device stays visible as archived.
+            // A tombstoned project that gained a task or a summary on another device stays visible as archived.
             .filter(|p| !p.deleted || with_tasks.contains(p.id.as_str()))
             .map(|p| ProjectView {
                 id: p.id.clone(),
@@ -1635,7 +1668,11 @@ impl Service {
                 pause_reason: t.pause_reason.clone(),
                 created_at: t.created_at,
                 stopped_at: t.stopped_at,
-                continued_from: t.continued_from.clone(),
+                // A task deleted with its time leaves no trace, not even "an earlier task".
+                continued_from: t
+                    .continued_from
+                    .clone()
+                    .filter(|from| data.tasks.get(from).is_none_or(|f| f.discarded.is_none())),
                 tags: t.tags.clone(),
                 active_subtask: t.active_subtask.clone(),
                 subtasks: subtasks::items(&t.description)
@@ -1843,7 +1880,12 @@ impl Service {
                 pending: self.setup_pending(),
                 step: self.file.prefs.setup_step,
             },
-            pause_requests: self.file.data.pause_requests.values().cloned().collect(),
+            pause_requests: data
+                .pause_requests
+                .values()
+                .filter(|q| data.tasks.get(&q.task_id).is_some_and(Task::is_live))
+                .cloned()
+                .collect(),
             notices: self.notices.clone(),
             warnings,
             sync: SyncView {
@@ -1868,7 +1910,7 @@ impl Service {
             pauses: data
                 .pauses
                 .values()
-                .filter(|p| !p.deleted)
+                .filter(|p| !p.deleted && data.tasks.get(&p.task_id).is_some_and(Task::is_live))
                 .cloned()
                 .collect(),
             tags: data.tags.values().filter(|t| !t.deleted).cloned().collect(),
@@ -5207,5 +5249,923 @@ mod tests {
                 .any(|v| v["taskId"] == t.as_str());
             assert!(named, "{e:?}");
         }
+    }
+
+    /// Time that counts: the app sees someone at the keyboard throughout, so no time away comes of it.
+    fn work(s: &mut Service, clock: &ManualClock, minutes: i64) {
+        s.observe_activity(Some(0)).unwrap();
+        for _ in 0..minutes {
+            clock.advance(60);
+            s.observe_activity(Some(0)).unwrap();
+        }
+    }
+
+    /// A task with everything that can be logged on one: time, time away, a correction, a stretch entered
+    /// by hand and a billable pause. Beside it, another task with an hour of its own.
+    fn doomed_world(dir: &Path, clock: &ManualClock) -> (Service, String, String, String) {
+        let mut s = open(dir, clock);
+        s.set_system_zone("UTC".into());
+        let p = s
+            .create_project(&ProjectInput {
+                budget_hours: Some(100.0),
+                ..pinput("P")
+            })
+            .unwrap();
+        let t = s.create_task(&tinput("Doomed", &p)).unwrap();
+        let t0 = clock.now();
+        s.start_task(&t).unwrap();
+        work(&mut s, clock, 60);
+        s.pause_task(&t).unwrap();
+        let first = s.file().data.segments.keys().next().unwrap().clone();
+        s.mutate(|f, c| {
+            f.data
+                .add_gap(c, &first, t0.later(60), t0.later(120), GapKind::Idle);
+            Ok(())
+        })
+        .unwrap();
+        clock.advance(600);
+        s.resume_task(&t).unwrap();
+        work(&mut s, clock, 30);
+        s.stop_task(&t).unwrap();
+        let second = s
+            .file()
+            .data
+            .segments
+            .keys()
+            .find(|id| **id != first)
+            .unwrap()
+            .clone();
+        s.correct_segment(&CorrectionInput {
+            segment_id: second,
+            start: t0.later(4200),
+            end: t0.later(5900),
+            reason: "A slip".into(),
+            allow_overlap: true,
+        })
+        .unwrap();
+        s.mark_billable_pause(&PauseInput {
+            task_id: t.clone(),
+            start: t0.later(3600),
+            end: t0.later(4200),
+            note: "A call".into(),
+        })
+        .unwrap();
+        s.add_manual_entry(&ManualEntryInput {
+            task_id: t.clone(),
+            start: t0.later(-7200),
+            end: t0.later(-3600),
+            reason: "Forgot".into(),
+            subtask_id: None,
+            allow_overlap: true,
+        })
+        .unwrap();
+        let kept = s.create_task(&tinput("Kept", &p)).unwrap();
+        clock.advance(100);
+        s.start_task(&kept).unwrap();
+        work(&mut s, clock, 60);
+        s.stop_task(&kept).unwrap();
+        (s, p, t, kept)
+    }
+
+    fn csv_of(s: &Service) -> String {
+        crate::csv::build(
+            &s.export_source(),
+            &crate::report::ExportRequest {
+                day_zone: "UTC".into(),
+                my_zone: "UTC".into(),
+                client_zone: None,
+                include_earnings: true,
+                segment_shifts: BTreeMap::new(),
+                analytics: Vec::new(),
+                selection: None,
+            },
+        )
+        .unwrap()
+    }
+
+    /// Whether the time of this task reaches anything that reads time.
+    fn time_shows(s: &Service, t: &str, name: &str) -> Vec<&'static str> {
+        let snap = s.snapshot();
+        let src = s.export_source();
+        let mut shows = Vec::new();
+        let mut note = |seen: bool, what| {
+            if seen {
+                shows.push(what);
+            }
+        };
+        note(snap.tasks.iter().any(|x| x.id == t), "tasks");
+        note(snap.segments.iter().any(|x| x.task_id == t), "segments");
+        note(
+            snap.raw_segments.iter().any(|x| x.task_id == t),
+            "raw segments",
+        );
+        note(snap.gaps.iter().any(|x| x.task_id == t), "time away");
+        note(
+            snap.pauses.iter().any(|x| x.task_id == t),
+            "billable pauses",
+        );
+        note(
+            src.rows(chrono_tz::UTC).iter().any(|r| r.row.task_id == t),
+            "report rows",
+        );
+        note(
+            src.segments().iter().any(|r| r.task_name == name),
+            "report segments",
+        );
+        note(
+            src.adjustments().iter().any(|r| r.task_name == name),
+            "adjustments",
+        );
+        note(
+            csv_of(s)
+                .lines()
+                .any(|line| line.split(',').nth(1) == Some(name)),
+            "csv",
+        );
+        shows
+    }
+
+    #[test]
+    fn a_task_deleted_with_its_time_leaves_every_view_and_stays_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, p, t, kept) = doomed_world(dir.path(), &clock);
+        let every_view = [
+            "tasks",
+            "segments",
+            "raw segments",
+            "time away",
+            "billable pauses",
+            "report rows",
+            "report segments",
+            "adjustments",
+            "csv",
+        ];
+        assert_eq!(time_shows(&s, &t, "Doomed"), every_view);
+        let exact = |s: &Service| s.snapshot().projects[0].figures.exact_secs;
+        let kept_row = |s: &Service| {
+            s.export_source()
+                .rows(chrono_tz::UTC)
+                .into_iter()
+                .find(|r| r.row.task_id == kept)
+                .unwrap()
+                .row
+        };
+        let kept_before = kept_row(&s);
+        assert!(exact(&s) > kept_before.exact_secs);
+        let preview = s.summary_preview(&this_month(&p)).unwrap();
+        assert_eq!(preview.rows.len(), 2);
+        let segments = s.file().data.segments.len();
+        let pauses = s.file().data.pauses.len();
+        let gaps = s.file().data.gaps.len();
+
+        s.delete_task(&t).unwrap();
+
+        assert_eq!(time_shows(&s, &t, "Doomed"), Vec::<&str>::new());
+        assert_eq!(exact(&s), kept_before.exact_secs, "the project's figures");
+        assert_eq!(
+            s.snapshot().projects[0].figures.billable_secs,
+            kept_before.billable_secs
+        );
+        assert!(s.snapshot().projects[0].has_tasks, "Kept is still there");
+        assert_eq!(kept_row(&s), kept_before, "its neighbour doesn't move");
+        let preview = s.summary_preview(&this_month(&p)).unwrap();
+        assert_eq!(preview.rows.len(), 1);
+        assert_eq!(preview.rows[0].task_id, kept);
+        assert!(preview.pause_ids.is_empty());
+        assert_eq!(preview.segment_ids.len(), 1);
+        assert_eq!(preview.unconfirmed_secs, 0);
+        let selected = crate::report::SelectedEntry {
+            task_id: t.clone(),
+            day: "2026-03-01".into(),
+        };
+        assert!(
+            s.export_source()
+                .narrowed(chrono_tz::UTC, &[selected])
+                .is_err(),
+            "an old selection has nothing to narrow to"
+        );
+
+        // Every record is still in the file, and it says why they count for nothing.
+        let data = &s.file().data;
+        assert_eq!(data.segments.len(), segments);
+        assert_eq!(data.pauses.len(), pauses);
+        assert_eq!(data.gaps.len(), gaps);
+        assert!(data.tasks[&t].discarded.is_some());
+        assert!(data.tasks[&t].deleted);
+
+        // And it stays that way.
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert_eq!(time_shows(&s, &t, "Doomed"), Vec::<&str>::new());
+        assert!(s.file().data.tasks[&t].discarded.is_some());
+    }
+
+    #[test]
+    fn deleting_a_task_is_recorded_in_the_audit_trail() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _, t, _) = doomed_world(dir.path(), &clock);
+        s.delete_task(&t).unwrap();
+        let entries = s.audit_entries(Some(&t));
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!((e.entity.as_str(), e.action.as_str()), ("task", "delete"));
+        assert_eq!(e.by, s.file().device_id);
+        assert_eq!(e.before["name"], "Doomed");
+        assert_eq!(e.before["project"], "P");
+        assert_eq!(e.before["state"], "stopped");
+        assert_eq!(e.before["segments"], 3);
+        assert_eq!(e.before["pauses"], 1);
+        assert_eq!(e.after, Value::Null);
+    }
+
+    #[test]
+    fn a_task_running_here_cannot_be_deleted_until_its_timer_stops() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        s.start_task(&t).unwrap();
+        clock.advance(600);
+        let refused = |s: &mut Service| {
+            let e = s.delete_task(&t).unwrap_err();
+            assert!(matches!(e, CoreError::Conflict(_)), "{e}");
+            assert_eq!(e.code(), "conflict");
+            assert_eq!(
+                e.to_string(),
+                "this task is running; pause or stop it before deleting it"
+            );
+            assert!(s.file().data.tasks[&t].discarded.is_none());
+            assert_eq!(s.snapshot().tasks.len(), 1);
+        };
+        refused(&mut s);
+        // Another device timing it as well changes nothing here.
+        other.start_task(&t).unwrap();
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        refused(&mut s);
+
+        s.pause_task(&t).unwrap();
+        s.delete_task(&t).unwrap();
+        assert!(s.snapshot().tasks.is_empty());
+    }
+
+    #[test]
+    fn a_task_running_on_another_device_can_be_deleted_here_with_or_without_a_pause_request() {
+        for asked in [false, true] {
+            let here = tempfile::tempdir().unwrap();
+            let there = tempfile::tempdir().unwrap();
+            let clock = ManualClock::at(T0);
+            let (mut owner, t) = running(here.path(), &clock);
+            work(&mut owner, &clock, 10);
+            let mut other = open(there.path(), &clock);
+            other.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+            assert!(other.snapshot().tasks[0].running_elsewhere.is_some());
+            if asked {
+                other.request_remote_pause(&t).unwrap();
+            }
+            other.delete_task(&t).unwrap();
+            assert_eq!(time_shows(&other, &t, "T"), Vec::<&str>::new());
+            assert!(other.snapshot().warnings.is_empty());
+            assert!(other.snapshot().pause_requests.is_empty());
+            // Its owner closes that segment, and nobody else ever does.
+            let open_there = other.file().data.segments.values().next().unwrap();
+            assert_eq!(open_there.end, None);
+            assert_eq!(open_there.device_id, owner.file().device_id);
+            let audit = other.audit_entries(Some(&t));
+            let delete = audit.iter().find(|a| a.action == "delete").unwrap();
+            assert_eq!(delete.before["state"], "running");
+        }
+    }
+
+    #[test]
+    fn a_task_stopped_here_while_it_runs_elsewhere_can_be_deleted_here() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut owner, t) = running(here.path(), &clock);
+        clock.advance(60);
+        let mut other = open(there.path(), &clock);
+        other.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+        other.stop_task(&t).unwrap();
+        other.delete_task(&t).unwrap();
+        assert!(other.snapshot().tasks.is_empty());
+        owner.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert!(owner.snapshot().tasks.is_empty());
+        let own = owner.file().device_id.clone();
+        assert!(owner.file().data.own_open_segments(&own).is_empty());
+    }
+
+    #[test]
+    fn time_on_a_summary_refuses_the_delete_even_with_a_timer_only_on_another_device() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut owner, t) = running(here.path(), &clock);
+        work(&mut owner, &clock, 10);
+        owner.pause_task(&t).unwrap();
+        let p = owner.file().data.tasks[&t].project_id.clone();
+        owner.create_summary(&this_month(&p)).unwrap();
+        owner.resume_task(&t).unwrap();
+        let mut other = open(there.path(), &clock);
+        other.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert_eq!(
+            other.delete_task(&t).unwrap_err().to_string(),
+            "this task's time is on billing summary A-001; void that summary first"
+        );
+    }
+
+    #[test]
+    fn a_device_still_timing_a_task_deleted_elsewhere_stops_at_its_next_sync_and_no_time_returns() {
+        for asked in [false, true] {
+            let owner_dir = tempfile::tempdir().unwrap();
+            let deleter_dir = tempfile::tempdir().unwrap();
+            let third_dir = tempfile::tempdir().unwrap();
+            let clock = ManualClock::at(T0);
+            let (mut owner, t) = running(owner_dir.path(), &clock);
+            work(&mut owner, &clock, 10);
+            let mut deleter = open(deleter_dir.path(), &clock);
+            deleter.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+            if asked {
+                deleter.request_remote_pause(&t).unwrap();
+            }
+            deleter.delete_task(&t).unwrap();
+
+            // Nothing of that reaches the owner yet. It goes on working: a pause, a resume, and more time,
+            // so a segment no request could have covered, and a timer still running at its next sync.
+            work(&mut owner, &clock, 30);
+            owner.pause_task(&t).unwrap();
+            clock.advance(60);
+            owner.resume_task(&t).unwrap();
+            work(&mut owner, &clock, 30);
+            let name = owner.snapshot().tasks[0].name.clone();
+            let logged = owner.export_source().rows(chrono_tz::UTC)[0].row.exact_secs;
+            assert!(logged > 3600, "{logged}");
+            assert_eq!(owner.snapshot().tasks.len(), 1, "it hasn't heard");
+            let before_it_heard = owner.file().data.clone();
+
+            // That time reaches the device that deleted the task while it is still counting up.
+            deleter.absorb_remote(&before_it_heard, BTreeMap::new(), Vec::new());
+            assert_eq!(time_shows(&deleter, &t, &name), Vec::<&str>::new());
+            assert!(deleter.snapshot().warnings.is_empty());
+
+            // The owner's next sync.
+            let by = deleter.file().device_id.clone();
+            let seen = BTreeMap::from([(
+                by,
+                RemoteDevice {
+                    name: "Office PC".into(),
+                    last_heartbeat: None,
+                    written_at: clock.now(),
+                },
+            )]);
+            assert!(owner.absorb_remote(&deleter.file().data.clone(), seen, Vec::new()));
+            let own = owner.file().device_id.clone();
+            assert!(
+                owner.file().data.own_open_segments(&own).is_empty(),
+                "the timer has stopped"
+            );
+            assert!(!crate::tray::tray_state(owner.file(), clock.now(), chrono_tz::UTC).running);
+            assert_eq!(owner.current_reminder(), None);
+            let notices = owner.snapshot().notices;
+            assert_eq!(notices.len(), 1, "{notices:?}");
+            let text = &notices[0].message;
+            assert!(text.contains(&format!("\"{name}\"")), "{text}");
+            assert!(text.contains("Office PC"), "{text}");
+            assert!(text.contains("stopped"), "{text}");
+            assert_eq!(owner.take_pause_alerts(), std::slice::from_ref(text));
+            assert_eq!(time_shows(&owner, &t, &name), Vec::<&str>::new());
+            assert!(matches!(owner.resume_task(&t), Err(CoreError::NotFound(_))));
+
+            // All devices meet, one of them new, which first hears from the owner's older copy alone.
+            clock.advance(60);
+            deleter.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+            let mut third = open(third_dir.path(), &clock);
+            third.absorb_remote(&before_it_heard, BTreeMap::new(), Vec::new());
+            assert_eq!(
+                third.snapshot().tasks.len(),
+                1,
+                "as yet, it knows no better"
+            );
+            third.absorb_remote(&deleter.file().data.clone(), BTreeMap::new(), Vec::new());
+            // The owner's older copy comes round again, from a slow cloud client, and changes nothing.
+            owner.absorb_remote(&before_it_heard, BTreeMap::new(), Vec::new());
+            deleter.absorb_remote(&before_it_heard, BTreeMap::new(), Vec::new());
+            third.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+            for device in [&owner, &deleter, &third] {
+                assert_eq!(time_shows(device, &t, &name), Vec::<&str>::new());
+                assert!(device.snapshot().warnings.is_empty());
+                assert!(!device.snapshot().projects[0].has_tasks);
+                assert_eq!(device.file().data.tasks[&t], owner.file().data.tasks[&t]);
+                assert_eq!(device.file().data.segments, owner.file().data.segments);
+            }
+            let held = &owner.file().data.segments;
+            assert_eq!(held.len(), 2, "the raw records are all there");
+            assert!(held.values().all(|s| s.end.is_some()), "and all closed");
+            assert_eq!(owner.snapshot().notices.len(), 1, "told once");
+            assert!(owner.take_pause_alerts().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_timer_asked_to_pause_and_then_deleted_closes_at_the_request_and_tells_only_of_the_delete()
+    {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut owner, t) = running(here.path(), &clock);
+        work(&mut owner, &clock, 10);
+        let mut other = open(there.path(), &clock);
+        other.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+        other.request_remote_pause(&t).unwrap();
+        let at = other.file().data.pause_requests.values().next().unwrap().at;
+        other.delete_task(&t).unwrap();
+        work(&mut owner, &clock, 10);
+        assert!(owner.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new()));
+        let seg = owner.file().data.segments.values().next().unwrap();
+        assert_eq!(seg.end, Some(at));
+        let notices = owner.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].message.contains("was deleted"), "{notices:?}");
+        assert_eq!(owner.take_pause_alerts().len(), 1);
+        assert!(owner.snapshot().tasks.is_empty());
+    }
+
+    #[test]
+    fn a_paused_task_or_a_draft_with_time_can_be_deleted_and_nothing_more_can_be_done_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        clock.advance(600);
+        s.pause_task(&t).unwrap();
+        s.delete_task(&t).unwrap();
+        assert!(matches!(s.resume_task(&t), Err(CoreError::NotFound(_))));
+        assert!(matches!(s.delete_task(&t), Err(CoreError::NotFound(_))));
+
+        let p = s.file().data.tasks[&t].project_id.clone();
+        let draft = s.create_task(&tinput("Hand-entered", &p)).unwrap();
+        s.add_manual_entry(&ManualEntryInput {
+            task_id: draft.clone(),
+            start: clock.now().later(-60),
+            end: clock.now(),
+            reason: String::new(),
+            subtask_id: None,
+            allow_overlap: true,
+        })
+        .unwrap();
+        assert!(matches!(
+            s.delete_draft(&draft),
+            Err(CoreError::Conflict(_))
+        ));
+        s.delete_task(&draft).unwrap();
+        assert_eq!(s.file().data.tasks[&draft].state, TaskState::Draft);
+        assert_eq!(time_shows(&s, &draft, "Hand-entered"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_stale_edit_from_another_device_cannot_bring_a_deleted_task_back() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        s.start_task(&t).unwrap();
+        clock.advance(3600);
+        s.pause_task(&t).unwrap();
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+
+        s.delete_task(&t).unwrap();
+        // Later than the delete by every clock, on a device that hasn't heard of it.
+        clock.advance(60);
+        other
+            .patch_task(
+                &t,
+                &TaskPatch {
+                    name: Some("Renamed elsewhere".into()),
+                    description: Some(doc("Edited elsewhere")),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected::default(),
+            )
+            .unwrap();
+        other.stop_task(&t).unwrap();
+        assert_eq!(other.snapshot().tasks.len(), 1);
+
+        assert!(s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new()));
+        assert!(s.snapshot().tasks.is_empty());
+        assert_eq!(s.file().data.tasks[&t].name, "Renamed elsewhere");
+        assert!(other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new()));
+        assert!(other.snapshot().tasks.is_empty());
+        assert_eq!(
+            time_shows(&other, &t, "Renamed elsewhere"),
+            Vec::<&str>::new()
+        );
+        assert_eq!(s.file().data.tasks[&t], other.file().data.tasks[&t]);
+        // No more edits from there either.
+        assert!(matches!(
+            other.patch_task(
+                &t,
+                &TaskPatch {
+                    name: Some("Again".into()),
+                    ..TaskPatch::default()
+                },
+                &TaskExpected::default(),
+            ),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn time_that_arrives_after_the_delete_is_hidden() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        s.start_task(&t).unwrap();
+        clock.advance(600);
+        s.pause_task(&t).unwrap();
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        // Another device logs an hour it hasn't told anyone of.
+        clock.advance(3600);
+        let end = clock.now();
+        other
+            .add_manual_entry(&ManualEntryInput {
+                task_id: t.clone(),
+                start: end.later(-3600),
+                end,
+                reason: String::new(),
+                subtask_id: None,
+                allow_overlap: true,
+            })
+            .unwrap();
+        s.delete_task(&t).unwrap();
+        let held = s.file().data.segments.len();
+        assert!(s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new()));
+        assert_eq!(s.file().data.segments.len(), held + 1, "it did arrive");
+        assert_eq!(time_shows(&s, &t, "T"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_device_timing_a_task_deleted_elsewhere_stops_says_so_and_the_time_stays_hidden() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut timing, t) = two_devices(here.path(), there.path(), &clock);
+        let p = s.file().data.tasks[&t].project_id.clone();
+        let next = s.create_task(&tinput("Next", &p)).unwrap();
+        timing.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        timing.start_task(&t).unwrap();
+        // Here, nothing is known of that yet, so nothing stops the delete.
+        s.delete_task(&t).unwrap();
+        s.start_task(&next).unwrap();
+        clock.advance(600);
+
+        // The segment that was running there reaches this device while still open.
+        s.absorb_remote(&timing.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert!(
+            s.file()
+                .data
+                .segments
+                .values()
+                .any(|seg| seg.task_id == t && seg.end.is_none()),
+        );
+        assert_eq!(time_shows(&s, &t, "T"), Vec::<&str>::new());
+        assert!(
+            s.snapshot().warnings.is_empty(),
+            "only one task is running: {:?}",
+            s.snapshot().warnings
+        );
+
+        let by = s.file().device_id.clone();
+        let seen = BTreeMap::from([(
+            by,
+            RemoteDevice {
+                name: "Office PC".into(),
+                last_heartbeat: None,
+                written_at: clock.now(),
+            },
+        )]);
+        assert!(timing.absorb_remote(&s.file().data.clone(), seen, Vec::new()));
+        let own = timing.file().device_id.clone();
+        assert!(
+            timing.file().data.own_open_segments(&own).is_empty(),
+            "the timer has stopped"
+        );
+        assert_eq!(timing.file().data.tasks[&t].state, TaskState::Paused);
+        assert_eq!(time_shows(&timing, &t, "T"), Vec::<&str>::new());
+        let tray = crate::tray::tray_state(timing.file(), clock.now(), chrono_tz::UTC);
+        assert!(!tray.running);
+        let notices = timing.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        let text = &notices[0].message;
+        assert!(text.contains("\"T\""), "{text}");
+        assert!(text.contains("Office PC"), "{text}");
+        assert!(text.contains("stopped"), "{text}");
+        assert_eq!(timing.take_pause_alerts(), std::slice::from_ref(text));
+
+        // The next cycles bring the same delete again: it has done its work.
+        clock.advance(600);
+        timing.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert_eq!(timing.snapshot().notices.len(), 1);
+        assert!(timing.take_pause_alerts().is_empty());
+
+        // Its closed copy reaches the device that deleted it, hidden as well.
+        s.absorb_remote(&timing.file().data.clone(), BTreeMap::new(), Vec::new());
+        assert_eq!(time_shows(&s, &t, "T"), Vec::<&str>::new());
+        assert_eq!(s.file().data.tasks[&t], timing.file().data.tasks[&t]);
+    }
+
+    #[test]
+    fn a_pause_asked_for_on_a_task_deleted_meanwhile_tells_only_of_the_delete() {
+        let here = tempfile::tempdir().unwrap();
+        let asker = tempfile::tempdir().unwrap();
+        let deleter = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut owner, mut deleting, t) = two_devices(here.path(), deleter.path(), &clock);
+        owner.start_task(&t).unwrap();
+        let mut asking = open(asker.path(), &clock);
+        asking.absorb_remote(&owner.file().data.clone(), BTreeMap::new(), Vec::new());
+        asking.request_remote_pause(&t).unwrap();
+        deleting.delete_task(&t).unwrap();
+        clock.advance(60);
+        let both = merge(&asking.file().data, &deleting.file().data);
+        assert!(owner.absorb_remote(&both, BTreeMap::new(), Vec::new()));
+        let notices = owner.snapshot().notices;
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].message.contains("was deleted"), "{notices:?}");
+        assert_eq!(owner.take_pause_alerts().len(), 1);
+        assert!(owner.snapshot().pause_requests.is_empty());
+    }
+
+    #[test]
+    fn a_draft_deleted_elsewhere_but_started_here_keeps_its_time() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        other.delete_draft(&t).unwrap();
+        s.start_task(&t).unwrap();
+        work(&mut s, &clock, 60);
+        s.stop_task(&t).unwrap();
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        for device in [&s, &other] {
+            assert!(device.file().data.tasks[&t].deleted);
+            assert!(device.file().data.tasks[&t].discarded.is_none());
+            assert!(device.snapshot().tasks.iter().any(|x| x.id == t));
+            let rows = device.export_source().rows(chrono_tz::UTC);
+            assert_eq!(rows[0].row.exact_secs, 3600);
+        }
+    }
+
+    #[test]
+    fn time_on_a_live_summary_refuses_the_delete_and_a_voided_summary_stays_as_issued() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, p, t) = billed_world(dir.path(), &clock);
+        let first = s.create_summary(&this_month(&p)).unwrap();
+        let e = s.delete_task(&t).unwrap_err();
+        assert!(matches!(e, CoreError::Conflict(_)), "{e}");
+        assert_eq!(
+            e.to_string(),
+            "this task's time is on billing summary A-001; void that summary first"
+        );
+        assert!(s.file().data.tasks[&t].discarded.is_none());
+        assert!(time_shows(&s, &t, "T").contains(&"report rows"));
+
+        // A second summary, for time logged later: both are named, and both have to go.
+        clock.advance(2 * 86_400);
+        s.add_manual_entry(&ManualEntryInput {
+            task_id: t.clone(),
+            start: Ts::parse("2026-03-02T09:00:00Z").unwrap(),
+            end: Ts::parse("2026-03-02T10:00:00Z").unwrap(),
+            reason: String::new(),
+            subtask_id: None,
+            allow_overlap: true,
+        })
+        .unwrap();
+        let second = s.create_summary(&this_month(&p)).unwrap();
+        assert_eq!(
+            s.delete_task(&t).unwrap_err().to_string(),
+            "this task's time is on billing summaries A-001, A-002; void those summaries first"
+        );
+
+        s.void_summary(&first).unwrap();
+        s.void_summary(&second).unwrap();
+        let issued = s.file().data.summaries.clone();
+        s.delete_task(&t).unwrap();
+        assert_eq!(
+            s.file().data.summaries,
+            issued,
+            "a voided summary keeps every number it had"
+        );
+        let shown = s.snapshot().billing.summaries;
+        assert_eq!(shown.len(), 2);
+        assert!(shown.iter().all(|b| b.rows[0].task_name == "T"));
+
+        // Its number isn't reused.
+        let later = s.create_task(&tinput("Later", &p)).unwrap();
+        s.start_task(&later).unwrap();
+        clock.advance(60);
+        s.stop_task(&later).unwrap();
+        let third = s.create_summary(&this_month(&p)).unwrap();
+        assert_eq!(s.file().data.summaries[&third].reference, "A-003");
+        assert_eq!(s.file().data.summaries[&third].rows.len(), 1);
+    }
+
+    #[test]
+    fn a_summary_that_crosses_with_a_delete_keeps_its_numbers() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, p, t) = billed_world(here.path(), &clock);
+        let mut other = open(there.path(), &clock);
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        // Each device hears nothing of the other's step.
+        let id = s.create_summary(&this_month(&p)).unwrap();
+        other.delete_task(&t).unwrap();
+        let issued = s.file().data.summaries[&id].clone();
+        assert_eq!(issued.rows.len(), 1);
+
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        for device in [&s, &other] {
+            assert_eq!(device.file().data.summaries[&id], issued);
+            assert_eq!(time_shows(device, &t, "T"), Vec::<&str>::new());
+            // Nothing returns to unbilled, as there's no time left to bill.
+            let preview = device.summary_preview(&this_month(&p)).unwrap();
+            assert!(preview.rows.is_empty());
+        }
+        s.void_summary(&id).unwrap();
+        assert!(s.summary_preview(&this_month(&p)).unwrap().rows.is_empty());
+    }
+
+    #[test]
+    fn a_project_a_summary_names_can_only_be_archived_once_its_tasks_are_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, p, t) = billed_world(dir.path(), &clock);
+        let id = s.create_summary(&this_month(&p)).unwrap();
+        s.void_summary(&id).unwrap();
+        s.delete_task(&t).unwrap();
+        let e = s.delete_project(&p).unwrap_err();
+        assert!(matches!(e, CoreError::Conflict(_)), "{e}");
+        assert_eq!(
+            e.to_string(),
+            "a project with billing summaries can only be archived"
+        );
+        let snap = s.snapshot();
+        assert_eq!(snap.projects[0].id, p, "the summary can still name it");
+        assert!(snap.projects[0].has_tasks, "so the page offers Archive");
+        s.set_project_archived(&p, true).unwrap();
+        assert!(s.snapshot().projects[0].archived);
+    }
+
+    #[test]
+    fn a_project_deleted_while_a_summary_of_it_was_made_elsewhere_stays_visible_as_archived() {
+        let here = tempfile::tempdir().unwrap();
+        let there = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, p, t) = billed_world(here.path(), &clock);
+        let mut other = open(there.path(), &clock);
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        // Each device hears nothing of the other's steps.
+        s.create_summary(&this_month(&p)).unwrap();
+        other.delete_task(&t).unwrap();
+        other.delete_project(&p).unwrap();
+        s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new());
+        other.absorb_remote(&s.file().data.clone(), BTreeMap::new(), Vec::new());
+        for device in [&s, &other] {
+            assert!(device.file().data.projects[&p].deleted);
+            let snap = device.snapshot();
+            assert_eq!(snap.billing.summaries.len(), 1);
+            assert_eq!(snap.projects.len(), 1, "the summary can still name it");
+            assert_eq!(snap.projects[0].name, "P");
+            assert!(snap.projects[0].archived);
+        }
+    }
+
+    #[test]
+    fn time_on_a_deleted_task_overlaps_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, p, t) = billed_world(dir.path(), &clock);
+        let other = s.create_task(&tinput("Other", &p)).unwrap();
+        let input = ManualEntryInput {
+            task_id: other,
+            start: Ts::parse(T0).unwrap().later(60),
+            end: Ts::parse(T0).unwrap().later(120),
+            reason: String::new(),
+            subtask_id: None,
+            allow_overlap: false,
+        };
+        assert!(matches!(
+            s.add_manual_entry(&input),
+            Err(CoreError::Overlap(_))
+        ));
+        s.delete_task(&t).unwrap();
+        s.add_manual_entry(&input).unwrap();
+    }
+
+    #[test]
+    fn continuations_stay_as_their_own_tasks_and_lose_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, source) = running(dir.path(), &clock);
+        clock.advance(600);
+        s.pause_task(&source).unwrap();
+        let p = s.file().data.tasks[&source].project_id.clone();
+        let next = s
+            .create_task(&TaskInput {
+                continued_from: Some(source.clone()),
+                ..tinput("Next", &p)
+            })
+            .unwrap();
+        s.start_task(&next).unwrap();
+        work(&mut s, &clock, 10);
+        s.pause_task(&next).unwrap();
+        let link = |s: &Service| {
+            let snap = s.snapshot();
+            snap.tasks
+                .iter()
+                .find(|x| x.id == next)
+                .unwrap()
+                .continued_from
+                .clone()
+        };
+        assert_eq!(link(&s), Some(source.clone()));
+
+        s.delete_task(&source).unwrap();
+        assert_eq!(link(&s), None, "no \"an earlier task\" left behind");
+        let rows = s.export_source().rows(chrono_tz::UTC);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].row.exact_secs, 600);
+        // The record keeps it: it is set once, at creation, and a merge goes by that.
+        assert_eq!(
+            s.file().data.tasks[&next].continued_from,
+            Some(source.clone())
+        );
+        assert!(matches!(
+            s.create_task(&TaskInput {
+                continued_from: Some(source),
+                ..tinput("Too late", &p)
+            }),
+            Err(CoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn a_warm_copy_goes_back_to_the_task_worked_before_a_deleted_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, first) = running(dir.path(), &clock);
+        clock.advance(600);
+        s.pause_task(&first).unwrap();
+        let p = s.file().data.tasks[&first].project_id.clone();
+        let last = s.create_task(&tinput("Last", &p)).unwrap();
+        s.start_task(&last).unwrap();
+        clock.advance(600);
+        s.stop_task(&last).unwrap();
+        let copy = |s: &Service| s.snapshot().launch.copy_source.map(|c| c.task_id);
+        assert_eq!(copy(&s), Some(last.clone()));
+        s.delete_task(&last).unwrap();
+        assert_eq!(copy(&s), Some(first.clone()));
+        s.delete_task(&first).unwrap();
+        assert_eq!(copy(&s), None);
+        assert!(s.snapshot().launch.warm, "the launch stays warm");
+    }
+
+    #[test]
+    fn the_tray_stops_offering_a_deleted_task_and_a_project_can_go_once_its_tasks_have() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        clock.advance(600);
+        s.pause_task(&t).unwrap();
+        let p = s.file().data.tasks[&t].project_id.clone();
+        let tray = |s: &Service| crate::tray::tray_state(s.file(), clock.now(), chrono_tz::UTC);
+        assert_eq!(tray(&s).task_id, Some(t.clone()));
+        assert!(s.delete_project(&p).is_err());
+        s.delete_task(&t).unwrap();
+        assert_eq!(tray(&s).task_id, None);
+        assert_eq!(tray(&s).status_line, "No task running");
+        assert!(!s.snapshot().projects[0].has_tasks);
+        s.delete_project(&p).unwrap();
+        assert!(s.snapshot().projects.is_empty());
+    }
+
+    #[test]
+    fn a_backup_from_before_the_delete_brings_the_task_back_until_a_sync_says_otherwise() {
+        let here = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _, t) = billed_world(here.path(), &clock);
+        s.run_daily_backup().unwrap();
+        let name = s.list_backups().unwrap()[0].name.clone();
+        clock.advance(60);
+        s.delete_task(&t).unwrap();
+        let deleted = s.file().data.clone();
+        s.restore_backup(&name).unwrap();
+        assert_eq!(s.export_source().rows(chrono_tz::UTC).len(), 1);
+        s.absorb_remote(&deleted, BTreeMap::new(), Vec::new());
+        assert!(s.export_source().rows(chrono_tz::UTC).is_empty());
     }
 }

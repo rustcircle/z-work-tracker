@@ -67,6 +67,15 @@ fn merge_setting(a: &SettingEntry, b: &SettingEntry) -> SettingEntry {
     lww(a, &a.stamp, b, &b.stamp).clone()
 }
 
+/// Either copy's marker stands for good. Between two, the later, so any order of merging gives the same.
+fn sticky(a: &Option<Stamp>, b: &Option<Stamp>) -> Option<Stamp> {
+    match (a, b) {
+        (Some(x), Some(y)) if stamp_cmp(x, y) == Ordering::Less => Some(y.clone()),
+        (Some(x), _) => Some(x.clone()),
+        (None, y) => y.clone(),
+    }
+}
+
 /// The fields that travel with the state clock.
 #[derive(Serialize)]
 struct StateKey<'a>(
@@ -118,6 +127,7 @@ fn merge_task(a: &Task, b: &Task) -> Task {
         description_stamp,
         deleted,
         deleted_stamp,
+        discarded: sticky(&a.discarded, &b.discarded),
         continued_from: a.continued_from.clone().max(b.continued_from.clone()),
         created_at: a.created_at.min(b.created_at),
         state: state.state,
@@ -297,13 +307,13 @@ mod tests {
         (
             (0u8..3, 0u8..3, any::<bool>(), stamp(), stamp(), stamp()),
             (stamp(), 0u8..4, stamp(), prop::option::of(0i64..4), 0u8..3),
-            (stamp(), stamp(), 0u8..3, 0u8..3),
+            (stamp(), stamp(), 0u8..3, 0u8..3, prop::option::of(stamp())),
         )
             .prop_map(
                 |(
                     (id, n, deleted, name_stamp, project_stamp, description_stamp),
                     (deleted_stamp, st, state_stamp, stopped, m),
-                    (tags_stamp, active_subtask_stamp, tag, active),
+                    (tags_stamp, active_subtask_stamp, tag, active, discarded),
                 )| Task {
                     id: format!("t{id}"),
                     name: format!("name{n}"),
@@ -318,6 +328,7 @@ mod tests {
                     description_stamp,
                     deleted,
                     deleted_stamp,
+                    discarded,
                     continued_from: (m == 2).then(|| format!("t{n}")),
                     created_at: Ts(i64::from(n)),
                     state: [
@@ -617,6 +628,18 @@ mod tests {
             prop_assert_eq!(merge(&m, &a), m.clone());
             prop_assert_eq!(merge(&m, &b), m);
         }
+
+        #[test]
+        fn a_task_deleted_with_its_time_stays_gone(a in shared(), b in shared()) {
+            let m = merge(&a, &b);
+            for (id, t) in &m.tasks {
+                let marked = [&a, &b]
+                    .iter()
+                    .any(|s| s.tasks.get(id).is_some_and(|x| x.discarded.is_some()));
+                prop_assert_eq!(t.discarded.is_some(), marked);
+                prop_assert!(!marked || !t.is_live());
+            }
+        }
     }
 
     #[test]
@@ -661,6 +684,7 @@ mod tests {
                 at: Ts(1),
                 by: "a".into(),
             },
+            discarded: None,
             continued_from: None,
             created_at: Ts(0),
             state: TaskState::Stopped,
@@ -711,6 +735,7 @@ mod tests {
             description_stamp: stamp(1, "a"),
             deleted: false,
             deleted_stamp: stamp(1, "a"),
+            discarded: None,
             continued_from: None,
             created_at: Ts(0),
             state: TaskState::Paused,
@@ -732,6 +757,87 @@ mod tests {
             assert_eq!(m.name, "renamed on A");
             assert_eq!(m.description, json!({"type":"doc","content":[]}));
         }
+    }
+
+    #[test]
+    fn nothing_later_undoes_the_delete_of_a_task_with_its_time() {
+        let stamp = |at, by: &str| Stamp {
+            at: Ts(at),
+            by: by.into(),
+        };
+        let gone = Task {
+            id: "t".into(),
+            name: "old".into(),
+            name_stamp: stamp(1, "a"),
+            project_id: "p".into(),
+            project_stamp: stamp(1, "a"),
+            description: Value::Null,
+            description_stamp: stamp(1, "a"),
+            deleted: true,
+            deleted_stamp: stamp(2, "a"),
+            discarded: Some(stamp(2, "a")),
+            continued_from: None,
+            created_at: Ts(0),
+            state: TaskState::Paused,
+            pause_reason: None,
+            state_stamp: stamp(1, "a"),
+            stopped_at: None,
+            tags: Vec::new(),
+            tags_stamp: Default::default(),
+            active_subtask: None,
+            active_subtask_stamp: Default::default(),
+        };
+        // Every clock of the other copy is later, and its build may not even know of the marker.
+        let later = Task {
+            name: "renamed".into(),
+            name_stamp: stamp(9, "b"),
+            description: json!({"type":"doc","content":[]}),
+            description_stamp: stamp(9, "b"),
+            deleted: false,
+            deleted_stamp: stamp(9, "b"),
+            discarded: None,
+            state: TaskState::Running,
+            state_stamp: stamp(9, "b"),
+            ..gone.clone()
+        };
+        for m in [merge_task(&gone, &later), merge_task(&later, &gone)] {
+            assert_eq!(m.discarded, gone.discarded);
+            assert!(!m.is_live());
+            // The edits themselves still merge as usual, so every device ends up with the same record.
+            assert_eq!(m.name, "renamed");
+        }
+        // Deleted on two devices: the same marker on both, whichever way the merge goes.
+        let also = Task {
+            discarded: Some(stamp(5, "b")),
+            ..gone.clone()
+        };
+        assert_eq!(
+            merge_task(&gone, &also).discarded,
+            merge_task(&also, &gone).discarded
+        );
+        assert_eq!(merge_task(&gone, &also).discarded, Some(stamp(5, "b")));
+    }
+
+    #[test]
+    fn a_copy_written_by_a_build_without_the_marker_reads_back_without_it_and_loses() {
+        let task = json!({
+            "id": "t", "name": "T", "nameStamp": {"at": "2026-01-01T00:00:00Z", "by": "old"},
+            "projectId": "p", "projectStamp": {"at": "2026-01-01T00:00:00Z", "by": "old"},
+            "descriptionStamp": {"at": "2026-01-01T00:00:00Z", "by": "old"},
+            "deleted": true, "deletedStamp": {"at": "2026-01-02T00:00:00Z", "by": "new"},
+            "createdAt": "2026-01-01T00:00:00Z", "state": "paused",
+            "stateStamp": {"at": "2026-01-03T00:00:00Z", "by": "old"},
+        });
+        let old: Task = serde_json::from_value(task).unwrap();
+        assert_eq!(old.discarded, None, "a missing field defaults");
+        // What that build itself makes of it: a paused task with `deleted` set is still shown.
+        assert!(old.is_live());
+        let new = Task {
+            discarded: Some(old.deleted_stamp.clone()),
+            ..old.clone()
+        };
+        assert!(!merge_task(&old, &new).is_live());
+        assert!(!merge_task(&new, &old).is_live());
     }
 
     #[test]
@@ -817,6 +923,7 @@ mod tests {
             description_stamp: stamp.clone(),
             deleted: false,
             deleted_stamp: stamp.clone(),
+            discarded: None,
             continued_from: None,
             created_at: Ts(1),
             state: TaskState::Draft,

@@ -316,6 +316,18 @@ pub struct FolderPreview {
     pub warnings: Vec<String>,
 }
 
+/// The segments a person would count. Those of a task deleted with its time stay in the file, unseen.
+fn segments_shown(data: &Shared) -> usize {
+    data.segments
+        .values()
+        .filter(|s| {
+            data.tasks
+                .get(&s.task_id)
+                .is_none_or(|t| t.discarded.is_none())
+        })
+        .count()
+}
+
 #[must_use]
 pub fn preview_folder(io_impl: &dyn SyncIo, root: &Path, own_id: &str, now: Ts) -> FolderPreview {
     let read = read_target(io_impl, root, own_id, now);
@@ -332,7 +344,7 @@ pub fn preview_folder(io_impl: &dyn SyncIo, root: &Path, own_id: &str, now: Ts) 
         devices,
         projects: merged.projects.values().filter(|p| !p.deleted).count(),
         tasks: merged.tasks.values().filter(|t| !t.deleted).count(),
-        segments: merged.segments.len(),
+        segments: segments_shown(&merged),
         warnings,
     }
 }
@@ -431,7 +443,7 @@ fn counts(data: &Shared) -> Counts {
     Counts {
         projects: data.projects.values().filter(|p| !p.deleted).count(),
         tasks: data.tasks.values().filter(|t| !t.deleted).count(),
-        segments: data.segments.len(),
+        segments: segments_shown(data),
     }
 }
 
@@ -2103,5 +2115,127 @@ mod tests {
         b.cycle();
         a.cycle();
         assert_eq!(a.data().tags[&tag].color, "#fedcba");
+    }
+
+    #[test]
+    fn a_task_deleted_with_its_time_stays_gone_through_the_folder_on_every_device() {
+        use crate::time::Clock;
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let a = device(&clock, &[root.path()]);
+        let b = device(&clock, &[root.path()]);
+        let p = a.s().create_project(&pinput("P")).unwrap();
+        let t = a.s().create_task(&tinput("T", &p)).unwrap();
+        a.s().start_task(&t).unwrap();
+        clock.advance(3600);
+        a.s().pause_task(&t).unwrap();
+        a.cycle();
+        b.cycle();
+        let now = clock.now();
+        let pv = preview_folder(&RealIo, root.path(), "someone-else", now);
+        assert_eq!((pv.tasks, pv.segments), (1, 1));
+
+        assert_eq!(
+            b.s().delete_task(&t).map_err(|e| e.code()),
+            Ok(()),
+            "paused, with its time synced"
+        );
+        clock.advance(60);
+        // Unaware, A edits it. This goes on to the folder too, and on to B.
+        a.s()
+            .patch_task(
+                &t,
+                &crate::machine::TaskPatch {
+                    name: Some("Renamed".into()),
+                    ..Default::default()
+                },
+                &Default::default(),
+            )
+            .unwrap();
+        clock.advance(60);
+        a.cycle();
+        b.cycle();
+        a.cycle();
+        b.cycle();
+        for d in [&a, &b] {
+            assert!(d.s().snapshot().tasks.is_empty());
+            assert!(d.s().snapshot().segments.is_empty());
+            assert_eq!(d.data().segments.len(), 1, "the record stays");
+            assert!(d.data().tasks[&t].discarded.is_some());
+            let own = std::fs::read_to_string(own_file(d, root.path())).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&own).unwrap();
+            assert!(v["data"]["tasks"][&t]["discarded"]["at"].is_string());
+        }
+        assert_eq!(a.data().tasks[&t], b.data().tasks[&t]);
+        // A folder's preview counts what a person would see.
+        let pv = preview_folder(&RealIo, root.path(), "someone-else", clock.now());
+        assert_eq!((pv.tasks, pv.segments), (0, 0));
+    }
+
+    #[test]
+    fn a_task_deleted_while_another_device_times_it_stops_there_through_the_folder() {
+        use crate::time::Clock;
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let a = device(&clock, &[root.path()]);
+        let b = device(&clock, &[root.path()]);
+        let p = a.s().create_project(&pinput("P")).unwrap();
+        let t = a.s().create_task(&tinput("T", &p)).unwrap();
+        a.s().start_task(&t).unwrap();
+        a.cycle();
+        b.cycle();
+        assert!(b.s().snapshot().tasks[0].running_elsewhere.is_some());
+
+        b.s().delete_task(&t).unwrap();
+        b.cycle();
+        assert!(b.s().snapshot().tasks.is_empty());
+        // A hears only when it next looks in the folder, and goes on timing until then.
+        clock.advance(60);
+        assert_eq!(a.s().snapshot().tasks.len(), 1);
+        assert_eq!(a.data().own_open_segments(&a.id()).len(), 1);
+
+        a.cycle();
+        assert!(a.data().own_open_segments(&a.id()).is_empty());
+        let told = a.s().snapshot().notices;
+        assert!(
+            told.iter().any(|n| n.message.contains("was deleted on")),
+            "{told:?}"
+        );
+        // Its own file now says the segment is closed, so the other device has that too.
+        clock.advance(60);
+        b.cycle();
+        a.cycle();
+        for d in [&a, &b] {
+            let snap = d.s().snapshot();
+            assert!(snap.tasks.is_empty());
+            assert!(snap.segments.is_empty());
+            assert!(snap.raw_segments.is_empty());
+            assert!(snap.warnings.is_empty(), "{:?}", snap.warnings);
+            assert!(d.data().tasks[&t].discarded.is_some());
+            assert!(d.data().segments.values().all(|s| s.end.is_some()));
+        }
+        assert_eq!(a.data().tasks[&t], b.data().tasks[&t]);
+        assert_eq!(a.data().segments, b.data().segments);
+        let pv = preview_folder(&RealIo, root.path(), "someone-else", clock.now());
+        assert_eq!((pv.tasks, pv.segments), (0, 0));
+    }
+
+    #[test]
+    fn a_file_with_a_far_future_delete_marker_is_refused_as_a_whole() {
+        let clock = ManualClock::at(T0);
+        let root = tempfile::tempdir().unwrap();
+        let a = device(&clock, &[root.path()]);
+        let b = device(&clock, &[root.path()]);
+        let p = b.s().create_project(&pinput("P")).unwrap();
+        let t = b.s().create_task(&tinput("T", &p)).unwrap();
+        b.cycle();
+        let path = own_file(&b, root.path());
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["data"]["tasks"][&t]["discarded"] =
+            serde_json::json!({"at": "2099-01-01T00:00:00Z", "by": "x"});
+        std::fs::write(&path, v.to_string()).unwrap();
+        a.cycle();
+        assert!(a.data().tasks.is_empty());
     }
 }

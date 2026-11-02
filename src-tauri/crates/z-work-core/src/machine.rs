@@ -424,6 +424,12 @@ impl Shared {
                 "a project with tasks can only be archived".into(),
             ));
         }
+        // A summary outlives the tasks it lists, voided or not, and it names its project.
+        if self.summaries.values().any(|b| b.project_id == id) {
+            return Err(CoreError::Conflict(
+                "a project with billing summaries can only be archived".into(),
+            ));
+        }
         let p = self
             .projects
             .get_mut(id)
@@ -471,6 +477,7 @@ impl Shared {
                 description_stamp: ctx.stamp(),
                 deleted: false,
                 deleted_stamp: ctx.stamp(),
+                discarded: None,
                 continued_from: input.continued_from.clone(),
                 created_at: ctx.now,
                 state: TaskState::Draft,
@@ -652,6 +659,50 @@ impl Shared {
         let t = self.tasks.get_mut(id).ok_or(CoreError::NotFound("task"))?;
         t.deleted = true;
         t.deleted_stamp = ctx.next(&t.deleted_stamp);
+        Ok(())
+    }
+
+    /// Deletes a task and everything logged on it, from every view on every device, for good. The
+    /// records stay in the file, so a backup can bring them back, and `Task::is_live` keeps them from
+    /// everything else, including time that only reaches a device afterwards.
+    ///
+    /// A timer on this device has to stop first. One on another device is no reason to wait, as that
+    /// device may never come back: only it closes its segment, which `reconcile` does when the delete
+    /// reaches it, and until then its time is hidden like any other.
+    pub fn delete_task(&mut self, ctx: &Ctx<'_>, id: &str) -> Result<(), CoreError> {
+        let task = self.live_task(id)?;
+        if !self.own_open_for(id, ctx.device).is_empty() {
+            return Err(CoreError::Conflict(
+                "this task is running; pause or stop it before deleting it".into(),
+            ));
+        }
+        // A summary is frozen, so time it lists can't go, as with a correction.
+        let on_summaries = self.summaries_listing(id);
+        if let [one] = on_summaries.as_slice() {
+            return Err(CoreError::Conflict(format!(
+                "this task's time is on billing summary {one}; void that summary first"
+            )));
+        }
+        if !on_summaries.is_empty() {
+            return Err(CoreError::Conflict(format!(
+                "this task's time is on billing summaries {}; void those summaries first",
+                on_summaries.join(", ")
+            )));
+        }
+        let before = serde_json::json!({
+            "name": task.name,
+            "project": self.projects.get(&task.project_id).map(|p| p.name.as_str()),
+            "state": task.state,
+            "segments": self.segments.values().filter(|s| s.task_id == id).count(),
+            "pauses": self.pauses.values().filter(|p| p.task_id == id && !p.deleted).count(),
+        });
+        let t = self.tasks.get_mut(id).ok_or(CoreError::NotFound("task"))?;
+        let stamp = ctx.next(&t.deleted_stamp);
+        // `deleted` is all a build older than the marker can read. It hides a draft there, at least.
+        t.deleted = true;
+        t.deleted_stamp = stamp.clone();
+        t.discarded = Some(stamp);
+        self.audit(ctx, "task", id, "delete", "", before, Value::Null);
         Ok(())
     }
 
@@ -2042,5 +2093,119 @@ pub(crate) mod tests {
         assert!(s.set_setting(&c, "evil", json!(1)).is_err());
         assert!(s.set_setting(&c, "dailyTargetHours", json!(-1)).is_err());
         s.set_setting(&c, "dailyTargetHours", Value::Null).unwrap();
+    }
+
+    #[test]
+    fn nothing_can_be_done_to_a_task_deleted_with_its_time() {
+        use crate::adjust::{CorrectionInput, ManualEntryInput, PauseInput};
+        use crate::model::{GapDecision, GapKind};
+        let (mut s, _, t) = base();
+        s.start(&ctx("2026-01-01T09:00:00Z"), &t).unwrap();
+        s.pause(&ctx("2026-01-01T10:00:00Z"), &t).unwrap();
+        let seg = s.segments.keys().next().unwrap().clone();
+        let c = ctx("2026-01-01T11:00:00Z");
+        let (start, end) = (Ts::parse("2026-01-01T09:00:00Z").unwrap(), c.now);
+        let gap = s
+            .add_gap(
+                &c,
+                &seg,
+                start,
+                Ts::parse("2026-01-01T09:10:00Z").unwrap(),
+                GapKind::Idle,
+            )
+            .unwrap();
+        let pause = s
+            .mark_billable_pause(
+                &c,
+                &PauseInput {
+                    task_id: t.clone(),
+                    start: Ts::parse("2026-01-01T10:00:00Z").unwrap(),
+                    end,
+                    note: String::new(),
+                },
+            )
+            .unwrap();
+        s.delete_task(&c, &t).unwrap();
+        let p = s.tasks[&t].project_id.clone();
+        let mut gone = vec![
+            s.start(&c, &t).map(drop),
+            s.resume(&c, &t).map(drop),
+            s.pause(&c, &t),
+            s.stop(&c, &t),
+            s.update_task(&c, &t, &task_input("New", &p)),
+            s.patch_task(&c, &t, &TaskPatch::default(), &TaskExpected::default())
+                .map(drop),
+            s.delete_draft(&c, &t),
+            s.delete_task(&c, &t),
+            s.set_active_subtask(&c, &t, None),
+            s.request_remote_pause(&c, &t).map(drop),
+            s.decide_gap(&c, &gap, GapDecision::Keep),
+            s.unmark_billable_pause(&c, &pause),
+        ];
+        gone.push(
+            s.add_manual_entry(
+                &c,
+                &ManualEntryInput {
+                    task_id: t.clone(),
+                    start,
+                    end,
+                    reason: String::new(),
+                    subtask_id: None,
+                    allow_overlap: true,
+                },
+            )
+            .map(drop),
+        );
+        gone.push(
+            s.mark_billable_pause(
+                &c,
+                &PauseInput {
+                    task_id: t.clone(),
+                    start,
+                    end,
+                    note: String::new(),
+                },
+            )
+            .map(drop),
+        );
+        gone.push(s.correct_segment(
+            &c,
+            &CorrectionInput {
+                segment_id: seg.clone(),
+                start,
+                end,
+                reason: String::new(),
+                allow_overlap: true,
+            },
+        ));
+        gone.push(s.void_segment(&c, &seg, ""));
+        gone.push(s.restore_segment(&c, &seg, ""));
+        gone.push(
+            s.create_task(
+                &c,
+                &TaskInput {
+                    continued_from: Some(t.clone()),
+                    ..task_input("Next", &p)
+                },
+            )
+            .map(drop),
+        );
+        for (i, outcome) in gone.into_iter().enumerate() {
+            assert!(
+                matches!(outcome, Err(CoreError::NotFound("task"))),
+                "step {i}: {outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deleting_a_task_beats_the_clock_it_is_stamped_against() {
+        let (mut s, _, t) = base();
+        let stamp = s.tasks[&t].deleted_stamp.clone();
+        // A clock set back: the delete still outranks what it was based on.
+        s.delete_task(&ctx("2020-01-01T00:00:00Z"), &t).unwrap();
+        let task = &s.tasks[&t];
+        assert!(task.deleted_stamp.at > stamp.at);
+        assert_eq!(task.discarded.as_ref(), Some(&task.deleted_stamp));
     }
 }
