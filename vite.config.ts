@@ -27,5 +27,8 @@ export default defineConfig({
     setupFiles: ['src/test-setup.ts'],
     include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts'],
     exclude: ['src/**/*.perf.test.ts', 'node_modules'],
+    // The Windows CI runner is slow enough that a component test, which boots the whole app, has run past the 5 s
+    // default. GitHub Actions sets CI=true. Locally the default stays, so a test that hangs still fails fast.
+    testTimeout: process.env.CI ? 30_000 : 5_000,
   },
 });
