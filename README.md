@@ -28,7 +28,7 @@ Status: phase 2 build. It has been run and tested on macOS, and the Windows inst
 
 ## Install and uninstall
 
-**Install.** Run `zWorkTracker_0.1.0_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
+**Install.** Run `zWorkTracker_0.2.0_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
 
 An unsigned installer can make Windows SmartScreen say "Windows protected your PC". To continue, choose **More info**, then **Run anyway**. This project's builds are meant for your own PCs, signed with [a self-signed certificate](#trusting-your-own-builds-with-a-self-signed-certificate); SmartScreen may still warn about a downloaded file even then.
 
@@ -515,7 +515,7 @@ node scripts/perf-native.mjs --exe <dir>/release/zWorkTracker --store <store> --
 pnpm package:windows
 ```
 
-This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_0.1.0_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the installer and the files inside it are signed (reading those needs `brew install sevenzip`). `WebView2Loader.dll` ships inside the installer next to the exe.
+This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_0.2.0_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the installer and the files inside it are signed (reading those needs `brew install sevenzip`). `WebView2Loader.dll` ships inside the installer next to the exe.
 
 ### Trusting your own builds with a self-signed certificate
 
@@ -581,8 +581,8 @@ The artifact's name then ends in `-self-signed`. With no secrets the workflow st
 **5. Check it,** on a PC set up as in step 3. `signtool` comes with the Windows SDK, isn't on the PATH, and is found as in step 4. `Get-AuthenticodeSignature` is part of Windows, so it's enough on a PC without the SDK:
 
 ```powershell
-& $env:SIGNTOOL_PATH verify /pa /v .\zWorkTracker_0.1.0_x64-setup.exe
-Get-AuthenticodeSignature .\zWorkTracker_0.1.0_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+& $env:SIGNTOOL_PATH verify /pa /v .\zWorkTracker_0.2.0_x64-setup.exe
+Get-AuthenticodeSignature .\zWorkTracker_0.2.0_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
 ```
 
 `signtool` should end with `Successfully verified`, and `Status` should read `Valid`, with a `TimeStamperCertificate`. After installing, run the same two commands on `$env:LOCALAPPDATA\zWorkTracker\zWorkTracker.exe` and `uninstall.exe` beside it. Check the installer and the installed files: the exe left in `src-tauri\target` by the build is the unsigned original.
