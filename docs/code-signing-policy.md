@@ -1,6 +1,6 @@
 # Code signing policy
 
-**Status: no release of zWorkTracker has been signed.** This policy applies once a signing service has accepted the project. Current builds are unsigned.
+**Status: no release of zWorkTracker has been signed.** This policy applies once a signing service has accepted the project. Current builds are for the owner's own PCs: signed with a self-signed certificate that only those PCs trust, or unsigned when that certificate isn't set.
 
 If SignPath Foundation accepts the project: free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/). **The publisher shown by Windows will then be "SignPath Foundation", not the project's author.**
 
