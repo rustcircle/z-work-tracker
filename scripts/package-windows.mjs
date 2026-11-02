@@ -3,9 +3,10 @@
 // (only DLLs that ship in Windows are allowed) and reports the signature state honestly. Tauri signs a
 // copy of the exe for the installer, so the signatures that count are read from inside the installer.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
+import { findInstaller } from './windows-installer.mjs';
 import { chooseRoute } from './windows-sign.mjs';
 
 const TARGET = 'x86_64-pc-windows-gnu';
@@ -29,12 +30,13 @@ if (build.status !== 0) process.exit(build.status ?? 1);
 const targetRoot = process.env.CARGO_TARGET_DIR ? resolve('src-tauri', process.env.CARGO_TARGET_DIR) : join('src-tauri', 'target');
 const release = join(targetRoot, TARGET, 'release');
 const nsisDir = join(release, 'bundle', 'nsis');
-const installer = readdirSync(nsisDir).find((f) => f.endsWith('-setup.exe'));
-if (!installer) {
-  console.error('No installer was produced.');
+// Installers of older versions stay in that folder, so the one to check is the one the config names, never the first found.
+const found = findInstaller(nsisDir, JSON.parse(readFileSync(join('src-tauri', 'tauri.conf.json'), 'utf8')));
+if (found.error) {
+  console.error(found.error);
   process.exit(1);
 }
-const installerPath = join(nsisDir, installer);
+const installerPath = found.path;
 const exe = join(release, 'zWorkTracker.exe');
 
 function imports(file) {
