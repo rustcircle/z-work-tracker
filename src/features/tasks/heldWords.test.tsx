@@ -1331,6 +1331,46 @@ describe('a press of Done just as the notice appears', () => {
     await pass(100);
     expect(storedText()).toContain('mine');
   });
+
+  it('a Space held down across the second is one press, and chose nothing', async () => {
+    const user = await justHeld();
+    // Space clicks when it comes up. This one went down inside the notice's first second and comes up after it.
+    await user.keyboard('[Space>]');
+    await pass(1000);
+    await user.keyboard('[/Space]');
+    await pass(100);
+    expect(storedText()).toContain('From another');
+    expect(storedText()).not.toContain('mine');
+    expect(kind()).toBe('conflict');
+    expect(editorOpen()).toBe(true);
+    expect(doneButton()).toHaveFocus();
+    // A Space pressed and let go after the second is the choice.
+    await user.keyboard('[Space]');
+    await pass(100);
+    expect(storedText()).toContain('mine');
+    expect(editorOpen()).toBe(false);
+  });
+
+  it('a Space that went down on Done and never came up there speaks for no later click', async () => {
+    const user = await holdWords();
+    await act(async () => doneButton().focus());
+    // Space goes down on Done with the notice read, and focus leaves before it comes up, so it never clicks.
+    fireEvent.keyDown(doneButton(), { key: ' ', code: 'Space' });
+    await user.click(discardButton() as HTMLElement);
+    await user.click(box());
+    await user.keyboard(' again');
+    await arrive(() => {
+      guide().description = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Newer still' }] }] };
+    });
+    while (kind() !== 'conflict') await pass(10);
+    // A new notice, unread, and a click with no pointer or key of its own behind it.
+    fireEvent.click(doneButton());
+    await pass(100);
+    expect(storedText()).toContain('Newer still');
+    expect(storedText()).not.toContain('again');
+    expect(editorOpen()).toBe(true);
+    expect(kind()).toBe('conflict');
+  });
 });
 
 describe('a double click on Done around the second of a notice', () => {

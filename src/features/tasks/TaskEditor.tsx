@@ -108,6 +108,8 @@ export function TaskEditor({ task }: { task: Task }) {
   const heldAtPress = useRef<{ read: SavedField[]; unreadBefore: SavedField[] } | null>(null);
   // The held fields the latest mouse press of Done found unread, for the press that follows it.
   const unreadAtPress = useRef<SavedField[]>([]);
+  // The fields read as held when a key went down on Done. Enter clicks then, and Space when it comes up.
+  const heldAtKey = useRef<SavedField[] | null>(null);
   // Each field's second of being named in the notice on this screen.
   const holdTimers = useRef(new Map<SavedField, number>());
   // The latest stored task: the name to fall back on when a blank one is refused.
@@ -618,20 +620,33 @@ export function TaskEditor({ task }: { task: Task }) {
             }}
             onKeyDown={(e) => {
               // A key held down repeats, and each repeat would click again. Only the press that began it is one.
-              if (e.repeat) e.preventDefault();
+              if (e.repeat) {
+                e.preventDefault();
+                return;
+              }
+              // Space clicks when it comes up, so like a mouse press it goes by what was on screen as it went down.
+              if (e.key === 'Enter' || e.key === ' ') heldAtKey.current = readHeldFields(session);
+            }}
+            onBlur={() => {
+              // A key that went down here and comes up elsewhere never clicks, and speaks for no later click.
+              heldAtKey.current = null;
             }}
             onClick={(e) => {
-              // Only what was on screen as held before this press is the user's to send regardless. A keyboard press
-              // has no pointer-down, and any blur of its own came with an earlier key. It reads no list either, as the
-              // list of a press dragged off this button is still here, and `detail` is 0 for a click of no pointer.
-              // Nor is a notice not yet read: it stays up, for a press after that. That also keeps the second click of a
-              // double click from choosing what the first one's blur held. A first click can find a notice unread and the
-              // second pass before the second click comes, so a click with a `detail` of 2 doesn't choose what the press
-              // before it found unread. The browser goes on counting clicks that follow one another quickly, so a third
-              // click counts, and so does a lone later one.
+              // Only what was on screen as held before this press is the user's to send regardless. A mouse press goes by
+              // what it found as it went down, before its own blur could hold anything more. A key has no such blur, as
+              // any of its own came with an earlier key, but Space clicks only as it comes up, so a key goes by what it
+              // found as it went down too. A click of neither (`detail` is 0 and no key went down here) goes by what is
+              // held now, and a list left by a press dragged off this button is read by no key. Nor is a notice not yet
+              // read: it stays up, for a press after that. That also keeps the second click of a double click from
+              // choosing what the first one's blur held. A first click can find a notice unread and the second pass
+              // before the second click comes, so a click with a `detail` of 2 doesn't choose what the press before it
+              // found unread. The browser goes on counting clicks that follow one another quickly, so a third click
+              // counts, and so does a lone later one.
               const mouse = e.detail > 0 ? heldAtPress.current : null;
+              const key = e.detail > 0 ? null : heldAtKey.current;
               heldAtPress.current = null;
-              const found = mouse?.read ?? readHeldFields(session);
+              heldAtKey.current = null;
+              const found = mouse?.read ?? key ?? readHeldFields(session);
               const chosen = e.detail === 2 && mouse ? found.filter((f) => !mouse.unreadBefore.includes(f)) : found;
               void (async () => {
                 // The blur of this very press may have started a save that holds more back: it settles first.

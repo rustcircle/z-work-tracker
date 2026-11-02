@@ -291,6 +291,25 @@ test.describe('words that meet newer text', () => {
     await expect(editor(page)).toHaveCount(0);
   });
 
+  test('a Space held down on Done across the second is one press, and chose nothing', async ({ page }) => {
+    await open(page, 'seed=demo');
+    const form = await typedThenNewer(page);
+    await form.getByRole('button', { name: 'Done' }).focus();
+    // Space clicks when it comes up, not when it goes down. This one went down with the notice, inside its first second.
+    await page.keyboard.down('Space');
+    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
+    await page.clock.runFor(1100);
+    await page.keyboard.down('Space');
+    await page.keyboard.down('Space');
+    await page.keyboard.up('Space');
+    await page.waitForTimeout(100);
+    await heldOpen(page, form);
+    await page.keyboard.press('Space');
+    await settled(page);
+    expect(await stored(page)).toContain('mine');
+    await expect(editor(page)).toHaveCount(0);
+  });
+
   test('a double click on Done across the second of an autosave hold chooses nothing, and a click on its own after it does', async ({ page }) => {
     await open(page, 'seed=demo');
     // The page's own clock notes when the notice first shows, so that the clicks can be placed by its age.
