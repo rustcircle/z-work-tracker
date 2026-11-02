@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { emit } from '@tauri-apps/api/event';
 import { clearMocks } from '@tauri-apps/api/mocks';
-import { act, cleanup, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -722,7 +722,7 @@ describe('found in review of the fixes', () => {
     expect(storedText()).not.toContain('mine');
   });
 
-  it('the second click of a double click on Done chooses nothing', async () => {
+  it('a double click on Done whose first click brings the notice on chooses nothing with its second', async () => {
     const user = await openEditor();
     await user.click(box());
     await user.keyboard(' mine');
@@ -1330,6 +1330,93 @@ describe('a press of Done just as the notice appears', () => {
     await user.click(doneButton());
     await pass(100);
     expect(storedText()).toContain('mine');
+  });
+});
+
+describe('a double click on Done around the second of a notice', () => {
+  const doneButton = () => within(form()).getByRole('button', { name: 'Done' });
+  /** Words typed, newer text in, and the autosave has only just met it, with focus still in the description: the notice is up, unread, and Done is yet to be pressed. */
+  async function heldByAutosave(): Promise<User> {
+    const user = await openEditor();
+    await user.click(box());
+    await user.keyboard(' mine');
+    await arrive();
+    while (kind() !== 'conflict') await pass(10);
+    return user;
+  }
+  /** One mouse press on Done, as the browser sends it. `detail` is its count of clicks in a run: 2 for the second of a double click. */
+  async function mouse(detail: number): Promise<void> {
+    const button = doneButton();
+    fireEvent.pointerDown(button);
+    fireEvent.mouseDown(button, { detail });
+    // The mouse down moves focus, once the handlers of the press have run.
+    await act(async () => button.focus());
+    fireEvent.pointerUp(button);
+    fireEvent.mouseUp(button, { detail });
+    fireEvent.click(button, { detail });
+  }
+
+  it('chooses nothing for a notice its first click found unread, though its second click falls after the second', async () => {
+    const user = await heldByAutosave();
+    await pass(700);
+    await mouse(1);
+    await pass(350);
+    await mouse(2);
+    await pass(100);
+    expect(storedText()).toContain('From another');
+    expect(storedText()).not.toContain('mine');
+    expect(editorOpen()).toBe(true);
+    expect(kind()).toBe('conflict');
+    // A click on its own after that is the choice.
+    await pass(1000);
+    await done(user);
+    await pass(100);
+    expect(storedText()).toContain('mine');
+    expect(editorOpen()).toBe(false);
+  });
+
+  it('counts the third click of a run, which comes after the second', async () => {
+    await heldByAutosave();
+    await pass(600);
+    await mouse(1);
+    await pass(300);
+    await mouse(2);
+    await pass(300);
+    await mouse(3);
+    await pass(100);
+    expect(storedText()).toContain('mine');
+    expect(editorOpen()).toBe(false);
+  });
+
+  it('with two fields held, sends the one its first click found read and not the one it found unread', async () => {
+    const user = await openEditor();
+    await user.type(nameBox(), ' v2');
+    await arrive(() => {
+      guide().name = 'Renamed elsewhere';
+    });
+    await pass(1000);
+    expect(kind()).toBe('conflict');
+    await pass(HOLD_READ_MS);
+    await user.click(box());
+    await user.keyboard(' mine');
+    await arrive();
+    while (!heldNow().includes('description')) await pass(10);
+    await pass(700);
+    // The name's notice has been up long enough to read, and the words' has not.
+    await mouse(1);
+    await pass(350);
+    await mouse(2);
+    await pass(100);
+    expect(guide().name).toBe('Brand guidelines v2');
+    expect(storedText()).toContain('From another');
+    expect(storedText()).not.toContain('mine');
+    expect(editorOpen()).toBe(true);
+    expect(saveState()).toHaveTextContent('description');
+    await pass(1000);
+    await done(user);
+    await pass(100);
+    expect(storedText()).toContain('mine');
+    expect(editorOpen()).toBe(false);
   });
 });
 

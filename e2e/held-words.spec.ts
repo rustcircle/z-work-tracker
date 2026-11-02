@@ -291,6 +291,51 @@ test.describe('words that meet newer text', () => {
     await expect(editor(page)).toHaveCount(0);
   });
 
+  test('a double click on Done across the second of an autosave hold chooses nothing, and a click on its own after it does', async ({ page }) => {
+    await open(page, 'seed=demo');
+    // The page's own clock notes when the notice first shows, so that the clicks can be placed by its age.
+    await page.evaluate(() => {
+      const w = window as unknown as { __notice?: number };
+      const look = () => {
+        if (w.__notice === undefined && document.querySelector('[data-testid="save-state"][data-kind="conflict"]')) w.__notice = performance.now();
+      };
+      new MutationObserver(look).observe(document.body, { subtree: true, attributes: true, childList: true });
+    });
+    const ageTo = async (ms: number) => {
+      const age = await page.evaluate(() => {
+        const t = (window as unknown as { __notice?: number }).__notice;
+        return t === undefined ? -1 : performance.now() - t;
+      });
+      expect(age, 'the notice is up').toBeGreaterThanOrEqual(0);
+      expect(age, 'the notice is not older than that yet').toBeLessThanOrEqual(ms);
+      await page.clock.runFor(ms - age);
+    };
+    const form = await typedThenNewer(page);
+    // The autosave meets the newer text, with focus still in the description.
+    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
+    const done = form.getByRole('button', { name: 'Done' });
+    await done.scrollIntoViewIfNeeded();
+    const box = await done.boundingBox();
+    if (!box) throw new Error('Done has no box');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    const click = async (clickCount: number) => {
+      await page.mouse.down({ clickCount });
+      await page.mouse.up({ clickCount });
+    };
+    // The first click finds the notice unread. The second, 300 ms after it, falls after the second, and is the second of a double click.
+    await ageTo(900);
+    await click(1);
+    await ageTo(1200);
+    await click(2);
+    await page.waitForTimeout(100);
+    await heldOpen(page, form);
+    await ageTo(3000);
+    await click(1);
+    await settled(page);
+    expect(await stored(page)).toContain('mine');
+    await expect(editor(page)).toHaveCount(0);
+  });
+
   test('quick clicks on Done, each one more of a run to the browser, count once the notice has had its second', async ({ page }) => {
     await open(page, 'seed=demo');
     const form = await typedThenNewer(page);

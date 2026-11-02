@@ -7,7 +7,8 @@
 // them in the same step as the write and refuses any field it holds something else in, so a save
 // can't replace text nobody here has seen. A refused value stays in the draft, shown and held, until
 // Done sends it regardless or Discard gives it up. Typing on it changes neither. A press of Done in the
-// first second of the notice says nothing about it, as focus may well be on Done already.
+// first second of the notice says nothing about it, as focus may well be on Done already, and neither does
+// the second click of a double click that began in it.
 //
 // The editor keeps a local draft. Live updates re-render it but never overwrite unsaved values or
 // move focus. A field with nothing unsaved shows the newer value, from then on the one it expects.
@@ -102,8 +103,11 @@ export function TaskEditor({ task }: { task: Task }) {
   // late stash can never land after the clear that follows a successful save.
   const draftTimer = useRef<number | null>(null);
   const draftDoc = useRef<RichDoc | null>(null);
-  // The fields read as held when Done was pressed, before the blur of that press could hold anything more.
-  const heldAtPress = useRef<SavedField[] | null>(null);
+  // What a mouse press of Done found of the notices as it began, before the blur of that press could hold anything more:
+  // the held fields it may choose, and those the press before it found unread.
+  const heldAtPress = useRef<{ read: SavedField[]; unreadBefore: SavedField[] } | null>(null);
+  // The held fields the latest mouse press of Done found unread, for the press that follows it.
+  const unreadAtPress = useRef<SavedField[]>([]);
   // Each field's second of being named in the notice on this screen.
   const holdTimers = useRef(new Map<SavedField, number>());
   // The latest stored task: the name to fall back on when a blank one is refused.
@@ -608,7 +612,9 @@ export function TaskEditor({ task }: { task: Task }) {
             small
             variant="primary"
             onPointerDown={() => {
-              heldAtPress.current = readHeldFields(session);
+              const read = readHeldFields(session);
+              heldAtPress.current = { read, unreadBefore: unreadAtPress.current };
+              unreadAtPress.current = heldFields(session).filter((f) => !read.includes(f));
             }}
             onKeyDown={(e) => {
               // A key held down repeats, and each repeat would click again. Only the press that began it is one.
@@ -619,10 +625,14 @@ export function TaskEditor({ task }: { task: Task }) {
               // has no pointer-down, and any blur of its own came with an earlier key. It reads no list either, as the
               // list of a press dragged off this button is still here, and `detail` is 0 for a click of no pointer.
               // Nor is a notice not yet read: it stays up, for a press after that. That also keeps the second click of a
-              // double click from choosing what the first one's blur held. `detail` doesn't tell them apart: the browser
-              // goes on counting clicks that follow one another quickly, and one that comes after the second counts.
-              const chosen = (e.detail > 0 ? heldAtPress.current : null) ?? readHeldFields(session);
+              // double click from choosing what the first one's blur held. A first click can find a notice unread and the
+              // second pass before the second click comes, so a click with a `detail` of 2 doesn't choose what the press
+              // before it found unread. The browser goes on counting clicks that follow one another quickly, so a third
+              // click counts, and so does a lone later one.
+              const mouse = e.detail > 0 ? heldAtPress.current : null;
               heldAtPress.current = null;
+              const found = mouse?.read ?? readHeldFields(session);
+              const chosen = e.detail === 2 && mouse ? found.filter((f) => !mouse.unreadBefore.includes(f)) : found;
               void (async () => {
                 // The blur of this very press may have started a save that holds more back: it settles first.
                 await session.queue.catch(() => undefined);
