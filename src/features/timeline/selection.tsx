@@ -4,7 +4,7 @@
 import { createContext, useCallback, useContext, useMemo, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 
 import type { SelectedEntry } from '../../lib/types';
-import { EMPTY_SELECTION, announce, prune as prunePure, selectAll, selectOnly, selectRange, toEntries, toggle, type Sel } from './selectionLogic';
+import { EMPTY_SELECTION, announce, entryOf, prune as prunePure, selectAll, selectOnly, selectRange, toEntries, toggle, type Sel } from './selectionLogic';
 
 export interface RowReg {
   /** Identifies one row on screen (a task-day can have several). */
@@ -32,6 +32,8 @@ export interface SelectionApi {
   gridKeyDown: (e: KeyboardEvent<HTMLElement>) => void;
   clear: () => void;
   prune: (present: ReadonlySet<string>) => void;
+  /** Takes every entry of a task out of the selection, on any day: the task has just been deleted. */
+  dropTask: (taskId: string) => void;
 }
 
 const Ctx = createContext<SelectionApi | null>(null);
@@ -174,12 +176,20 @@ export function SelectionProvider({ zone, children }: { zone: string; children: 
     [],
   );
 
+  const dropTask = useCallback(
+    (taskId: string) => {
+      const present = new Set(sel.keys.filter((k) => entryOf(k).taskId !== taskId));
+      if (present.size !== sel.keys.length) apply(prunePure(sel, present), null);
+    },
+    [apply, sel],
+  );
+
   // A selection that lost entries (their time was corrected away) says so once.
   const count = sel.keys.length;
   const entries = useMemo(() => toEntries(sel.keys), [sel.keys]);
   const value = useMemo<SelectionApi>(
-    () => ({ zone: selZone, keys: sel.keys, count, isSelected: (k) => selected.has(k), entries, tabRow, hidden, live, register, unregister, rowClick, rowMouseDown, gridKeyDown, clear, prune }),
-    [selZone, sel.keys, count, selected, entries, tabRow, hidden, live, register, unregister, rowClick, rowMouseDown, gridKeyDown, clear, prune],
+    () => ({ zone: selZone, keys: sel.keys, count, isSelected: (k) => selected.has(k), entries, tabRow, hidden, live, register, unregister, rowClick, rowMouseDown, gridKeyDown, clear, prune, dropTask }),
+    [selZone, sel.keys, count, selected, entries, tabRow, hidden, live, register, unregister, rowClick, rowMouseDown, gridKeyDown, clear, prune, dropTask],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

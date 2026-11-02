@@ -353,8 +353,21 @@ const COLD_REQUIRED: RequiredField[] = ['name', 'project', 'description'];
 const coldRequired = (s: MockState): RequiredField[] => (s.tags.some((t) => !t.deleted) ? [...COLD_REQUIRED, 'tags'] : COLD_REQUIRED);
 const liveTag = (s: MockState, id: string): boolean => s.tags.some((t) => t.id === id && !t.deleted);
 
+/** The task whose time ends last, for when the one worked on last has been deleted (`copy_source` in service.rs). */
+function latestWorked(s: MockState): MockTask | undefined {
+  let latest: { at: number; taskId: string } | null = null;
+  for (const seg of s.segments) {
+    const eff = effective(seg);
+    if (eff === null || !s.tasks.some((t) => t.id === seg.taskId)) continue;
+    const at = eff[1] ?? eff[0];
+    if (latest === null || at > latest.at || (at === latest.at && seg.taskId > latest.taskId)) latest = { at, taskId: seg.taskId };
+  }
+  return s.tasks.find((t) => t.id === latest?.taskId);
+}
+
 function copySource(s: MockState): CopySource | null {
-  const t = s.tasks.find((x) => x.id === s.lastWorked);
+  if (s.lastWorked === null) return null;
+  const t = s.tasks.find((x) => x.id === s.lastWorked) ?? latestWorked(s);
   if (!t) return null;
   const ends = s.segments.filter((x) => x.taskId === t.id).map((x) => x.end ?? x.start).sort();
   return {
@@ -538,7 +551,8 @@ const sameTags = (a: string[], b: string[]): boolean => a.length === b.length &&
 
 /** A read gives the revision as it is. Anything else counts as a write, which is the only thing that raises it in the backend. */
 function snapshot(s: MockState, read = false): Snapshot {
-  const withTasks = new Set(s.tasks.map((t) => t.projectId));
+  // A summary counts as a task here, as in the backend: it names its project, and a delete can leave it the last thing that does.
+  const withTasks = new Set([...s.tasks.map((t) => t.projectId), ...s.summaries.map((b) => b.projectId)]);
   const input = pieceInput(s);
   const all = computePieces(input, endOf(s));
   const billed = billedSets(s);
@@ -626,14 +640,14 @@ function snapshot(s: MockState, read = false): Snapshot {
     launch: { warm: s.warm, coldRequired: coldRequired(s), copySource: s.warm ? copySource(s) : null },
     rawSegments,
     gaps: s.gaps.filter((g) => input.liveTasks.has(g.taskId)),
-    pauses: s.pauses.filter((x) => !x.deleted),
+    pauses: s.pauses.filter((x) => !x.deleted && input.liveTasks.has(x.taskId)),
     tags,
     templates: s.templates.filter((x) => !x.deleted),
     billing: { prefix: prefixOf(s), clashes: prefixClashes(s), summaries: s.summaries },
     // The backend also skips a store that has data but no setup state; the mock's seeds always hold data,
     // so the `legacy` first-run seed stands for that case instead.
     setup: { pending: !s.setupDone && (s.setupStep > 0 || !s.syncPromptDone), step: s.setupStep },
-    pauseRequests: s.pauseRequests,
+    pauseRequests: s.pauseRequests.filter((q) => input.liveTasks.has(q.taskId)),
     reminder: currentReminder(s),
     reminderSettings: {
       idleMinutes: minutesSetting(s, 'idleMinutes', 10),
@@ -891,6 +905,52 @@ function closeBackupRunning(s: MockState, heartbeat: number | null): string[] {
   return names;
 }
 
+/** `Shared::summaries_listing`: the references of the live summaries listing any of this task's time, in order. */
+export function summariesListing(s: MockState, taskId: string): string[] {
+  const ownSegments = new Set(s.segments.filter((x) => x.taskId === taskId).map((x) => x.id));
+  const ownPauses = new Set(s.pauses.filter((p) => p.taskId === taskId).map((p) => p.id));
+  const listing = s.summaries.filter((b) => !b.voided && (b.rows.some((r) => r.taskId === taskId) || b.segmentIds.some((id) => ownSegments.has(id)) || b.pauseIds.some((id) => ownPauses.has(id))));
+  return [...new Set(listing.map((b) => b.reference))].sort();
+}
+
+/**
+ * `Shared::delete_task`: a task of any state goes with everything logged on it, from every view, unless a timer of it
+ * is open on this device or its time is on a live billing summary. A timer open on another of the person's computers
+ * doesn't stop it, with a request to pause it or without: that computer stops it when it next syncs, which the mock
+ * doesn't model. The backend keeps the records in the file, hidden, so that a backup can bring them back and time that
+ * arrives later stays hidden. Here they are simply dropped, and a backup the mock holds still has them.
+ */
+function deleteTask(s: MockState, id: string): void {
+  const t = task(s, id);
+  if (s.segments.some((x) => x.taskId === id && x.end === null && x.deviceId === DEVICE_ID)) throw err('conflict', 'this task is running; pause or stop it before deleting it');
+  const listing = summariesListing(s, id);
+  if (listing.length === 1) throw err('conflict', `this task's time is on billing summary ${listing[0]}; void that summary first`);
+  if (listing.length > 1) throw err('conflict', `this task's time is on billing summaries ${listing.join(', ')}; void those summaries first`);
+  addAudit(
+    s,
+    'task',
+    id,
+    'delete',
+    '',
+    {
+      name: t.name,
+      project: s.projects.find((p) => p.id === t.projectId)?.name ?? null,
+      state: t.state,
+      segments: s.segments.filter((x) => x.taskId === id).length,
+      pauses: s.pauses.filter((p) => p.taskId === id && !p.deleted).length,
+    },
+    null,
+  );
+  s.tasks = s.tasks.filter((x) => x.id !== id);
+  s.segments = s.segments.filter((x) => x.taskId !== id);
+  s.gaps = s.gaps.filter((g) => g.taskId !== id);
+  s.pauses = s.pauses.filter((p) => p.taskId !== id);
+  s.pauseRequests = s.pauseRequests.filter((q) => q.taskId !== id);
+  delete s.drafts[id];
+  // Tasks continued from it stay, without the link: a task deleted with its time leaves no trace, not even "an earlier task".
+  for (const other of s.tasks) if (other.continuedFrom === id) other.continuedFrom = null;
+}
+
 function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown {
   switch (cmd) {
     case 'add_manual_entry': {
@@ -942,7 +1002,7 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
       const note = cleanReason(input.note);
       const id = newId(s, 'pause');
       s.pauses.push({ id, taskId: input.taskId, start: toIso(start), end: toIso(end), note, deleted: false, stamp: stamp(s) });
-      addAudit(s, 'pause', id, 'markBillable', note, null, { start: toIso(start), end: toIso(end) });
+      addAudit(s, 'pause', id, 'markBillable', note, null, { taskId: input.taskId, start: toIso(start), end: toIso(end) });
       return { id, snapshot: snapshot(s) };
     }
     case 'unmark_billable_pause': {
@@ -950,7 +1010,7 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
       const pause = s.pauses.find((p) => p.id === a.id);
       if (!pause) throw err('not_found', 'billable pause not found');
       pause.deleted = true;
-      addAudit(s, 'pause', pause.id, 'unmarkBillable', '', { start: pause.start, end: pause.end }, null);
+      addAudit(s, 'pause', pause.id, 'unmarkBillable', '', { taskId: pause.taskId, start: pause.start, end: pause.end }, null);
       return snapshot(s);
     }
     case 'set_active_subtask': {
@@ -1229,6 +1289,8 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     }
     case 'delete_project': {
       if (s.tasks.some((t) => t.projectId === a.id)) throw err('conflict', 'a project with tasks can only be archived');
+      // A summary outlives the tasks it lists, voided or not, and it names its project.
+      if (s.summaries.some((b) => b.projectId === a.id)) throw err('conflict', 'a project with billing summaries can only be archived');
       s.projects = s.projects.filter((p) => p.id !== a.id);
       return snapshot(s);
     }
@@ -1299,6 +1361,9 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       s.tasks = s.tasks.filter((t) => t.id !== a.id);
       return snapshot(s);
     }
+    case 'delete_task':
+      deleteTask(s, a.id as string);
+      return snapshot(s);
     case 'start_task':
       return begin(s, a.id as string, 'draft', 'start');
     case 'resume_task':

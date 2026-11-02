@@ -8,7 +8,7 @@
 .details-tab:hover { background: var(--hover); color: var(--text); }
 .details-tab.on { color: var(--text); }
 .details-tab.on::after { content: ''; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: var(--accent); }
-.details-panel { display: flex; flex-direction: column; gap: 10px; min-height: 240px; padding-top: 4px; }
+.details-panel { flex: none; display: flex; flex-direction: column; gap: 10px; min-height: 240px; padding-top: 4px; }
 .details-stack { display: flex; flex-direction: column; gap: 10px; }
 .details-form { display: flex; flex-direction: column; gap: 12px; }
 .details-lead { margin: 0; font-size: 13.5px; }
@@ -45,3 +45,22 @@
 .audit-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .audit-about, .audit-reason { font-size: 13px; color: var(--text-muted); }
 .audit-change { font-size: 13px; }
+
+/* Deleting a task: the red button at the bottom of the dialog, and the figures its review dialog lists. */
+.details-delete { margin-top: 4px; padding: 10px 12px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--danger) 6%, var(--surface)); }
+.details-delete-text { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.details-delete h3 { margin: 0; font-size: 14px; }
+.details-delete-note { display: flex; flex-direction: column; gap: 4px; }
+.details-delete-note p, .details-delete .field-error { margin: 0; font-size: 13px; }
+.delete-figures { margin: 0; padding: 8px 12px; display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-alt); }
+.delete-figures > div { display: contents; }
+.delete-figures dt { font-size: 13px; color: var(--text-muted); }
+.delete-figures dd { margin: 0; font-weight: 650; }
+.delete-undo, .delete-running { font-weight: 600; }
+/* In a dialog a red button turns pale under the pointer by the shared rule, and keeps its light text on it. These keep the fill, a shade darker. */
+.modal .btn-danger.delete-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 16%, var(--danger)); }
+.modal .btn-danger.delete-btn:active:not(:disabled) { background: color-mix(in srgb, var(--text) 26%, var(--danger)); }
+/* A long name with no spaces wraps inside the dialog, in its title as well: the title of these two dialogs holds the task's name. */
+.delete-text { overflow-wrap: anywhere; }
+.delete-hint { font-size: 12.5px; }
+.modal:has(.delete-text) .modal-head h2 { overflow-wrap: anywhere; min-width: 0; }

@@ -190,6 +190,8 @@ interface EditStoreApi {
   saved: (id: string, s: EditSession) => void;
   /** Ends a draft whose task no longer exists: no save can take it, so a notice shows its words. */
   taskGone: (id: string, s: EditSession) => void;
+  /** Drops everything kept for a task the person has just deleted here: its editor, draft, holds, failed saves and stash. No notice tells of words for a task nobody wants any more. */
+  forget: (id: string) => void;
   /** The fields held back, by task, while no editor is on screen to say so. */
   heldAway: ReadonlyMap<string, Held>;
   /** The fields failing to save, by task, while no editor is on screen to say so. */
@@ -276,6 +278,24 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     },
     [act, close],
   );
+  const forget = useCallback(
+    (id: string) => {
+      const s = sessions.current.get(id);
+      if (s) {
+        if (s.timer !== null) window.clearTimeout(s.timer);
+        s.timer = null;
+        // Nothing is unsaved or held now: no save goes out, and no notice tells of words for a task that is gone.
+        s.dirty = { name: false, project: false, description: false, tags: false };
+        // A stash on its way lands first, and then goes: the next launch must not find words for a task that is gone.
+        s.draftChain = s.draftChain.then(() => api.clearDraft(id)).catch(() => undefined);
+      }
+      close(id);
+      flushers.current.delete(id);
+      setHeldAway((was) => withEntry(was, id, null));
+      setUnsentAway((was) => withEntry(was, id, null));
+    },
+    [close],
+  );
   const session = useCallback((id: string, init: () => EditSession) => {
     let s = sessions.current.get(id);
     if (!s) {
@@ -346,6 +366,6 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
     };
   }, [flushAll]);
 
-  const value = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, taskGone, heldAway, unsentAway, noteAway, session, register, flushAll }), [editing, open, close, saved, taskGone, heldAway, unsentAway, noteAway, session, register, flushAll]);
+  const value = useMemo<EditStoreApi>(() => ({ editing, open, close, saved, taskGone, forget, heldAway, unsentAway, noteAway, session, register, flushAll }), [editing, open, close, saved, taskGone, forget, heldAway, unsentAway, noteAway, session, register, flushAll]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

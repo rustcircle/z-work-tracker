@@ -64,11 +64,15 @@ interface ViewProps {
 /** Every chart at once, so it is drawn only when its props change, not on every tick of the clock. */
 const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, range, setRange }: ViewProps) {
   const zone = zones.active;
-  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  const [stored, setFilters] = useState<Filters>(NO_FILTERS);
   const [basis, setBasis] = useState<Basis>('billable');
   const [compare, setCompare] = useState(true);
   const [drill, setDrill] = useState<DrillSel | null>(null);
   const [glossary, setGlossary] = useState<{ open: boolean; focus: string | null }>({ open: false, focus: null });
+
+  // A task deleted while it was the filter is no filter any more: with none left to filter by, the screen would show no time at all.
+  const present = useMemo(() => new Set(snapshot.tasks.map((t) => t.id)), [snapshot.tasks]);
+  const filters = useMemo<Filters>(() => (stored.taskIds.every((id) => present.has(id)) ? stored : { ...stored, taskIds: stored.taskIds.filter((id) => present.has(id)) }), [stored, present]);
 
   // The name and description search becomes a set of task ids, so every figure, chart and exported sheet follows it.
   const projectMap = useMemo(() => new Map(snapshot.projects.map((p) => [p.id, p])), [snapshot.projects]);

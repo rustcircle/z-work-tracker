@@ -17,6 +17,7 @@ const ACTION: Record<string, string> = {
   unmarkBillable: 'no longer billable',
   create: 'created',
   requestPause: 'pause requested from this computer for a task running elsewhere',
+  delete: 'deleted, with all its time',
 };
 const DECISION: Record<string, string> = { pending: 'waiting for an answer', keep: 'kept as work', drop: 'dropped', thinking: 'marked as thinking' };
 
@@ -84,6 +85,15 @@ export function summarize(value: unknown, zone: string): string {
   if (start !== null && 'end' in value) {
     const kind = str(value.kind);
     return `${spanText(start, str(value.end), zone)}${kind ? ` (${GAP_KIND[kind] ?? kind})` : ''}`;
+  }
+  // A deleted task: what it was called and where it was, and how much went with it.
+  const taskName = str(value.name);
+  if (taskName !== null && typeof value.segments === 'number' && typeof value.pauses === 'number') {
+    const project = str(value.project);
+    const state = str(value.state);
+    const entries = `${value.segments} time ${value.segments === 1 ? 'entry' : 'entries'}`;
+    const pauses = value.pauses > 0 ? `, ${value.pauses} billable ${value.pauses === 1 ? 'pause' : 'pauses'}` : '';
+    return `“${taskName}”${project === null ? '' : ` in ${project}`}${state === null ? '' : `, ${state}`}, ${entries}${pauses}`;
   }
   // A pause request: the other computer's segment, and when it was asked for.
   const requestedAt = str(value.at);

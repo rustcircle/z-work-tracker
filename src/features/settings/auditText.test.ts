@@ -68,3 +68,20 @@ describe('remote pause requests in the history', () => {
     expect(line).toMatchObject({ before: 'nothing', after: 'asked at 2026-03-12 15:20', by: 'this computer (Mock PC)' });
   });
 });
+
+describe('a deleted task in the history', () => {
+  const gone = { name: 'Brand guidelines', project: 'Brand refresh', state: 'paused', segments: 3, pauses: 1 };
+  it('reads as a task deleted with all its time, naming what went', () => {
+    expect(entityLabel('task')).toBe('Task');
+    expect(actionWords('delete')).toBe('deleted, with all its time');
+    expect(summarize(gone, 'UTC')).toBe('“Brand guidelines” in Brand refresh, paused, 3 time entries, 1 billable pause');
+    const line = auditLine(entry({ entity: 'task', entityId: 't', action: 'delete', before: gone, after: null }), 'UTC', 'dev', 'Office PC');
+    expect(line).toMatchObject({ by: 'this computer (Office PC)', before: '“Brand guidelines” in Brand refresh, paused, 3 time entries, 1 billable pause', after: 'nothing' });
+  });
+
+  it('copes with a task that had no project, one entry and no pauses, and with a record of another shape', () => {
+    expect(summarize({ name: 'Solo', project: null, state: 'stopped', segments: 1, pauses: 0 }, 'UTC')).toBe('“Solo”, stopped, 1 time entry');
+    expect(summarize({ name: 'Not a task record' }, 'UTC')).toBe('name Not a task record');
+    expect(summarize({ name: 'X', segments: 'many', pauses: 0 }, 'UTC')).toBe('name X, segments many, pauses 0');
+  });
+});

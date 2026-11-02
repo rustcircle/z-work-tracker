@@ -47,6 +47,8 @@ export const api = {
   /** Edits only the fields given, and with `expected` only those still holding what the editor showed, so an autosave never replaces another device's newer edit. */
   patchTask: (id: string, patch: TaskPatch, expected?: TaskExpected) => invoke<PatchReply>('patch_task', expected ? { id, patch, expected } : { id, patch }),
   deleteDraft: (id: string) => invoke<Snapshot>('delete_draft', { id }),
+  /** Deletes a task of any state with everything logged on it, for good. The backend refuses with a `conflict` while the task runs on any device or its time is on a live billing summary. */
+  deleteTask: (id: string) => invoke<Snapshot>('delete_task', { id }),
   startTask: (id: string) => invoke<TransitionResult>('start_task', { id }),
   resumeTask: (id: string) => invoke<TransitionResult>('resume_task', { id }),
   pauseTask: (id: string) => invoke<Snapshot>('pause_task', { id }),

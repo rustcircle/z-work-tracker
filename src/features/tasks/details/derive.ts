@@ -159,6 +159,12 @@ export function describeAudit(e: AuditEntry, look: AuditLookup): AuditLine {
   }
 }
 
+/** The task a pause's audit record names. Records made before the id was kept do not name one. */
+function namedTask(e: AuditEntry): string | null {
+  for (const v of [e.after, e.before]) if (isRecord(v) && typeof v.taskId === 'string') return v.taskId;
+  return null;
+}
+
 /** The audit entries of one task: its segments, its time away, and its billable pauses. */
 export function taskAudit(entries: readonly AuditEntry[], snapshot: Pick<Snapshot, 'rawSegments' | 'gaps' | 'pauses'>, taskId: string, gapSpans: readonly Span[]): AuditEntry[] {
   const own = new Set<string>();
@@ -171,9 +177,11 @@ export function taskAudit(entries: readonly AuditEntry[], snapshot: Pick<Snapsho
   }
   return entries.filter((e) => {
     if (own.has(e.entityId)) return true;
-    // An unmarked pause is gone from the snapshot and its audit record names no task, so it is matched by
-    // the time range it covered.
+    // An unmarked pause is gone from the snapshot, and so is the pause of a task that was deleted, so they are matched
+    // by the time range they covered. A record that names another task is that task's, whatever its time lines up with.
     if (e.entity !== 'pause' || otherPauses.has(e.entityId)) return false;
+    const named = namedTask(e);
+    if (named !== null && named !== taskId) return false;
     const r = rangeOf(e.after) ?? rangeOf(e.before);
     return r !== null && gapSpans.some((s) => overlaps(r, s));
   });

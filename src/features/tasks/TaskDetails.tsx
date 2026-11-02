@@ -1,5 +1,6 @@
 // The "Details" dialog of a task: add time by hand, correct recorded time, read the history, bill pauses
-// and change what time away means. One dialog with five tabs; the card only carries the button.
+// and change what time away means. One dialog with five tabs; the card only carries the button. Below the tabs
+// is the only way to delete a task that has started.
 import { useId, useRef, useState, type KeyboardEvent } from 'react';
 
 import { useAppState } from '../../app/store';
@@ -9,6 +10,7 @@ import type { Task } from '../../lib/types';
 import { AddTimeForm } from './details/AddTimeForm';
 import { AwayList } from './details/AwayList';
 import { CorrectionsList } from './details/CorrectionsList';
+import { DeleteTask } from './details/DeleteTask';
 import { HistoryTab } from './details/HistoryTab';
 import { PausesList } from './details/PausesList';
 import './details/details.css';
@@ -102,6 +104,7 @@ export function TaskDetails({ task, open, onClose }: { task: Task; open: boolean
         {tab === 'pauses' && <PausesList task={live} />}
         {tab === 'away' && <AwayList task={live} />}
       </div>
+      <DeleteTask task={live} close={onClose} />
     </Modal>
   );
 }

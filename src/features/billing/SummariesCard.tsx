@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAppState } from '../../app/store';
-import { dayLabel, formatDuration } from '../../components/format';
+import { dayLabel, formatDuration, listOf } from '../../components/format';
 import { Badge, Button, Card, ConfirmDialog, ProjectChip } from '../../components/ui';
 import { api } from '../../lib/api';
 import { dayOf, parseIso } from '../../lib/tz';
@@ -24,6 +24,7 @@ export function SummariesCard() {
   const hide = snapshot.prefs.hideEarnings;
   const list = useMemo(() => newestFirst(snapshot.billing.summaries), [snapshot.billing.summaries]);
   const projects = useMemo(() => new Map<string, Project>(snapshot.projects.map((p) => [p.id, p])), [snapshot.projects]);
+  const taskIds = useMemo(() => new Set(snapshot.tasks.map((t) => t.id)), [snapshot.tasks]);
   const [voiding, setVoiding] = useState<BillingSummary | null>(null);
   const [voidError, setVoidError] = useState<string | null>(null);
   const [voidBusy, setVoidBusy] = useState(false);
@@ -84,6 +85,8 @@ export function SummariesCard() {
             // A fixed fee or a non-billable project has no hourly amount, whatever the summary's totals hold.
             const amount = noAmount === null ? centsText(b.totals, hide) : '';
             const mine = note && note.id === b.id ? note : null;
+            // A summary keeps the names of its rows. A task deleted since it was voided has no time left to be unbilled again.
+            const deleted = b.voided ? [...new Set(b.rows.filter((r) => !taskIds.has(r.taskId)).map((r) => `“${r.taskName}”`))] : [];
             return (
               <li key={b.id} id={`summary-${b.id}`} tabIndex={-1} className={`bl-summary ${b.voided ? 'voided' : ''}`} aria-label={`${b.reference}, ${b.voided ? 'voided' : 'live'}`}>
                 <div className="bl-summary-head">
@@ -110,6 +113,11 @@ export function SummariesCard() {
                   </p>
                 )}
                 {b.voided && <p className="bl-hint">Voided: this time is unbilled again. The number {b.reference} is not reused. A CSV of it says Voided.</p>}
+                {deleted.length > 0 && (
+                  <p className="bl-hint" data-testid="summary-deleted">
+                    {listOf(deleted)} {deleted.length === 1 ? 'was' : 'were'} deleted after this summary was voided, so {deleted.length === 1 ? 'its' : 'their'} time is gone and is not unbilled again.
+                  </p>
+                )}
                 <details className="bl-details">
                   <summary>
                     {b.rows.length} {b.rows.length === 1 ? 'row' : 'rows'}

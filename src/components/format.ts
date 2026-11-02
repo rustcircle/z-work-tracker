@@ -89,3 +89,8 @@ export function addNumerators(a: Numerators, b: Numerators): Numerators {
 }
 
 export const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
+
+/** "A-001", "A-001 and A-002", "A-001, A-002 and A-003". */
+export function listOf(items: readonly string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}

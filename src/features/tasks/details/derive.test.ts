@@ -130,3 +130,28 @@ describe('taskAudit', () => {
     expect(taskAudit(entries, snap, 'task', spans).map((e) => e.id)).toEqual(['u']);
   });
 });
+
+describe('taskAudit and the pauses of a task that was deleted', () => {
+  // The deleted task's pauses are gone from the snapshot, like an unmarked pause, and could line up with this task's gap.
+  const snap = {
+    rawSegments: [seg('s1', '2026-03-09T09:00:00Z', '2026-03-09T10:00:00Z')],
+    gaps: [],
+    pauses: [pause('p1', '2026-03-10T11:30:00Z', '2026-03-10T12:00:00Z')],
+  } as never;
+  const spans = [{ start: t('2026-03-10T11:00:00Z'), end: t('2026-03-10T13:00:00Z') }];
+  const within = { start: '2026-03-10T11:30:00Z', end: '2026-03-10T12:00:00Z' };
+
+  it('leaves out a record that names another task, however well its time lines up', () => {
+    const entries = [
+      entry('d1', 'pause', 'gone', 'markBillable', null, { taskId: 'deleted', ...within }),
+      entry('d2', 'pause', 'gone', 'unmarkBillable', { taskId: 'deleted', ...within }, null),
+      entry('mine', 'pause', 'gone2', 'unmarkBillable', { taskId: 'task', ...within }, null),
+    ];
+    expect(taskAudit(entries, snap, 'task', spans).map((e) => e.id)).toEqual(['mine']);
+  });
+
+  it('still finds, by their time, the older records that name no task', () => {
+    const entries = [entry('old', 'pause', 'gone', 'unmarkBillable', within, null), entry('far', 'pause', 'gone3', 'unmarkBillable', { start: '2026-03-20T11:30:00Z', end: '2026-03-20T12:00:00Z' }, null)];
+    expect(taskAudit(entries, snap, 'task', spans).map((e) => e.id)).toEqual(['old']);
+  });
+});

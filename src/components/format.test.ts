@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { MASK } from '../lib/billing';
 import { parseIso } from '../lib/tz';
 import { rangeText } from '../features/timeline/DayCard';
-import { addNumerators, ago, amountText, clock, dayLabel, formatDuration, formatHMS, relativeDay } from './format';
+import { addNumerators, ago, amountText, clock, dayLabel, formatDuration, formatHMS, listOf, relativeDay } from './format';
 
 describe('durations', () => {
   it('formats hours, minutes and seconds', () => {
@@ -39,6 +39,15 @@ describe('dates and money', () => {
     expect(amountText({}, true)).toBe('');
     expect(amountText({ EUR: 3_600_000, USD: 7_200_000 }, false)).toBe('€10.00 + $20.00');
     expect(addNumerators({ USD: 1 }, { USD: 2, EUR: 3 })).toEqual({ USD: 3, EUR: 3 });
+  });
+});
+
+describe('lists in a sentence', () => {
+  it('joins two with and, and more with commas and and', () => {
+    expect(listOf([])).toBe('');
+    expect(listOf(['A-001'])).toBe('A-001');
+    expect(listOf(['A-001', 'A-002'])).toBe('A-001 and A-002');
+    expect(listOf(['A-001', 'A-002', 'A-003'])).toBe('A-001, A-002 and A-003');
   });
 });
 
