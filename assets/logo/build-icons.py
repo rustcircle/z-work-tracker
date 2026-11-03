@@ -77,6 +77,8 @@ def main():
     render(fav, 32, ICONS / "32x32.png"); render(MASTER, 128, ICONS / "128x128.png")
     render(MASTER, 256, ICONS / "128x128@2x.png"); render(MASTER, 512, ICONS / "icon.png")
     src = lambda s: fav if s <= SMALL else MASTER
+    for n in ("idle", "running"):   # tray: drawn by hand on a 32 grid (round case + 2 hands / play), not derived
+        render(HERE / f"tray-{n}.svg", 32, ICONS / f"tray-{n}.png")
     ico([(s, render(src(s), s)) for s in (16, 24, 32, 48, 64, 128, 256)], ICONS / "icon.ico")
     if sys.platform == "darwin":
         names = {"icon_16x16": 16, "icon_16x16@2x": 32, "icon_32x32": 32, "icon_32x32@2x": 64, "icon_128x128": 128,
