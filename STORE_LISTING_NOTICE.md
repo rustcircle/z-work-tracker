@@ -53,6 +53,14 @@ Use this where Partner Center asks for a short summary (about 200 characters is 
 >
 > Important: on this version, data on your PC is removed when you uninstall the app. Connect a OneDrive or Google Drive folder to keep a permanent copy.
 
+## What's new in this version
+
+Use this where Partner Center asks for "What's new in this version" (1.3.2):
+
+> Faster and sturdier storage. Your data on this PC now lives in a database, so saving after each action is about 3 to 5 times faster, more so the longer your history, and a sync with your cloud folder takes a third to half less time. The app also warns you if this computer's clock is behind, so times from your other devices stay in order.
+
+These figures come from the benchmark in the README's Performance section, which was measured on a Mac. Confirm on Windows before relying on the exact numbers.
+
 ## Functionalities
 
 Use these for the Product features list (up to about 20 items, each kept short):
