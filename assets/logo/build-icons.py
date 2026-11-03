@@ -5,11 +5,11 @@
 """Generate every zWorkTracker icon from the master, assets/logo/logo.svg.
 
 Run from the repo root:  uv run assets/logo/build-icons.py
-Renderer: resvg (resvg-py wheel). The logo and favicon SVGs are derived mechanically from the
+The logo is the clock alone on a transparent canvas (no tile). Renderer: resvg (resvg-py wheel). The logo and favicon SVGs are derived mechanically from the
 element ids (wl-b-*) in logo.svg; nothing is drawn by hand. Output is deterministic.
 The .icns needs macOS iconutil; on other systems the existing icon.icns is left untouched.
 """
-import copy, struct, subprocess, sys, tempfile, xml.etree.ElementTree as ET
+import struct, subprocess, sys, tempfile, xml.etree.ElementTree as ET
 from pathlib import Path
 import resvg_py
 
@@ -53,14 +53,9 @@ def derive_logo(out):
     r = tree(); thicken(r); prune_defs(r); write(r, out)
 
 def derive_favicon(out):
-    r = tree(); thicken(r); drop(r, "wl-b-pendulum")
+    r = tree(); thicken(r)
+    by_id(r, "wl-b-outline").set("stroke-width", "14")   # keeps the edge visible at 16 px
     for i, hue in enumerate(FAV_HUES): by_id(r, f"wl-b-arc{i}").set("stroke", hue)
-    r.set("viewBox", "96 24 320 320")
-    rect = by_id(r, "wl-b-tile")[0]
-    for k, v in dict(x="96", y="24", width="320", height="320", rx="70").items(): rect.set(k, v)
-    cp = ET.Element(q("clipPath"), {"id": "wl-b-clip"}); cp.append(copy.deepcopy(rect)); cp[0].attrib.pop("fill")
-    r.find(q("defs")).append(cp)
-    by_id(r, "wl-b-clock").set("clip-path", "url(#wl-b-clip)")
     prune_defs(r); write(r, out)
 
 def render(svg, size, out=None, background=None):
@@ -78,7 +73,7 @@ def main():
     fav = SITE / "favicon.svg"
     derive_logo(SITE / "logo.svg"); derive_favicon(fav)
     render(fav, 64, SITE / "icon-64.png")
-    render(MASTER, 180, SITE / "apple-touch-icon.png", background="#6a35d8")  # iOS wants opaque corners
+    render(MASTER, 180, SITE / "apple-touch-icon.png", background="#ffffff")  # iOS fills transparency with black, so this one is opaque
     render(fav, 32, ICONS / "32x32.png"); render(MASTER, 128, ICONS / "128x128.png")
     render(MASTER, 256, ICONS / "128x128@2x.png"); render(MASTER, 512, ICONS / "icon.png")
     src = lambda s: fav if s <= SMALL else MASTER
