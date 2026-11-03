@@ -35,7 +35,7 @@ export function extensions() {
 
 const docToEditorContent = (doc: RichDoc) => (doc ?? '');
 
-function Toolbar({ editor }: { editor: Editor }) {
+function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
   const s = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -75,6 +75,7 @@ function Toolbar({ editor }: { editor: Editor }) {
           aria-label={i.label}
           aria-pressed={i.on}
           title={i.title}
+          disabled={disabled}
           // A mouse press must not move focus to the button: that blurs the editor (and ends an inline edit's
           // session) for the length of the click. The keyboard still reaches the buttons with Tab.
           onMouseDown={(e) => e.preventDefault()}
@@ -109,6 +110,7 @@ export function RichEditor({
   onBlur,
   hint,
   error,
+  editable = true,
   ref,
 }: {
   label: string;
@@ -118,6 +120,8 @@ export function RichEditor({
   onBlur?: () => void;
   hint?: string;
   error?: string | null;
+  /** False shows the text but starts no typing and runs no formatting. The text, and the caret in it, stay as they are. */
+  editable?: boolean;
   ref?: Ref<RichEditorHandle>;
 }) {
   const labelId = useId();
@@ -131,8 +135,9 @@ export function RichEditor({
   const editor = useEditor({
     extensions: extensions(),
     content: docToEditorContent(value),
+    editable,
     injectCSS: false,
-    editorProps: { attributes: { role: 'textbox', 'aria-multiline': 'true', 'aria-labelledby': labelId, class: 'rt-content' } },
+    editorProps: { attributes: { role: 'textbox', 'aria-multiline': 'true', 'aria-labelledby': labelId, class: 'rt-content', ...(editable ? {} : { 'aria-readonly': 'true' }) } },
     // Only the user's edits count. Clicking into a document can make the editor add a paragraph of its own, and that
     // must not read as something to save.
     onUpdate: ({ editor: e, transaction }) => {
@@ -141,14 +146,27 @@ export function RichEditor({
     onFocus: () => handlers.current.onFocus?.(),
     onBlur: () => handlers.current.onBlur?.(),
   });
+  // `useEditor` keeps the editor's own editable state when other options change, so a change of `editable` is applied by hand.
+  // Nothing about the text changes, so no update is announced.
+  useEffect(() => {
+    editor?.setEditable(editable, false);
+  }, [editor, editable]);
   // The hint and error text change while the editor lives, so its ARIA attributes follow them.
   useEffect(() => {
     editor?.setOptions({
       editorProps: {
-        attributes: { role: 'textbox', 'aria-multiline': 'true', 'aria-labelledby': labelId, class: 'rt-content', ...(describedBy ? { 'aria-describedby': describedBy } : {}), ...(error ? { 'aria-invalid': 'true' } : {}) },
+        attributes: {
+          role: 'textbox',
+          'aria-multiline': 'true',
+          'aria-labelledby': labelId,
+          class: 'rt-content',
+          ...(describedBy ? { 'aria-describedby': describedBy } : {}),
+          ...(error ? { 'aria-invalid': 'true' } : {}),
+          ...(editable ? {} : { 'aria-readonly': 'true' }),
+        },
       },
     });
-  }, [editor, labelId, describedBy, error]);
+  }, [editor, labelId, describedBy, error, editable]);
   useImperativeHandle(
     ref,
     () => ({
@@ -167,7 +185,7 @@ export function RichEditor({
         {label}
       </span>
       <div className="rt-frame">
-        {editor && <Toolbar editor={editor} />}
+        {editor && <Toolbar editor={editor} disabled={!editable} />}
         <EditorContent editor={editor} />
       </div>
       {hint && (

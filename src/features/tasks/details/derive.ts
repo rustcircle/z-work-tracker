@@ -92,6 +92,15 @@ export function spanText(startSec: number, endSec: number | null, zone: string):
   return d1 === d2 ? `${shortDay(d1)} ${clock(startSec, zone)} to ${clock(endSec, zone)}` : `${shortDay(d1)} ${clock(startSec, zone)} to ${shortDay(d2)} ${clock(endSec, zone)}`;
 }
 
+/**
+ * What a recorded segment's own times say of it. One closed from another computer has no recorded end, and is not running either:
+ * its correction says where it ended.
+ */
+const rawAbout = (seg: RawSegment, zone: string): string =>
+  seg.rawEnd === null && (seg.corrected || seg.voided)
+    ? `${shortDay(dayOf(parseIso(seg.rawStart), zone))} ${clock(parseIso(seg.rawStart), zone)}, no recorded end`
+    : spanText(parseIso(seg.rawStart), seg.rawEnd === null ? null : parseIso(seg.rawEnd), zone);
+
 const stateText = (s: SegState, zone: string): string => (s.voided ? 'not counted' : spanText(parseIso(s.start), s.end === null ? null : parseIso(s.end), zone));
 
 const DECISION_WORDS: Record<string, string> = { pending: 'waiting for your decision', keep: 'kept', drop: 'dropped', thinking: 'thinking time' };
@@ -128,7 +137,7 @@ export function describeAudit(e: AuditEntry, look: AuditLookup): AuditLine {
   const after = segState(e.after);
   const seg = look.rawSegments.find((s) => s.id === e.entityId);
   const gap = look.gaps.find((g) => g.id === e.entityId);
-  const segAbout = seg ? `Time on ${spanText(parseIso(seg.rawStart), seg.rawEnd === null ? null : parseIso(seg.rawEnd), zone)}` : 'Recorded time';
+  const segAbout = seg ? `Time on ${rawAbout(seg, zone)}` : 'Recorded time';
   const gapRange = rangeOf(e.after) ?? rangeOf(e.before);
   const gapAbout = gap ? `Time away ${spanText(parseIso(gap.start), parseIso(gap.end), zone)}` : gapRange ? `Time away ${spanText(gapRange.start, gapRange.end, zone)}` : 'Time away';
   const pauseRange = rangeOf(e.after) ?? rangeOf(e.before);
@@ -150,6 +159,12 @@ export function describeAudit(e: AuditEntry, look: AuditLookup): AuditLine {
       const to = decisionOf(e.after);
       return { ...base, what: 'Time away decision', about: gapAbout, change: from && to ? `${from} became ${to}` : to };
     }
+    case 'settleLost':
+      return { ...base, what: 'Closed at its last known time', about: segAbout, change: before && after ? `${stateText(before, zone)} became ${stateText(after, zone)}` : null };
+    case 'reclaimAfterReturn':
+      return { ...base, what: 'Closed time replaced by the end its computer recorded', about: segAbout, change: before && after ? `${stateText(before, zone)} became ${stateText(after, zone)}` : null };
+    case 'reclaimOnSummary':
+      return { ...base, what: 'Closed time kept, as it is on a billing summary', about: segAbout, change: null };
     case 'markBillable':
       return { ...base, what: 'Pause billed', about: pauseAbout, change: null };
     case 'unmarkBillable':

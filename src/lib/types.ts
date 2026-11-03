@@ -36,6 +36,8 @@ export interface ProjectFigures {
   effectiveHourlyCents: number | null;
   /** Time at the project's rate versions, even on a fixed-fee project, per currency. */
   timeValueCents: Partial<Record<Currency, number>>;
+  /** The same before rounding, so a figure carried forward rounds once too. Missing when there is none. */
+  timeValueNumerators?: Partial<Record<Currency, number>>;
   budget: BudgetStatus | null;
 }
 
@@ -275,6 +277,8 @@ export interface SummaryPreview {
   runningExcluded: boolean;
   /** Time away inside these segments with no decision yet. It is left out, and a summary freezes that. */
   unconfirmedSecs: number;
+  /** Rows that bill a difference: their task-day is partly on a summary already, so they don't bill what their own time rounds to. */
+  partlyBilledRows: number;
 }
 
 export type Reminder = { kind: 'longRun'; taskId: string; since: string } | { kind: 'pastShift'; taskId: string; shift: string; ended: string };
@@ -415,6 +419,19 @@ export interface TargetStatus {
   warnings: string[];
   ignoredFiles: number;
   devicesSeen: number;
+  // The fields below are optional only so that fixtures built by hand can leave them out, and a missing one means null.
+  // The backend always sends all six.
+  /** When this computer last wrote its lease record in this folder (ISO). */
+  lastLeaseAt?: string | null;
+  /** Why the lease record could not be written or read here. */
+  leaseError?: string | null;
+  /** When a saved version was last written in this folder (ISO). */
+  lastVersionAt?: string | null;
+  lastVersionError?: string | null;
+  /** The size of the saved versions in this folder, in bytes. */
+  versionsBytes?: number | null;
+  /** How far this folder's copy of another computer's file is behind the other folder's, in seconds. Null when it isn't. */
+  lagSecs?: number | null;
 }
 
 export interface SyncTargetView {
@@ -482,6 +499,157 @@ export interface PendingCopy {
   to: string;
 }
 
+/**
+ * A folder that holds data restored from a saved version, while this computer has data from before it. Nothing is read
+ * from or written to that folder until the user chooses (`resolve_join`). `takenFrom` is the name of the version that was
+ * restored, `at` when that version was taken (ISO), and `deviceName` the computer that restored it.
+ */
+export interface JoinPending {
+  root: string;
+  takenFrom: string;
+  at: string;
+  deviceName: string;
+}
+
+export type JoinChoice = 'follow' | 'keep';
+
+// ---- Who may change the data. Only one computer at a time holds the lease, on a best effort basis: cloud folders update
+// late and can't lock anything, so two computers may both change data for a few minutes, and the changes merge.
+
+/**
+ * `off`: no sync folder, so no lease. `checking`: just opened and the first look at the folders isn't back; writable.
+ * `free`: nobody holds it. `heldByMe`: this computer does. `heldByOtherLive` and `heldByOtherStale`: another computer
+ * does and this one is read-only; stale means nothing has been heard from it for a long while. `unknown`: no folder can
+ * be read; read-only only if another computer held it recently.
+ */
+export type LeaseStateName = 'off' | 'checking' | 'free' | 'heldByMe' | 'heldByOtherLive' | 'heldByOtherStale' | 'unknown';
+
+export interface LeaseHolderView {
+  deviceId: string;
+  deviceName: string;
+  generation: number;
+  /** Counts up with each beat of the holder. A take over names the one it was shown, so a holder that came back to life is noticed. */
+  beatSeq: number;
+  /** The last sign of the holder as this computer knows it (ISO), or null when there was none. */
+  lastSignAt: string | null;
+  /** Seconds from `lastSignAt` to the backend's clock, or null with no sign. */
+  ageSecs: number | null;
+  /** The holder's own clock seems to differ from this computer's. */
+  clockSuspect: boolean;
+}
+
+export interface LeaseView {
+  state: LeaseStateName;
+  /** True when the backend refuses every change to shared data. The page shows it early (`useReadOnly`); the refusal is the guarantee. */
+  readOnly: boolean;
+  /** The other computer that holds the lease, or the last one known while `unknown` (then with `beatSeq` 0, since only its name, generation and time are remembered). Null otherwise. */
+  holder: LeaseHolderView | null;
+  /** The generation this computer holds, or the newest seen. Null with no folder. */
+  generation: number | null;
+  /** One more line for the banner, such as a folder that can't be read. Null when there is nothing to add. */
+  note: string | null;
+  /** The sync folders (by root) the last look read, and those it couldn't. */
+  reachableRoots: string[];
+  unreachableRoots: string[];
+}
+
+/** The holder a take over was shown. The backend reads again and answers `changed` when this is no longer the top. */
+export interface TakeOverExpected {
+  generation: number;
+  beatSeq: number;
+}
+
+/** `stale` and `live` take over from a holder that looks inactive or in use; `offline` makes this computer writable while no folder can be read. */
+export type TakeOverMode = 'stale' | 'live' | 'offline';
+
+/** A task the holder shows as running: a take over closes it at `end`, the last moment that computer is known to have been running. */
+export interface TakeOverSegment {
+  segmentId: string;
+  taskName: string;
+  end: string;
+  secs: number;
+}
+
+export interface TakeOverPreview {
+  holder: LeaseHolderView | null;
+  /** The holder looks like it is still in use. */
+  live: boolean;
+  /** No folder could be read just now. */
+  unreachable: boolean;
+  segments: TakeOverSegment[];
+}
+
+export interface TakeOverResult {
+  /** `done`: this computer holds the lease. `changed`: the holder moved on while the dialog was open, and `preview` is the fresh view. `unreachable`: no folder could be written, and nothing changed. */
+  outcome: 'done' | 'changed' | 'unreachable';
+  preview: TakeOverPreview | null;
+  snapshot: Snapshot;
+}
+
+// ---- Saved versions of the data, in the sync folders.
+
+export interface VersionLocation {
+  root: string;
+  provider: SyncProvider;
+  bytes: number;
+}
+
+export interface VersionInfo {
+  /** The file name without its extension, such as `20261102T142530Z--a1b2c3d4--auto`. The same name in two folders is one version. */
+  name: string;
+  /** When it was taken (ISO). */
+  takenAt: string;
+  deviceName: string;
+  /** The reason code from the name: `auto`, `quit`, `manual`, `takeover`, `pre-restore`, `pre-adopt` or `restored`. The page puts it into words. */
+  reason: string;
+  /** Kept for a year whatever the retention rule says. */
+  pinned: boolean;
+  /** Every folder that holds a copy. */
+  locations: VersionLocation[];
+}
+
+export interface VersionList {
+  /** Newest first. */
+  versions: VersionInfo[];
+  /** Folders that couldn't be listed. The versions of the others are still here. */
+  errors: { root: string; message: string }[];
+  totalBytes: number;
+  /** The versions take more than 1 GiB. Nothing is deleted for that. */
+  overBudget: boolean;
+}
+
+export interface RestorePreview {
+  name: string;
+  takenAt: string;
+  reason: string;
+  /** What the version holds, against what this computer holds now. */
+  version: DataCounts;
+  current: DataCounts;
+  /** Records that couldn't be read and are left out of the restore. */
+  warnings: string[];
+  /** Why a restore can't go ahead, or null when it can. */
+  blockedReason: string | null;
+}
+
+// ---- Start with Windows. A Microsoft Store (packaged) build asks Windows, which can refuse and has the last word.
+
+export type AutostartState = 'on' | 'off' | 'offByUser' | 'offByPolicy' | 'onByPolicy' | 'unavailable';
+
+export interface AutostartInfo {
+  packaged: boolean;
+  state: AutostartState;
+  /** The switch can be changed from here. */
+  canChange: boolean;
+  /** What to tell the user when it can't. */
+  note: string | null;
+}
+
+/** What kind of build this is. */
+export interface PlatformView {
+  /** Running from the Microsoft Store package, which keeps its files in a private folder that uninstalling removes. */
+  packaged: boolean;
+}
+
 /** Replicated settings; every key is optional. */
 export interface Settings {
   myZone?: string | null;
@@ -525,7 +693,17 @@ export interface Snapshot {
   };
   notices: Notice[];
   warnings: string[];
-  sync: { targets: SyncTargetView[]; detected: Detected[]; promptPending: boolean; pendingCopy: PendingCopy | null };
+  sync: {
+    targets: SyncTargetView[];
+    detected: Detected[];
+    promptPending: boolean;
+    pendingCopy: PendingCopy | null;
+    /** Optional only so that fixtures built by hand can leave it out (missing means null). The backend always sends it. */
+    joinPending?: JoinPending | null;
+  };
+  /** Who may change the data. With no sync folder it is `off`, which never refuses anything. */
+  lease: LeaseView;
+  platform: PlatformView;
   launch: LaunchState;
   rawSegments: RawSegment[];
   /** Time away. Pending gaps count nowhere until the user decides. */

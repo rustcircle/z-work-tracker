@@ -3,12 +3,14 @@
 //!
 //! Rules:
 //! - Raw UTC segments are never altered. A row is one task on one day in the reporting zone.
-//! - The row's exact time is rounded once. Larger totals are sums of the rounded rows.
+//! - The row's exact time is rounded once. Larger totals of time are sums of the rounded rows.
 //! - Rounding version: the project's own version in force on the row's day, else the global one,
 //!   else the default (15 minutes, up). Timestamps are whole seconds, so sub-second timer noise can
 //!   never push a row over an exact multiple: 15:00 stays 15:00 and 15:01 bills as 30:00.
-//! - Earnings are `seconds * rate_cents / 3600`. Row buckets keep the exact numerator and only the
-//!   total shown is rounded (half up to whole cents). Currencies are never added together.
+//! - Earnings are `seconds * rate_cents / 3600`, on billable seconds. Row buckets keep the exact numerator.
+//!   A row shows its own amount rounded, and a total is the exact numerators of its rows added up, then
+//!   rounded once (half up to whole cents) by `total_cents`, never a sum of rounded rows, so every document
+//!   comes to the same total. Currencies are never added together.
 //! - The rounding difference goes to the last rate in force that day. If that bucket would go below
 //!   zero, the remainder moves to the previous bucket.
 
@@ -120,8 +122,12 @@ pub fn secs_to_next_step(counted: i64, increment_minutes: u32, method: RoundMeth
 /// `round(numerator / 3600)` half up, in whole cents, with no floating point involved.
 #[must_use]
 pub fn cents_from_numerator(numerator: i64) -> i64 {
-    (numerator + 1800).div_euclid(3600)
+    numerator.saturating_add(1800).div_euclid(3600)
 }
+
+/// What a document prints where its rows don't add up to its total.
+pub const ROUNDED_ROWS_NOTE: &str =
+    "Row amounts are rounded; the total is worked out from the exact amounts.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -283,6 +289,52 @@ impl TaskDay {
     }
 }
 
+/// Adds a row's exact numerators to a running total, per currency.
+pub fn add_numerators(total: &mut BTreeMap<String, i64>, row: &TaskDay) {
+    for (cur, n) in row.numerators() {
+        let sum = total.entry(cur).or_insert(0);
+        *sum = sum.saturating_add(n);
+    }
+}
+
+/// Exact numerators as whole cents, per currency.
+#[must_use]
+pub fn cents_of(numerators: &BTreeMap<String, i64>) -> BTreeMap<String, i64> {
+    numerators
+        .iter()
+        .map(|(cur, n)| (cur.clone(), cents_from_numerator(*n)))
+        .collect()
+}
+
+/// The money these rows come to, per currency. Every total shown is this: their exact amounts added up,
+/// and rounded once.
+#[must_use]
+pub fn total_cents<'a>(rows: impl IntoIterator<Item = &'a TaskDay>) -> BTreeMap<String, i64> {
+    let mut numerators = BTreeMap::new();
+    for row in rows {
+        add_numerators(&mut numerators, row);
+    }
+    cents_of(&numerators)
+}
+
+/// Whether the amounts rows show add up to something other than their total, in any currency.
+#[must_use]
+pub fn rows_differ_from_total<'a>(
+    rows: impl IntoIterator<Item = &'a BTreeMap<String, i64>>,
+    totals: &BTreeMap<String, i64>,
+) -> bool {
+    let mut shown: BTreeMap<&str, i64> = BTreeMap::new();
+    for row in rows {
+        for (cur, cents) in row {
+            let sum = shown.entry(cur).or_insert(0);
+            *sum = sum.saturating_add(*cents);
+        }
+    }
+    shown
+        .into_iter()
+        .any(|(cur, sum)| totals.get(cur).is_some_and(|t| *t != sum))
+}
+
 /// Moves the rounding difference onto the buckets, starting from the last rate in force.
 fn allocate_rounding(buckets: &mut [Bucket], mut diff: i64) {
     for b in buckets.iter_mut().rev() {
@@ -303,6 +355,19 @@ pub fn task_days(shared: &Shared, tz: Tz, end_of: &dyn Fn(&Segment) -> Ts) -> Ve
 
 /// The task-day rows of these pieces, using the projects, rates and rounding in `shared`.
 pub fn task_days_of(shared: &Shared, tz: Tz, pieces: Vec<Piece>) -> Vec<TaskDay> {
+    task_days_billed(shared, tz, pieces, &|_, _, counted, rule| {
+        round_seconds(counted, rule.increment_minutes, rule.method)
+    })
+}
+
+/// As `task_days_of`, with `bill` giving each row's billable seconds from its task, its day, its counted
+/// seconds and the rule in force. The difference from the counted seconds goes onto the buckets as usual.
+pub(crate) fn task_days_billed(
+    shared: &Shared,
+    tz: Tz,
+    pieces: Vec<Piece>,
+    bill: &dyn Fn(&str, NaiveDate, i64, RoundingRule) -> i64,
+) -> Vec<TaskDay> {
     #[derive(Default)]
     struct Acc {
         first: Option<Ts>,
@@ -366,7 +431,7 @@ pub fn task_days_of(shared: &Shared, tz: Tz, pieces: Vec<Piece>) -> Vec<TaskDay>
         let exact_secs: i64 = buckets.iter().map(|b| b.exact_secs).sum();
         let rule = rounding_rule(shared, project_id, day);
         let counted = exact_secs + row.extra.pause;
-        let billable_secs = round_seconds(counted, rule.increment_minutes, rule.method);
+        let billable_secs = bill(&task_id, day, counted, rule);
         allocate_rounding(&mut buckets, billable_secs - counted);
         rows.push(TaskDay {
             task_id,
@@ -975,6 +1040,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_total_is_the_exact_amounts_added_up_and_rounded_once() {
+        let (mut s, p, t) = fixture(None);
+        rate(&mut s, &p, Some(3333), "EUR", "2026-01-01T00:00:00Z");
+        for day in 2..=5 {
+            seg(
+                &mut s,
+                &t,
+                &format!("s{day}"),
+                &format!("2026-02-{day:02}T09:00:00Z"),
+                &format!("2026-02-{day:02}T09:15:00Z"),
+            );
+        }
+        let got = rows(&s, "UTC");
+        let total = total_cents(&got);
+        assert_eq!(total["EUR"], 3333, "4 x 833.25");
+        let shown: Vec<BTreeMap<String, i64>> = got.iter().map(|r| total_cents([r])).collect();
+        assert_eq!(shown[0]["EUR"], 833);
+        assert!(rows_differ_from_total(&shown, &total));
+        assert!(
+            !rows_differ_from_total(&shown[..0], &total),
+            "no rows, nothing to add up"
+        );
+        let other = BTreeMap::from([("USD".to_owned(), 1)]);
+        assert!(
+            !rows_differ_from_total(&shown, &other),
+            "no total in that currency"
+        );
+        assert!(total_cents(&got[..0]).is_empty());
+        assert_eq!(
+            cents_from_numerator(i64::MAX),
+            i64::MAX / 3600,
+            "never overflows"
+        );
+    }
+
+    #[test]
     fn half_cents_round_up_at_the_total_and_money_formats() {
         // 18 s at 100 cents/h = 0.5 cent exactly.
         assert_eq!(cents_from_numerator(100 * 18), 1);
@@ -1175,6 +1276,15 @@ pub(crate) mod tests {
                 let got = rows(&s, case["zone"].as_str().unwrap());
                 let want = case["rows"].as_array().unwrap();
                 assert_eq!(got.len(), want.len(), "{name}");
+                if let Some(totals) = case.get("totals") {
+                    let totals: BTreeMap<String, i64> = totals
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.as_i64().unwrap()))
+                        .collect();
+                    assert_eq!(total_cents(&got), totals, "{name} totals");
+                }
                 for (g, w) in got.iter().zip(want) {
                     assert_eq!(g.day.to_string(), w["day"].as_str().unwrap(), "{name}");
                     assert_eq!(g.exact_secs, w["exact"].as_i64().unwrap(), "{name}");
@@ -1215,6 +1325,154 @@ pub(crate) mod tests {
                         .collect();
                     assert_eq!(exact, want_exact, "{name} exact");
                 }
+            }
+        }
+
+        /// The same steps run in `src/mocks/summaryRounding.test.ts`.
+        #[test]
+        fn summary_cases() {
+            let f = load("billing-fixtures.json");
+            let cents = |v: &Value| -> BTreeMap<String, i64> {
+                v.as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, n)| (k.clone(), n.as_i64().unwrap()))
+                    .collect()
+            };
+            for case in f["summaries"].as_array().unwrap() {
+                let name = case["name"].as_str().unwrap();
+                let (mut s, p, t) = fixture(None);
+                let c = ctx("2026-06-01T00:00:00Z");
+                for r in case["rates"].as_array().unwrap() {
+                    rate(
+                        &mut s,
+                        &p,
+                        r["cents"].as_i64(),
+                        r["currency"].as_str().unwrap(),
+                        r["from"].as_str().unwrap(),
+                    );
+                }
+                let mut made: Vec<String> = Vec::new();
+                for (i, step) in case["steps"].as_array().unwrap().iter().enumerate() {
+                    if let Some(r) = step.get("rule") {
+                        let method = match r["method"].as_str().unwrap() {
+                            "up" => RoundMethod::Up,
+                            "down" => RoundMethod::Down,
+                            _ => RoundMethod::Nearest,
+                        };
+                        s.set_rounding(
+                            &c,
+                            &RoundingInput {
+                                project_id: None,
+                                effective_from: r["from"].as_str().unwrap().into(),
+                                increment_minutes: r["minutes"].as_u64().unwrap() as u32,
+                                method,
+                                confirm_retroactive: true,
+                            },
+                            "2026-06-01",
+                        )
+                        .unwrap();
+                    }
+                    for fix in step["corrected"].as_array().into_iter().flatten() {
+                        s.segments.get_mut(fix[0].as_str().unwrap()).unwrap().edit =
+                            Some(crate::model::SegmentEdit {
+                                start: Ts::parse(fix[1].as_str().unwrap()).unwrap(),
+                                end: Ts::parse(fix[2].as_str().unwrap()).unwrap(),
+                                voided: false,
+                                reason: "corrected on another device".into(),
+                                settled: false,
+                            });
+                    }
+                    for (n, pair) in step["pauses"].as_array().into_iter().flatten().enumerate() {
+                        let id = format!("p{i}-{n}");
+                        s.pauses.insert(
+                            id.clone(),
+                            crate::model::BillablePause {
+                                id,
+                                task_id: t.clone(),
+                                start: Ts::parse(pair[0].as_str().unwrap()).unwrap(),
+                                end: Ts::parse(pair[1].as_str().unwrap()).unwrap(),
+                                note: String::new(),
+                                deleted: false,
+                                stamp: crate::model::Stamp::default(),
+                            },
+                        );
+                    }
+                    for (n, pair) in step["segments"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                    {
+                        seg(
+                            &mut s,
+                            &t,
+                            &format!("s{i}-{n}"),
+                            pair[0].as_str().unwrap(),
+                            pair[1].as_str().unwrap(),
+                        );
+                    }
+                    for v in step["void"].as_array().into_iter().flatten() {
+                        let id = made[v.as_u64().unwrap() as usize].clone();
+                        s.void_summary(&c, &id).unwrap();
+                    }
+                    let request = crate::summary::SummaryRequest {
+                        project_id: p.clone(),
+                        from: step["from"].as_str().unwrap_or("2026-01-01").into(),
+                        to: step["to"].as_str().unwrap_or("2026-12-31").into(),
+                        zone: step["zone"].as_str().unwrap_or("UTC").into(),
+                    };
+                    let preview = s.summary_preview(&request).unwrap();
+                    let want = step["rows"].as_array().unwrap();
+                    assert_eq!(preview.rows.len(), want.len(), "{name} step {i}");
+                    for (g, w) in preview.rows.iter().zip(want) {
+                        assert_eq!(g.day, w["day"].as_str().unwrap(), "{name} step {i}");
+                        assert_eq!(
+                            g.exact_secs,
+                            w["exact"].as_i64().unwrap(),
+                            "{name} step {i}"
+                        );
+                        assert_eq!(
+                            g.billable_secs,
+                            w["billable"].as_i64().unwrap(),
+                            "{name} step {i}"
+                        );
+                        assert_eq!(
+                            g.pause_secs,
+                            w["pause"].as_i64().unwrap_or(0),
+                            "{name} step {i}"
+                        );
+                        assert_eq!(g.cents, cents(&w["amounts"]), "{name} step {i}");
+                    }
+                    assert_eq!(preview.totals, cents(&step["totals"]), "{name} step {i}");
+                    assert_eq!(
+                        preview.partly_billed_rows as u64,
+                        step["partlyBilled"].as_u64().unwrap(),
+                        "{name} step {i}"
+                    );
+                    if step["create"].as_bool().unwrap() {
+                        let id = s.create_summary(&c, &request).unwrap();
+                        if let Some(older) = step.get("asOlderBuild") {
+                            let b = s.summaries.get_mut(&id).unwrap();
+                            b.rows[0].billable_secs = older["billable"].as_i64().unwrap();
+                            b.rows[0].cents = cents(&older["amounts"]);
+                            b.totals = cents(&older["amounts"]);
+                        }
+                        made.push(id);
+                    }
+                }
+                let billed: i64 = s
+                    .summaries
+                    .values()
+                    .filter(|b| !b.voided)
+                    .flat_map(|b| b.rows.iter().map(|r| r.billable_secs))
+                    .sum();
+                let report: i64 = rows(&s, case["reportZone"].as_str().unwrap_or("UTC"))
+                    .iter()
+                    .map(|r| r.billable_secs)
+                    .sum();
+                assert_eq!(billed, case["billed"].as_i64().unwrap(), "{name} billed");
+                assert_eq!(report, case["report"].as_i64().unwrap(), "{name} report");
             }
         }
     }

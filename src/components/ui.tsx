@@ -117,6 +117,14 @@ export function Card({ children, className = '', label }: { children: ReactNode;
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
 
+/** An open Modal, and the element that gets focus back when it closes. */
+interface OpenModal {
+  returnTo: HTMLElement | null;
+}
+
+/** The open Modals, the one opened first at the front. Dialogs can open over one another (the time-away one opens by itself), and only the last answers Esc and Tab. */
+const openModals: OpenModal[] = [];
+
 export function Modal({
   open,
   title,
@@ -137,21 +145,25 @@ export function Modal({
   const ref = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
   const onCloseRef = useRef(onClose);
+  // Read at the key press, so that switching it never takes this dialog out of the stack and back in.
+  const dismissibleRef = useRef(dismissible);
   useEffect(() => {
     onCloseRef.current = onClose;
+    dismissibleRef.current = dismissible;
   });
 
   useEffect(() => {
     if (!open) return undefined;
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const entry: OpenModal = { returnTo: document.activeElement instanceof HTMLElement ? document.activeElement : null };
+    openModals.push(entry);
     const node = ref.current;
     if (node) {
       const first = node.querySelector<HTMLElement>('[data-autofocus]') ?? node.querySelector<HTMLElement>(FOCUSABLE);
       (first ?? node).focus();
     }
     const onKey = (e: KeyboardEvent) => {
-      if (!ref.current) return;
-      if (e.key === 'Escape' && dismissible) {
+      if (!ref.current || openModals[openModals.length - 1] !== entry) return;
+      if (e.key === 'Escape' && dismissibleRef.current) {
         e.stopPropagation();
         onCloseRef.current();
         return;
@@ -175,9 +187,15 @@ export function Modal({
     document.addEventListener('keydown', onKey, true);
     return () => {
       document.removeEventListener('keydown', onKey, true);
-      previous?.focus();
+      const at = openModals.indexOf(entry);
+      if (at < 0) return;
+      openModals.splice(at, 1);
+      const above = openModals[at];
+      // A dialog that closes under another leaves focus in the one on top, which takes over the way back if its own is gone with this one.
+      if (above) above.returnTo = above.returnTo?.isConnected ? above.returnTo : entry.returnTo;
+      else entry.returnTo?.focus();
     };
-  }, [open, dismissible]);
+  }, [open]);
 
   if (!open) return null;
   return createPortal(
@@ -254,7 +272,7 @@ export function ConfirmDialog({
   confirmLabel: string;
   cancelLabel?: string;
   danger?: boolean;
-  /** True while the action is under way: the confirm button cannot be pressed again. */
+  /** True while the action is under way: the confirm button cannot be pressed again, and the dialog cannot be left until the action has answered, so that a refusal is seen. */
   disabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -264,9 +282,12 @@ export function ConfirmDialog({
       open={open}
       title={title}
       onClose={onCancel}
+      dismissible={!disabled}
       footer={
         <>
-          <Button onClick={onCancel}>{cancelLabel}</Button>
+          <Button disabled={disabled} onClick={onCancel}>
+            {cancelLabel}
+          </Button>
           <Button variant={danger ? 'danger' : 'primary'} disabled={disabled} onClick={onConfirm}>
             {confirmLabel}
           </Button>

@@ -11,7 +11,7 @@ use rust_xlsxwriter::{
 };
 use serde_json::Value;
 
-use crate::billing::{cents_from_numerator, split_by_rate};
+use crate::billing::{ROUNDED_ROWS_NOTE, split_by_rate, total_cents};
 use crate::error::CoreError;
 use crate::model::RoundMethod;
 use crate::report::{AnalyticsSheet, CellKind, ExportRequest, ExportSource, zoned};
@@ -478,9 +478,11 @@ fn write_earnings_sheet(
     st: &Styles,
 ) -> Result<(), CoreError> {
     sheet.set_name("Earnings").map_err(err)?;
+    let rows = source.rows(tz);
+    let cents = total_cents(rows.iter().map(|r| &r.row));
     // project -> currency -> (billable seconds under that currency, numerator)
     let mut per: BTreeMap<(String, String), (i64, i64)> = BTreeMap::new();
-    for r in source.rows(tz) {
+    for r in &rows {
         for b in &r.row.buckets {
             if let (Some(rate), Some(cur)) = (b.rate_cents, &b.currency) {
                 let e = per
@@ -492,7 +494,7 @@ fn write_earnings_sheet(
         }
     }
     sheet
-        .write_string_with_format(0, 0, format!("Earnings from billable (rounded) time. Days in zone: {zone_name}. Currencies are never added together. Amounts are rounded to cents only for display, so rows can differ from totals by a cent."), &st.title)
+        .write_string_with_format(0, 0, format!("Earnings from billable (rounded) time. Days in zone: {zone_name}. Currencies are never added together. {ROUNDED_ROWS_NOTE}"), &st.title)
         .map_err(err)?;
     for (col, h) in ["Project", "Currency", "Billable time", "Amount"]
         .iter()
@@ -507,7 +509,7 @@ fn write_earnings_sheet(
     }
     sheet.set_freeze_panes(2, 0).map_err(err)?;
     let mut row: u32 = 2;
-    let mut totals: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+    let mut totals: BTreeMap<String, i64> = BTreeMap::new();
     for ((project, cur), (secs, numerator)) in &per {
         sheet.write_string(row, 0, clip(project)).map_err(err)?;
         sheet.write_string(row, 1, cur).map_err(err)?;
@@ -518,13 +520,11 @@ fn write_earnings_sheet(
         sheet
             .write_number_with_format(row, 3, *numerator as f64 / 360_000.0, &f)
             .map_err(err)?;
-        let t = totals.entry(cur.clone()).or_insert((0, 0));
-        t.0 += secs;
-        t.1 += numerator;
+        *totals.entry(cur.clone()).or_insert(0) += secs;
         row += 1;
     }
     let last = row;
-    for (cur, (secs, numerator)) in &totals {
+    for (cur, secs) in &totals {
         sheet
             .write_string_with_format(row, 0, format!("Total {cur}"), &st.bold)
             .map_err(err)?;
@@ -537,7 +537,7 @@ fn write_earnings_sheet(
             .write_formula_with_format(row, 2, time, &st.total_time)
             .map_err(err)?;
         let amount = Formula::new(format!("=SUMIF(B3:B{last},\"{cur}\",D3:D{last})"))
-            .set_result((cents_from_numerator(*numerator) as f64 / 100.0).to_string());
+            .set_result((cents.get(cur).copied().unwrap_or(0) as f64 / 100.0).to_string());
         let f = Format::new()
             .set_bold()
             .set_num_format(currency_format(cur))
@@ -861,7 +861,7 @@ pub(crate) mod tests {
         (src, req)
     }
 
-    fn unzip_all(bytes: &[u8], dir: &std::path::Path) -> String {
+    pub fn unzip_all(bytes: &[u8], dir: &std::path::Path) -> String {
         let zip = dir.join("x.xlsx");
         std::fs::write(&zip, bytes).unwrap();
         let out = std::process::Command::new("unzip")

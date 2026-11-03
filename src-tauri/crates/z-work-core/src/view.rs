@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::detect::Detected;
+use crate::lease::{HolderInfo, LeaseStateName};
 use crate::machine::RequiredField;
 use crate::model::{
     BillablePause, BillingSummary, BillingType, IdleGap, PauseReason, PendingCopy, RateVersion,
@@ -159,6 +160,70 @@ pub struct SyncView {
     pub detected: Vec<Detected>,
     pub prompt_pending: bool,
     pub pending_copy: Option<PendingCopy>,
+    /// A folder waiting for the user to choose between its restored data and this device's.
+    pub join_pending: Option<JoinPendingView>,
+}
+
+/// The restore a folder has in its past. What the user chooses over.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinPendingView {
+    pub root: String,
+    /// The version file's name.
+    pub taken_from: String,
+    /// When that version was taken.
+    pub at: Ts,
+    /// The device that restored it.
+    pub device_name: String,
+}
+
+/// Another device holding the lease, or the one last known to.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseHolderView {
+    pub device_id: String,
+    pub device_name: String,
+    pub generation: u64,
+    pub beat_seq: u64,
+    pub last_sign_at: Option<Ts>,
+    pub age_secs: Option<i64>,
+    pub clock_suspect: bool,
+}
+
+impl LeaseHolderView {
+    /// How long ago it was last heard of, on this computer's clock.
+    #[must_use]
+    pub fn of(holder: &HolderInfo, now: Ts) -> Self {
+        Self {
+            device_id: holder.device_id.clone(),
+            device_name: holder.device_name.clone(),
+            generation: holder.generation,
+            beat_seq: holder.beat_seq,
+            last_sign_at: Some(holder.last_sign_at),
+            age_secs: Some((now.secs() - holder.last_sign_at.secs()).max(0)),
+            clock_suspect: holder.clock_suspect,
+        }
+    }
+}
+
+/// The single-device lease, as far as the page goes.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseView {
+    pub state: LeaseStateName,
+    pub read_only: bool,
+    pub holder: Option<LeaseHolderView>,
+    pub generation: Option<u64>,
+    pub note: Option<String>,
+    pub reachable_roots: Vec<String>,
+    pub unreachable_roots: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformView {
+    /// Running from an MSIX package, whose files Windows removes with the app.
+    pub packaged: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -217,6 +282,8 @@ pub struct Snapshot {
     pub reminder_settings: ReminderSettings,
     pub backup_keep: u32,
     pub has_pdf_logo: bool,
+    pub lease: LeaseView,
+    pub platform: PlatformView,
 }
 
 #[derive(Clone, Debug, Serialize)]

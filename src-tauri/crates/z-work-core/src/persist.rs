@@ -108,16 +108,31 @@ pub(crate) fn with_local_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Re
     op()
 }
 
-/// Writes `bytes` to `tmp`, flushes it to disk and renames it over `dest`.
-pub fn write_atomic(dest: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
-    write_new(tmp, bytes)?;
-    fs::rename(tmp, dest)?;
+#[cfg(test)]
+thread_local! {
+    /// The renames whose folder was flushed, in order, for tests to read.
+    static PARENT_SYNCS: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Flushes the folder a file was just renamed into. Until that is on disk, a power cut can undo the rename.
+fn sync_parent(dest: &Path) {
+    #[cfg(test)]
+    PARENT_SYNCS.with(|s| s.borrow_mut().push(dest.to_path_buf()));
     #[cfg(unix)]
     if let Some(parent) = dest.parent()
         && let Ok(d) = File::open(parent)
     {
         let _ = d.sync_all();
     }
+    #[cfg(not(unix))]
+    let _ = dest;
+}
+
+/// Writes `bytes` to `tmp`, flushes it to disk and renames it over `dest`.
+pub fn write_atomic(dest: &Path, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_new(tmp, bytes)?;
+    fs::rename(tmp, dest)?;
+    sync_parent(dest);
     Ok(())
 }
 
@@ -202,8 +217,18 @@ fn reads_back(bytes: &[u8], file: &LocalFile) -> Result<(), String> {
 }
 
 fn read_opt(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(b) => Ok(Some(b)),
+    read_held(|| fs::read(path))
+}
+
+/// A read given the same time as a write, as something else may have the file open for a moment.
+fn read_held(mut read: impl FnMut() -> io::Result<Vec<u8>>) -> io::Result<Option<Vec<u8>>> {
+    let mut bytes = None;
+    let got = with_local_retry(|| {
+        bytes = Some(read()?);
+        Ok(())
+    });
+    match got {
+        Ok(()) => Ok(bytes),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
@@ -299,14 +324,15 @@ pub fn clear_heartbeat(paths: &Paths) {
 }
 
 /// The heartbeat on record for this device. An unreadable file says nothing, so the main file's stands.
-fn read_heartbeat(paths: &Paths, device_id: &str) -> Option<Ts> {
+pub(crate) fn read_heartbeat(paths: &Paths, device_id: &str) -> Option<Ts> {
     let bytes = fs::read(paths.heartbeat()).ok()?;
     let beat: HeartbeatFile = serde_json::from_slice(&bytes).ok()?;
     (beat.device_id == device_id).then_some(beat.at)
 }
 
 /// Brings a store just read up to date with the heartbeat recorded after it was last saved. Never past
-/// now: a clock put back after a beat must not give a recovered segment time that hasn't happened.
+/// now: a clock put back after a beat must not give a recovered segment time that hasn't happened. Only
+/// `recover_crash` looks past this, for a run that began after now.
 fn apply_heartbeat(paths: &Paths, mut file: LocalFile, now: Ts) -> LocalFile {
     if let Some(at) = read_heartbeat(paths, &file.device_id) {
         file.last_heartbeat = file.last_heartbeat.max(Some(at)).map(|t| t.min(now));
@@ -328,6 +354,8 @@ fn keep_before_migration(paths: &Paths, bytes: &[u8], version: u64) -> io::Resul
 }
 
 /// Loads the store, recovering from `.bak` when needed. A newer-version file is refused and left alone.
+/// The backup is only read when the main file can't be used, so nothing holding it can stop a good file
+/// opening. If it is needed and can't be read, everything stays as found for the next launch to try.
 pub fn load(
     paths: &Paths,
     device_name: &str,
@@ -335,9 +363,9 @@ pub fn load(
 ) -> Result<(LocalFile, LoadOutcome), CoreError> {
     fs::create_dir_all(&paths.dir)?;
     let mut outcome = LoadOutcome::default();
-    let main = read_opt(&paths.main())?;
-    let bak = read_opt(&paths.bak())?;
+    let main = read_opt(&paths.main()).map_err(CoreError::Read)?;
     let had_main = main.is_some();
+    let mut main_damage = None;
 
     if let Some(bytes) = &main {
         match parse_local(bytes) {
@@ -352,14 +380,17 @@ pub fn load(
                     supported: SCHEMA_VERSION,
                 });
             }
-            Parsed::Corrupt(why) => {
-                let kept = quarantine(paths, &paths.main(), now)?;
-                outcome.notices.push(format!(
-                    "The data file was damaged ({why}). A copy was kept at {}.",
-                    kept.display()
-                ));
-            }
+            Parsed::Corrupt(why) => main_damage = Some(why),
         }
+    }
+
+    let bak = read_opt(&paths.bak()).map_err(CoreError::Read)?;
+    if let Some(why) = main_damage {
+        let kept = quarantine(paths, &paths.main(), now)?;
+        outcome.notices.push(format!(
+            "The data file was damaged ({why}). A copy was kept at {}.",
+            kept.display()
+        ));
     }
 
     if let Some(bytes) = &bak {
@@ -420,6 +451,7 @@ pub fn save(paths: &Paths, file: &LocalFile, now: Ts) -> Result<(), CoreError> {
         }
     }
     with_local_retry(|| fs::rename(&tmp, paths.main()))?;
+    sync_parent(&paths.main());
     paths.remember_checked(&bytes);
     paths.bak_behind.store(true, Ordering::Relaxed);
     Ok(())
@@ -890,5 +922,100 @@ mod tests {
         save(&p, &with_project("Three"), NOW).unwrap();
         assert_eq!(fs::read(p.bak()).unwrap(), good_bak);
         assert_eq!(corrupt_files(dir.path()), 1);
+    }
+
+    #[test]
+    fn r12_a_backup_that_cannot_be_read_does_not_stop_a_good_main_file_loading() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        let one = with_project("One");
+        save(&p, &one, NOW).unwrap();
+        fs::create_dir(p.bak()).unwrap();
+        let (loaded, outcome) = load(&p, "pc", NOW).unwrap();
+        assert_eq!(loaded, one);
+        assert!(outcome.notices.is_empty());
+    }
+
+    #[test]
+    fn r12_a_read_error_says_read_and_not_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        fs::create_dir(p.main()).unwrap();
+        let e = load(&p, "pc", NOW).unwrap_err();
+        let text = e.to_string();
+        assert!(text.contains("read"), "{text}");
+        assert!(!text.contains("save"), "{text}");
+        assert_eq!(e.code(), "io");
+    }
+
+    #[test]
+    fn r12_a_held_backup_leaves_a_damaged_main_file_where_it_is_for_the_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        fs::write(p.main(), b"junk").unwrap();
+        fs::create_dir(p.bak()).unwrap();
+        let e = load(&p, "pc", NOW).unwrap_err();
+        assert!(e.to_string().contains("read"), "{e}");
+        assert_eq!(fs::read(p.main()).unwrap(), b"junk");
+        assert_eq!(corrupt_files(dir.path()), 0);
+        // With the backup free again, the next launch recovers as it always did.
+        fs::remove_dir(p.bak()).unwrap();
+        let one = with_project("One");
+        fs::write(p.bak(), serde_json::to_vec(&one).unwrap()).unwrap();
+        let (loaded, outcome) = load(&p, "pc", NOW).unwrap();
+        assert_eq!(loaded, one);
+        assert_eq!(outcome.notices.len(), 2, "{:?}", outcome.notices);
+        assert_eq!(corrupt_files(dir.path()), 1);
+    }
+
+    #[test]
+    fn r12_a_missing_main_file_with_a_held_backup_does_not_start_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        fs::create_dir(p.bak()).unwrap();
+        assert!(load(&p, "pc", NOW).is_err());
+    }
+
+    #[test]
+    fn r12_a_read_is_retried_while_the_file_is_held_and_no_file_is_not_an_error() {
+        let mut calls = 0;
+        let got = read_held(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            } else {
+                Ok(b"data".to_vec())
+            }
+        });
+        assert_eq!(got.unwrap().as_deref(), Some(&b"data"[..]));
+        assert_eq!(calls, 3);
+
+        let mut calls = 0;
+        let got = read_held(|| {
+            calls += 1;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        });
+        assert_eq!(got.unwrap(), None);
+        assert_eq!(calls, 1, "nothing to wait for");
+
+        let got = read_held(|| Err(io::Error::from(io::ErrorKind::PermissionDenied)));
+        assert_eq!(got.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn r15_save_flushes_the_folder_after_its_final_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths::new(dir.path());
+        PARENT_SYNCS.with(|s| s.borrow_mut().clear());
+        save(&p, &with_project("One"), NOW).unwrap();
+        // The first save rotates nothing, so only the last step can account for this.
+        assert_eq!(PARENT_SYNCS.with(|s| s.borrow().clone()), vec![p.main()]);
+        PARENT_SYNCS.with(|s| s.borrow_mut().clear());
+        save(&p, &with_project("Two"), NOW).unwrap();
+        // The backup's flush comes before the main file's rename, so it can't stand in for it.
+        assert_eq!(
+            PARENT_SYNCS.with(|s| s.borrow().clone()),
+            vec![p.bak(), p.main()]
+        );
     }
 }

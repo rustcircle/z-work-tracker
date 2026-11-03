@@ -6,18 +6,25 @@ import type {
   PatchReply,
   TaskExpected,
   AuditEntry,
+  AutostartInfo,
   BackupInfo,
   CorrectionInput,
   ExportRequest,
   GapDecision,
+  JoinChoice,
   ManualEntryInput,
   PauseInput,
   PdfRequest,
   PdfSaved,
+  RestorePreview,
   SavedColor,
   SummaryPreview,
   SummaryRequest,
   TagInput,
+  TakeOverExpected,
+  TakeOverMode,
+  TakeOverPreview,
+  TakeOverResult,
   TemplateInput,
   FolderPreview,
   MovePreview,
@@ -33,6 +40,7 @@ import type {
   TaskInput, TaskPatch,
   Theme,
   TransitionResult,
+  VersionList,
   WithId,
 } from './types';
 
@@ -56,6 +64,8 @@ export const api = {
   saveShift: (input: ShiftInput) => invoke<WithId>('save_shift', { input }),
   deleteShift: (shiftId: string) => invoke<Snapshot>('delete_shift', { shiftId }),
   setRate: (input: RateInput) => invoke<Snapshot>('set_rate', { input }),
+  /** Takes one price version away, so the one before it applies again. Taking away one that has started changes past earnings, so the backend refuses with a `conflict` unless `confirmRetroactive` is true. Billing summaries keep their amounts. */
+  deleteRateVersion: (id: string, confirmRetroactive: boolean) => invoke<Snapshot>('delete_rate_version', { id, confirmRetroactive }),
   setRounding: (input: RoundingInput, today: string) => invoke<Snapshot>('set_rounding', { input, today }),
   deleteRounding: (id: string) => invoke<Snapshot>('delete_rounding', { id }),
   setSetting: (key: string, value: unknown) => invoke<Snapshot>('set_setting', { key, value }),
@@ -126,6 +136,31 @@ export const api = {
   /** The page has painted: the native window may be shown. Errors are ignored by the caller. */
   windowReady: () => invoke<void>('window_ready'),
   setMica: (on: boolean) => invoke<Snapshot>('set_mica', { on }),
+
+  // Who may change the data (one computer at a time, best effort). While another computer holds the lease, every
+  // command that changes shared data fails with the `read_only` code.
+  /** Reads the folders afresh to say who holds the lease and which running tasks a take over would close. */
+  leasePreviewTakeOver: () => invoke<TakeOverPreview>('lease_preview_take_over'),
+  /** Reads again first and answers `changed` when the holder is no longer the one in `expected`, so nothing is taken over blind. */
+  leaseTakeOver: (expected: TakeOverExpected, mode: TakeOverMode) => invoke<TakeOverResult>('lease_take_over', { expected, mode }),
+  /** Gives the lease up now, so another computer can change data without taking over. */
+  leaseRelease: () => invoke<Snapshot>('lease_release'),
+  /** Closes a task another computer left running, at the last moment that computer is known to have been running. The backend refuses while that computer may still be running it. */
+  settleLostSegment: (segmentId: string, reason: string) => invoke<Snapshot>('settle_lost_segment', { segmentId, reason }),
+  // Saved versions in the sync folders.
+  /** `extraRoot` also looks in a folder that is no longer connected. A folder that can't be read is reported in `errors`, and the others are still listed. */
+  listVersions: (extraRoot?: string) => invoke<VersionList>('list_versions', extraRoot === undefined ? {} : { extraRoot }),
+  /** The plain-text record of what changed in a version. Rejects when this copy can't be read here, such as one that is still syncing. */
+  readVersionChanges: (root: string, name: string) => invoke<string>('read_version_changes', { root, name }),
+  saveVersionNow: () => invoke<Snapshot>('save_version_now'),
+  previewRestoreVersion: (root: string, name: string) => invoke<RestorePreview>('preview_restore_version', { root, name }),
+  /** Replaces the data on every computer that syncs with these folders. A copy of today's data is saved first. */
+  restoreVersion: (root: string, name: string) => invoke<Snapshot>('restore_version', { root, name }),
+  /** The user's answer for a folder whose data was restored while this computer has data from before it (`sync.joinPending`). */
+  resolveJoin: (root: string, choice: JoinChoice) => invoke<Snapshot>('resolve_join', { root, choice }),
+  // Start with Windows, as Windows reports it. `getAutostart` and `setAutostart` stay for the setup wizard.
+  getAutostartInfo: () => invoke<AutostartInfo>('get_autostart_info'),
+  openStartupSettings: () => invoke<void>('open_startup_settings'),
 };
 
 export interface HideNoticePayload {

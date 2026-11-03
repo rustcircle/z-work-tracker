@@ -1,6 +1,6 @@
 // Pure rules for the Projects tab: price parsing, unique names, and rate history.
 import { money } from '../../lib/billing';
-import { parseIso } from '../../lib/tz';
+import { parseIso, startOfDay } from '../../lib/tz';
 import type { Currency, Project, RateVersion } from '../../lib/types';
 
 export type PriceResult = { ok: true; cents: number | null } | { ok: false; error: string };
@@ -41,12 +41,43 @@ export function rateHistory(rates: readonly RateVersion[], projectId: string): R
   return rates.filter((r) => r.projectId === projectId && !r.deleted).sort((a, b) => parseIso(b.effectiveFrom) - parseIso(a.effectiveFrom));
 }
 
+/** The live version that starts next after `version`, where the effect of taking `version` away ends, or null when it is the newest. `history` is `rateHistory`, newest first. */
+export function laterVersion(history: readonly RateVersion[], version: RateVersion): RateVersion | null {
+  const at = parseIso(version.effectiveFrom);
+  return history.filter((r) => parseIso(r.effectiveFrom) > at).at(-1) ?? null;
+}
+
 /** The version in force at `sec`, or null when none has started. */
 export function rateAt(rates: readonly RateVersion[], projectId: string, sec: number): RateVersion | null {
   return rateHistory(rates, projectId).find((r) => parseIso(r.effectiveFrom) <= sec) ?? null;
 }
 
 const isCurrency = (c: string): c is Currency => c === 'EUR' || c === 'USD';
+
+/** What the price and currency fields show for the version in force: its price and currency, or blank and the last currency used. */
+export function priceFieldsOf(current: RateVersion | null, lastCurrency: Currency | null): { price: string; currency: Currency } {
+  return { price: centsToInput(current?.rateCents ?? null), currency: current && isCurrency(current.currency) ? current.currency : (lastCurrency ?? 'EUR') };
+}
+
+const EARLIEST_CHOSEN = Date.UTC(2000, 0, 1) / 1000;
+const LATEST_CHOSEN = Date.UTC(2100, 0, 1) / 1000;
+
+/**
+ * The first and the last day a price may start on, in `zone`. The backend takes a start date from 2000-01-01 to 2100-01-01 UTC
+ * (`check_chosen_date` in validate.rs), counted from the instant the day starts, so east of UTC the first day is the 2nd of January.
+ */
+export function chosenDayBounds(zone: string): { min: string; max: string } {
+  return {
+    min: startOfDay('2000-01-01', zone) >= EARLIEST_CHOSEN ? '2000-01-01' : '2000-01-02',
+    max: startOfDay('2100-01-01', zone) <= LATEST_CHOSEN ? '2100-01-01' : '2099-12-31',
+  };
+}
+
+/** What the form says when the project was saved and the step after it was refused: the project is there, so the user needs to know. */
+export function savedButNot(what: 'price' | 'rounding', why: string): string {
+  const reason = why.trim();
+  return `The project was saved, but the ${what} was not: ${reason}${/[.!?]$/.test(reason) ? '' : '.'}`;
+}
 
 /** "€60.00/h", or "No rate set". */
 export function rateText(r: RateVersion | null, masked: string | null = null): string {

@@ -1,5 +1,6 @@
 // The text of a billing summary's CSV file, for the mock. A port of `summary_csv` in summary.rs: with
 // Hide earnings on there are no amount columns, and a voided summary says so in a Status row.
+import { ROUNDED_ROWS_NOTE, rowsDifferFromTotal } from '../lib/billing';
 import type { BillingSummary } from '../lib/types';
 
 /** Prefixes an apostrophe when a spreadsheet could read the cell as a formula (csv.rs `neutralize`). */
@@ -33,5 +34,6 @@ export function summaryCsv(b: BillingSummary, projectName: string, hideEarnings:
   }
   const sum = (pick: (r: BillingSummary['rows'][number]) => number): number => b.rows.reduce((n, r) => n + pick(r), 0);
   line(['Total', '', hours(sum((r) => r.exactSecs)), hours(sum((r) => r.pauseSecs)), hours(sum((r) => r.billableSecs)), ...currencies.map((c) => amount((b.totals as Record<string, number | undefined>)[c] ?? 0))]);
+  if (currencies.length > 0 && rowsDifferFromTotal(b.rows.map((r) => r.cents), b.totals)) line([ROUNDED_ROWS_NOTE]);
   return `${lines.join('\r\n')}\r\n`;
 }

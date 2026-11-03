@@ -2,6 +2,7 @@
 // which exist in the glossary. No AI, no scores, no advice: plain statements about logged time.
 import { centsFromNumerator, money as fmtMoney, MASK, type Numerators } from '../../lib/billing';
 import { cityOf } from '../../lib/tz';
+import { budgetPercentText } from './fam-p2';
 import { fmtClock, fmtHM, fmtPct, fmtSignedPct } from './format';
 import type { Metrics } from './metrics';
 import { dayStr, WEEKDAY_NAMES, MONTH_SHORT } from './range';
@@ -87,7 +88,7 @@ export function buildInsights(m: Metrics, opts: { hideEarnings: boolean; names: 
   if (topTag && topTag.share !== null) add('tags', ['tags.time'], `${topTag.name} is the tag with the most time: ${fmtHM(topTag.secs)}, ${fmtPct(topTag.share)} of all time. Tags overlap, so tag shares can add up to more than 100%.`);
   for (const b of m.budgetStatus) {
     if (b.needsTargetRate || b.level === 0) continue;
-    add(`budget-status-${b.projectId}`, ['budget.used'], `${b.name} has used ${b.percent}% of its ${b.basis === 'hours' ? 'hours budget' : 'fixed fee'}: ${b.level === 100 ? 'over budget' : 'a warning at 80%'}.`);
+    add(`budget-status-${b.projectId}`, ['budget.used'], `${b.name} has used ${budgetPercentText(opts.hideEarnings, b)} of its ${b.basis === 'hours' ? 'hours budget' : 'fixed fee'}: ${b.level === 100 ? 'over budget' : 'a warning at 80%'}.`);
   }
   for (const f of m.fixedFee) {
     if (f.effectiveHourlyCents === null || f.currency === null) continue;

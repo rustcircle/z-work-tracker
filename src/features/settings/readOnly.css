@@ -1,0 +1,2 @@
+/* A fieldset that only carries `disabled` for the controls inside it: no box of its own. */
+.ro-group { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 14px; }

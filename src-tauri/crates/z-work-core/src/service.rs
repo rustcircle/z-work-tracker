@@ -1,27 +1,29 @@
 //! The application service: owns the store, applies each change transactionally and builds the view.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::adjust::{CorrectionInput, ManualEntryInput, PauseInput};
+use crate::adjust::{CorrectionInput, ManualEntryInput, PauseInput, Reclaimed};
 use crate::backup::{self, BackupInfo};
 use crate::catalog::{TagInput, TemplateInput};
 use crate::colors;
 use crate::detect::Detected;
 use crate::drafts::{Draft, Kept, KeptBecause};
 use crate::error::CoreError;
-use crate::idle::{IdleTracker, NewGap};
+use crate::idle::{ClockStep, IdleTracker, NewGap};
+use crate::lease::{LOST_DEVICE_SILENCE_SECS, LeaseState, LeaseStateName};
 use crate::machine::{
     Ctx, PatchOutcome, PauseRequestDue, ProjectInput, RateInput, RequiredField, RoundingInput,
     ShiftInput, TaskExpected, TaskInput, TaskPatch, Transition, cold_required, doc_has_text,
 };
 use crate::merge::merge;
 use crate::model::{
-    AuditEntry, DeviceFile, GapDecision, GapKind, LocalFile, PauseReason, PendingCopy,
-    RemoteDevice, SCHEMA_VERSION, Segment, Shared, SyncTarget, Task, TaskState, Theme,
+    AuditEntry, DeviceFile, EpochInfo, GapDecision, GapKind, LocalFile, PauseReason, PendingCopy,
+    RemoteDevice, SCHEMA_VERSION, Segment, Shared, SyncProvider, SyncTarget, Task, TaskState,
+    Theme, VersionReason,
 };
 use crate::persist::{self, Paths};
 use crate::pieces;
@@ -34,9 +36,9 @@ use crate::summary::{
 use crate::sync::{APP_FOLDER, HungTargets, TargetStatus};
 use crate::time::{Clock, Ts};
 use crate::view::{
-    BillingView, CopySource, LaunchView, Notice, PrefsView, ProjectView, RawSegmentView,
-    ReminderSettings, SegmentView, SetupView, Snapshot, SubtaskView, SyncView, TargetView,
-    TaskView,
+    BillingView, CopySource, JoinPendingView, LaunchView, LeaseHolderView, LeaseView, Notice,
+    PlatformView, PrefsView, ProjectView, RawSegmentView, ReminderSettings, SegmentView, SetupView,
+    Snapshot, SubtaskView, SyncView, TargetView, TaskView,
 };
 
 /// How long after a launch an edit stamped by another device may still have been made without the words put back
@@ -44,19 +46,25 @@ use crate::view::{
 /// long a time costs a notice that only needs dismissing, and too short a time costs the words.
 const WITHOUT_WORDS_PUT_BACK_SECS: i64 = 3600;
 
+/// A folder that has failed for this long is mentioned wherever the user is looking.
+const FOLDER_FAILING_WARNING_SECS: i64 = 30 * 60;
+
+/// Replicated settings that only choose what this device is looking at. A read-only device can still change them.
+const VIEW_SETTINGS: [&str; 2] = ["activeZone", "showBoth"];
+
 pub struct Service {
-    paths: Paths,
-    file: LocalFile,
+    pub(crate) paths: Paths,
+    pub(crate) file: LocalFile,
     clock: Arc<dyn Clock>,
     notices: Vec<Notice>,
     next_notice: u64,
-    pause_alerts: Vec<String>,
+    pub(crate) pause_alerts: Vec<String>,
     targets: BTreeMap<String, TargetStatus>,
     detected: Vec<Detected>,
     system_zone: String,
     /// Bumped on every committed change, so the app knows when to schedule a sync, and when words are kept
     /// or a notice is dismissed, so that no older reply on its way to the page can undo that.
-    revision: u64,
+    pub(crate) revision: u64,
     /// Words kept out of the store, by the id of the notice showing them.
     kept_out: BTreeMap<String, Kept>,
     /// Their file couldn't be read or moved aside at this launch, so this run writes nothing over it.
@@ -71,15 +79,15 @@ pub struct Service {
     /// back, and a draft is one lot of words for a task, so this run writes nothing over it, even once it can be read.
     drafts_file_stuck: bool,
     /// When this launch began. Nothing it had to write can have reached another device by then.
-    opened: Ts,
+    pub(crate) opened: Ts,
     /// Drafts put back at this launch, as stored, until something else replaces them.
     recovered: BTreeMap<String, Draft>,
     /// False on every real launch, until the first task of this launch has started. Never saved.
-    warm: bool,
+    pub(crate) warm: bool,
     /// The task most recently worked in this launch: what a warm start copies.
-    last_worked: Option<String>,
+    pub(crate) last_worked: Option<String>,
     /// A failure to save merged data. Folder writes must not clear it.
-    local_error: Option<String>,
+    pub(crate) local_error: Option<String>,
     hung: HungTargets,
     idle: IdleTracker,
     /// The reminder is quiet until this moment.
@@ -88,10 +96,39 @@ pub struct Service {
     reminder_told: Option<Reminder>,
     /// Time away found but not yet saved, with the segment it belongs to. Kept until a save works.
     unsaved_gaps: Vec<(String, NewGap)>,
+    /// Clocks put back under a running timer and not yet saved. Kept until a save works.
+    unsaved_steps: Vec<ClockStep>,
+    /// Clocks put back, not yet offered as a system notification.
+    clock_alerts: Vec<String>,
     /// Where a replacement colour's randomness comes from. Injected in tests.
     random: Box<dyn FnMut() -> u64 + Send>,
     color_replaced: Option<String>,
     mica_available: bool,
+    /// Running from an MSIX package, whose files Windows removes with the app.
+    packaged: bool,
+    /// Whether this computer may change replicated data, as far as can be known.
+    pub(crate) lease: LeaseState,
+    /// What reading and writing the lease records keeps, see `lease_io`.
+    pub(crate) lease_io: crate::lease_io::LeaseIo,
+    /// A version to write at the next chance, whatever the hourly cadence says.
+    version_due: Option<VersionReason>,
+    /// The data each restored version followed here replaced, oldest first, until a version of it is written.
+    pre_adopt: VecDeque<DeviceFile>,
+}
+
+/// What a restore installs along with the data, and in the same save, so a crash can't leave half of it.
+pub(crate) struct RestoreNote {
+    /// `backup` or `version`, and which one, for the record of changes.
+    pub entity: &'static str,
+    pub name: String,
+    pub after: Value,
+    /// The moment a task these data hold running stopped being timed.
+    pub closed_at: Ts,
+    pub reason: PauseReason,
+    /// The last heartbeat these data know of.
+    pub last_heartbeat: Option<Ts>,
+    /// The restore every device is to follow from here on. `None` leaves that as it is.
+    pub epoch: Option<EpochInfo>,
 }
 
 /// Saved colours and what happened to them.
@@ -107,6 +144,30 @@ fn default_random() -> u64 {
     hi
 }
 
+/// A length of time as the user reads it, to the minute.
+pub(crate) fn span_text(secs: i64) -> String {
+    let minutes = secs.max(0) / 60;
+    match (minutes / (24 * 60), minutes / 60, minutes % 60) {
+        (0, 0, 0) => "less than a minute".to_owned(),
+        (0, 0, m) => format!("{m} min"),
+        (0, h, 0) => format!("{h} h"),
+        (0, h, m) => format!("{h} h {m} min"),
+        (1, _, _) => "1 day".to_owned(),
+        (d, _, _) => format!("{d} days"),
+    }
+}
+
+/// What the user calls a folder.
+pub(crate) fn folder_label(target: &SyncTarget) -> String {
+    match target.provider {
+        SyncProvider::OneDrive => "OneDrive".to_owned(),
+        SyncProvider::GoogleDrive => "Google Drive".to_owned(),
+        SyncProvider::Custom => Path::new(&target.root)
+            .file_name()
+            .map_or_else(|| "Sync".to_owned(), |n| n.to_string_lossy().into_owned()),
+    }
+}
+
 /// The setting's value in minutes, or the default when it was never set. `null` or 0 is off.
 fn minutes_setting(data: &Shared, key: &str, default: i64) -> i64 {
     match data.settings.get(key).map(|e| &e.value) {
@@ -118,12 +179,40 @@ fn minutes_setting(data: &Shared, key: &str, default: i64) -> i64 {
 const DEFAULT_IDLE_MINUTES: i64 = 10;
 pub const PDF_LOGO_FILE: &str = "pdf-logo.png";
 
+/// Tries `op` again while something holds the store, with a `wait` before each try.
+fn retry_while_held<T>(
+    mut op: impl FnMut() -> Result<T, CoreError>,
+    mut wait: impl FnMut(std::time::Duration),
+) -> Result<T, CoreError> {
+    for _ in 0..4 {
+        match op() {
+            Err(e) if e.is_held() => wait(std::time::Duration::from_secs(1)),
+            other => return other,
+        }
+    }
+    op()
+}
+
 impl Service {
+    /// Opens the store for a launch. At login antivirus can hold the file for longer than one save waits,
+    /// so this waits a few seconds rather than leave the app without its data until the next launch.
+    pub fn open_when_free(
+        dir: &Path,
+        clock: Arc<dyn Clock>,
+        device_name: &str,
+    ) -> Result<Self, CoreError> {
+        retry_while_held(
+            || Self::open(dir, Arc::clone(&clock), device_name),
+            std::thread::sleep,
+        )
+    }
+
     /// Opens the store. An open segment left by a crash is closed at the last heartbeat here.
     pub fn open(dir: &Path, clock: Arc<dyn Clock>, device_name: &str) -> Result<Self, CoreError> {
         let paths = Paths::new(dir);
         let now = clock.now();
         let (file, outcome) = persist::load(&paths, device_name, now)?;
+        let lease = LeaseState::new(!file.prefs.sync_targets.is_empty());
         let mut svc = Self {
             paths,
             file,
@@ -143,6 +232,8 @@ impl Service {
             reminder_quiet_until: None,
             reminder_told: None,
             unsaved_gaps: Vec::new(),
+            unsaved_steps: Vec::new(),
+            clock_alerts: Vec::new(),
             random: Box::new(default_random),
             color_replaced: None,
             mica_available: false,
@@ -154,7 +245,13 @@ impl Service {
             drafts_file_stuck: false,
             opened: now,
             recovered: BTreeMap::new(),
+            packaged: false,
+            lease,
+            lease_io: crate::lease_io::LeaseIo::default(),
+            version_due: None,
+            pre_adopt: VecDeque::new(),
         };
+        svc.keep_folder_lists();
         svc.file.data.seed_tags();
         svc.file.data.normalize();
         svc.load_kept();
@@ -182,6 +279,24 @@ impl Service {
         Ok(svc)
     }
 
+    /// What is known of each folder's restores goes with the folder. A store from before these lists follows the
+    /// folders it already has, as it has been merging with them all along.
+    fn keep_folder_lists(&mut self) {
+        let prefs = &mut self.file.prefs;
+        let roots: Vec<String> = prefs.sync_targets.iter().map(|t| t.root.clone()).collect();
+        prefs
+            .sync_joined
+            .get_or_insert_with(|| roots.clone())
+            .retain(|r| roots.contains(r));
+        if prefs
+            .join_pending
+            .as_ref()
+            .is_some_and(|p| !roots.contains(&p.root))
+        {
+            prefs.join_pending = None;
+        }
+    }
+
     fn recover_crash(&mut self) -> Result<(), CoreError> {
         let device = self.file.device_id.clone();
         let away = self.file.prefs.away_since.take();
@@ -194,8 +309,23 @@ impl Service {
             now,
             device: &device,
         };
-        // The last heartbeat is the last moment the app is known to have been alive.
-        let at = self.file.last_heartbeat.unwrap_or(Ts(i64::MIN / 2));
+        // The last heartbeat is the last moment the app is known to have been alive. Loading cuts it to now,
+        // but a run that began after now was timed on a clock put back while the app was off. Its beat is on
+        // that same clock, and cutting it would lose the whole run.
+        let began_ahead = self
+            .file
+            .data
+            .segments
+            .get(&segment)
+            .is_some_and(|s| s.start > now);
+        let last_seen = if began_ahead {
+            self.file
+                .last_heartbeat
+                .max(persist::read_heartbeat(&self.paths, &device))
+        } else {
+            self.file.last_heartbeat
+        };
+        let at = last_seen.unwrap_or(Ts(i64::MIN / 2));
         // The app was alive but nobody was there, so that time stays unconfirmed.
         if let Some(away) = away {
             self.file
@@ -211,13 +341,13 @@ impl Service {
             format!(
                 "The app did not shut down cleanly. {} was paused at its last recorded moment ({}). Time after that was not logged. The next start asks for every field.",
                 names.join(", "),
-                self.file.last_heartbeat.map_or_else(|| "its start".to_owned(), |h| h.iso()),
+                last_seen.map_or_else(|| "its start".to_owned(), |h| h.iso()),
             ),
         );
         Ok(())
     }
 
-    fn notify(&mut self, level: &'static str, message: String) {
+    pub(crate) fn notify(&mut self, level: &'static str, message: String) {
         self.notices.push(Notice {
             id: self.next_notice.to_string(),
             level,
@@ -269,13 +399,46 @@ impl Service {
         self.system_zone = zone;
     }
 
+    /// Takes the zone the OS reports now. True when that changed the zone in use, so what is on screen
+    /// needs building again. A read that failed, or a name this build doesn't know, changes nothing.
+    pub fn observe_system_zone(&mut self, reported: Option<String>) -> bool {
+        let Some(zone) =
+            reported.filter(|z| *z != self.system_zone && crate::validate::parse_zone(z).is_ok())
+        else {
+            return false;
+        };
+        self.set_system_zone(zone);
+        // So that no older reply on its way to the page can undo it.
+        self.revision += 1;
+        true
+    }
+
     pub fn set_detected(&mut self, detected: Vec<Detected>) {
         self.detected = detected;
     }
 
-    /// Applies a change to a copy, saves it, and only then adopts it. If saving fails nothing changes.
+    /// Applies a change to a copy, saves it, and only then adopts it. If saving fails nothing changes. A change
+    /// to replicated data is refused while another computer holds the lease, and counts as this one needing it.
+    /// Preferences are this device's own and always pass.
     pub fn mutate<R>(
         &mut self,
+        f: impl FnOnce(&mut LocalFile, &Ctx<'_>) -> Result<R, CoreError>,
+    ) -> Result<R, CoreError> {
+        self.commit(true, f)
+    }
+
+    /// As `mutate`, for what isn't the user changing data: what arrives from a sync, a timer closing, a pause asked
+    /// of the holder. A read-only device has to go on doing these.
+    pub(crate) fn mutate_system<R>(
+        &mut self,
+        f: impl FnOnce(&mut LocalFile, &Ctx<'_>) -> Result<R, CoreError>,
+    ) -> Result<R, CoreError> {
+        self.commit(false, f)
+    }
+
+    fn commit<R>(
+        &mut self,
+        gated: bool,
         f: impl FnOnce(&mut LocalFile, &Ctx<'_>) -> Result<R, CoreError>,
     ) -> Result<R, CoreError> {
         let now = self.now();
@@ -286,11 +449,113 @@ impl Service {
         };
         let mut next = self.file.clone();
         let out = f(&mut next, &ctx)?;
+        let shared_change = gated && self.lease.active() && next.data != self.file.data;
+        if shared_change {
+            self.lease_gate()?;
+        }
         persist::save(&self.paths, &next, now)?;
         self.file = next;
         self.revision += 1;
         self.local_error = None;
+        if shared_change {
+            self.lease.note_change(now);
+        }
         Ok(out)
+    }
+
+    /// `Err(ReadOnly)` while another computer holds the lease.
+    pub(crate) fn lease_gate(&self) -> Result<(), CoreError> {
+        self.lease.gate(
+            self.file.prefs.lease_memo.as_ref(),
+            &self.file.device_id,
+            self.now(),
+        )
+    }
+
+    /// Changes to replicated data are refused for now.
+    #[must_use]
+    pub fn read_only(&self) -> bool {
+        self.lease.read_only(
+            self.file.prefs.lease_memo.as_ref(),
+            &self.file.device_id,
+            self.now(),
+        )
+    }
+
+    /// The lease, as far as the page goes.
+    #[must_use]
+    pub fn lease_view(&self) -> LeaseView {
+        let now = self.now();
+        let memo = self.file.prefs.lease_memo.as_ref();
+        let holder = self
+            .lease
+            .holder
+            .as_ref()
+            .map(|h| LeaseHolderView::of(h, now))
+            .or_else(|| {
+                // With no folder to read, the last one known is all there is to say.
+                memo.filter(|m| {
+                    self.lease.state == LeaseStateName::Unknown
+                        && m.device_id != self.file.device_id
+                })
+                .map(|m| LeaseHolderView {
+                    device_id: m.device_id.clone(),
+                    device_name: m.device_name.clone(),
+                    generation: m.generation,
+                    beat_seq: 0,
+                    last_sign_at: Some(m.at),
+                    age_secs: Some((now.secs() - m.at.secs()).max(0)),
+                    clock_suspect: false,
+                })
+            });
+        LeaseView {
+            state: self.lease.state,
+            read_only: self.read_only(),
+            generation: self
+                .lease
+                .claim
+                .as_ref()
+                .map(|c| c.generation)
+                .or_else(|| holder.as_ref().map(|h| h.generation)),
+            holder,
+            note: self.lease.note.clone(),
+            reachable_roots: self.lease.reachable_roots.clone(),
+            unreachable_roots: self.lease.unreachable_roots.clone(),
+        }
+    }
+
+    pub fn set_packaged(&mut self, packaged: bool) {
+        self.packaged = packaged;
+    }
+
+    #[must_use]
+    pub fn packaged(&self) -> bool {
+        self.packaged
+    }
+
+    /// Asks for a version at the next chance, whatever the hourly cadence says.
+    pub fn request_version(&mut self, reason: VersionReason) {
+        self.version_due = Some(reason);
+    }
+
+    /// The version asked for, once, for the one about to write it.
+    pub fn take_version_due(&mut self) -> Option<VersionReason> {
+        self.version_due.take()
+    }
+
+    /// Keeps the data a restored version is about to replace, until a version of it is written. One kept before it and
+    /// not written yet waits too, and a version asked for already keeps its place.
+    pub fn keep_pre_adopt(&mut self, file: DeviceFile) {
+        let at = self
+            .pre_adopt
+            .partition_point(|f| f.written_at <= file.written_at);
+        self.pre_adopt.insert(at, file);
+        self.version_due.get_or_insert(VersionReason::PreAdopt);
+    }
+
+    /// The oldest data kept by `keep_pre_adopt`, once.
+    pub fn take_pre_adopt(&mut self) -> Option<DeviceFile> {
+        self.pre_adopt.pop_front()
     }
 
     /// Replaces a colour that exactly matches another active project's. A saved colour left unchanged
@@ -558,8 +823,54 @@ impl Service {
         self.mutate(|f, c| f.data.revert_shift_version(c, version_id))
     }
 
+    /// Closes time left running on another device at the last moment anyone knows of it. Never automatic: the user
+    /// asks, and only once that device was asked to pause or has said nothing for a long time, as otherwise it may
+    /// simply be in use. If it comes back, its own record replaces this.
+    pub fn settle_lost_segment(&mut self, segment_id: &str, reason: &str) -> Result<(), CoreError> {
+        let seg = self
+            .file
+            .data
+            .segments
+            .get(segment_id)
+            .ok_or(CoreError::NotFound("work segment"))?;
+        if seg.device_id == self.file.device_id || !seg.is_open() {
+            return Err(CoreError::Conflict(
+                "this segment isn't running on another computer".into(),
+            ));
+        }
+        let name = self.device_name_of(&seg.device_id);
+        let asked = self.file.data.earliest_pause_request(segment_id).is_some();
+        // A device this one has never read a file from is known only by this segment.
+        let last_seen = self
+            .file
+            .remote_devices
+            .get(&seg.device_id)
+            .map_or(seg.start, |d| d.written_at);
+        let silent = self.now().secs() - last_seen.secs();
+        if !asked && silent < LOST_DEVICE_SILENCE_SECS {
+            return Err(CoreError::Conflict(format!(
+                "{name} was seen {} ago, so it may still be running this",
+                span_text(silent),
+            )));
+        }
+        let end = self.end_source().end_of(seg);
+        let reason = if reason.trim().is_empty() {
+            format!(
+                "Closed from {}: {name} stopped responding. Ended at its last known moment.",
+                self.file.device_name
+            )
+        } else {
+            reason.to_owned()
+        };
+        self.mutate(|f, c| {
+            f.data
+                .settle_foreign_open_segment(c, segment_id, end, &reason)
+        })
+    }
+
+    /// Asking the holder to pause is what a read-only device must be able to do.
     pub fn request_remote_pause(&mut self, task_id: &str) -> Result<String, CoreError> {
-        self.mutate(|f, c| f.data.request_remote_pause(c, task_id))
+        self.mutate_system(|f, c| f.data.request_remote_pause(c, task_id))
     }
 
     /// Stores what is being typed, so a shutdown can't lose it. Validated like a real edit. `base` is
@@ -571,6 +882,9 @@ impl Service {
         base: &Value,
     ) -> Result<(), CoreError> {
         crate::validate::check_description(description)?;
+        // Ids make a list longer. Better the page hears now than the words wait for a launch that can't use them.
+        let stored = self.file.data.tasks.get(task_id).map(|t| &t.description);
+        crate::validate::check_description(&crate::subtasks::assign_ids(description, stored))?;
         let mut all = self.drafts_to_change()?;
         // The page writes a stash again in case it failed, and that makes its words no newer than they were.
         let at = all
@@ -629,30 +943,37 @@ impl Service {
             let because = match stored {
                 Some(task) if task.is_live() => {
                     let own = task.description_stamp.by == device;
-                    if draft.base == task.description
-                        || (own && draft.at > task.description_stamp.at)
+                    if draft.base != task.description
+                        && !(own && draft.at > task.description_stamp.at)
                     {
-                        let ctx = Ctx {
-                            now: draft.at,
-                            device: &device,
-                        };
-                        task.description = crate::subtasks::assign_ids(
+                        KeptBecause::ChangedElsewhere
+                    } else {
+                        let description = crate::subtasks::assign_ids(
                             &draft.description,
                             Some(&task.description),
                         );
-                        task.description_stamp = ctx.next(&task.description_stamp);
-                        crate::machine::clear_missing_active(task, &ctx);
-                        restored.push(task.name.clone());
-                        self.recovered.insert(
-                            task_id,
-                            Draft {
-                                description: task.description.clone(),
-                                ..draft
-                            },
-                        );
-                        continue;
+                        // With its ids it may be more than the store can hold, and a store that can't
+                        // be saved would stop every launch from here on.
+                        if crate::validate::check_description(&description).is_ok() {
+                            let ctx = Ctx {
+                                now: draft.at,
+                                device: &device,
+                            };
+                            task.description = description;
+                            task.description_stamp = ctx.next(&task.description_stamp);
+                            crate::machine::clear_missing_active(task, &ctx);
+                            restored.push(task.name.clone());
+                            self.recovered.insert(
+                                task_id,
+                                Draft {
+                                    description: task.description.clone(),
+                                    ..draft
+                                },
+                            );
+                            continue;
+                        }
+                        KeptBecause::TooLong
                     }
-                    KeptBecause::ChangedElsewhere
                 }
                 _ => KeptBecause::TaskGone,
             };
@@ -847,6 +1168,9 @@ impl Service {
                 "were not put back, because its description changed while they waited. The newer text is kept."
             }
             KeptBecause::TaskGone => "were not saved, because the task no longer exists.",
+            KeptBecause::TooLong => {
+                "were not put back, because the list is too long to store. The text it had before is kept."
+            }
         };
         let message = format!(
             "Your unsaved words on “{}” {why} Copy your words from here if you want them, as dismissing this notice ends them: {}",
@@ -1004,10 +1328,12 @@ impl Service {
         let at = Ts(self.now().secs() - ago);
         let device = self.file.device_id.clone();
         let running = self.file.data.own_open_segments(&device).into_iter().next();
-        let gaps = match locked {
+        // A lock taken from here on is on the new clock, if it has just been put back.
+        let mut gaps = self.idle.notice_clock(self.now());
+        gaps.extend(match locked {
             Some(locked) => self.idle.set_locked(at, locked),
             None => self.idle.lock_unknown(at),
-        };
+        });
         if let Some(segment) = running {
             self.unsaved_gaps
                 .extend(gaps.into_iter().map(|g| (segment.clone(), g)));
@@ -1015,32 +1341,84 @@ impl Service {
         self.save_away()
     }
 
-    /// Writes found time away and the absence in progress. True when time away was recorded.
+    /// Writes found time away, the absence in progress and any clock put back under a running timer. True
+    /// when time away was recorded.
     fn save_away(&mut self) -> Result<bool, CoreError> {
+        self.unsaved_steps.extend(self.idle.take_steps_back());
+        // With no timer running, a clock put back has nothing to do here.
+        if !self.unsaved_steps.is_empty()
+            && self
+                .file
+                .data
+                .own_open_segments(&self.file.device_id)
+                .is_empty()
+        {
+            self.unsaved_steps.clear();
+        }
         let away = self.idle.away_since();
         let kind = self.idle.away_kind();
         if self.unsaved_gaps.is_empty()
+            && self.unsaved_steps.is_empty()
             && self.file.prefs.away_since == away
             && self.file.prefs.away_kind == kind
         {
             return Ok(false);
         }
         let gaps = self.unsaved_gaps.clone();
-        self.mutate(|f, c| {
+        let steps = self.unsaved_steps.clone();
+        // After a crash the later of the store's beat and the beat file's is believed, and a beat on the old
+        // clock would run the new stretch on to it. The file goes first: a crash between the two writes then
+        // ends the old stretch early, which the notice says, rather than the new one too late.
+        if !steps.is_empty() {
+            let _ = persist::save_heartbeat(&self.paths, &self.file.device_id, self.now());
+        }
+        let restarted = self.mutate_system(|f, c| {
             for (segment, g) in &gaps {
                 f.data.add_gap(c, segment, g.start, g.end, g.kind);
             }
+            let mut restarted = Vec::new();
+            for step in &steps {
+                // From when the clock was found changed, even if the save that says so comes later.
+                let at = Ctx {
+                    now: step.now,
+                    device: c.device,
+                };
+                restarted.push((*step, f.data.restart_after_clock_step(&at, step.last)));
+            }
+            if !steps.is_empty() {
+                f.last_heartbeat = Some(c.now);
+            }
             f.prefs.away_since = away;
             f.prefs.away_kind = kind;
-            Ok(())
+            Ok(restarted)
         })?;
         self.unsaved_gaps.clear();
+        self.unsaved_steps.clear();
+        for (step, tasks) in &restarted {
+            self.tell_clock_put_back(*step, tasks);
+        }
         Ok(!gaps.is_empty())
+    }
+
+    /// A timer stays running through this, so nothing else would tell the user why its time changed.
+    fn tell_clock_put_back(&mut self, step: ClockStep, tasks: &[String]) {
+        if tasks.is_empty() {
+            return;
+        }
+        let names: Vec<String> = tasks.iter().map(|t| format!("\"{t}\"")).collect();
+        let message = format!(
+            "This computer's clock went back from {} to {} while {} was running. The time so far stays as it was logged, and the timer goes on from the new time. Check those times in the task's details.",
+            self.when_text(step.last),
+            self.when_text(step.now),
+            names.join(", "),
+        );
+        self.clock_alerts.push(message.clone());
+        self.notify("warning", message);
     }
 
     /// Every path that closes the running segment comes through here first, so time away already
     /// under way is recorded and never silently counts as work.
-    fn settle_away(&mut self) -> Result<(), CoreError> {
+    pub(crate) fn settle_away(&mut self) -> Result<(), CoreError> {
         let device = self.file.device_id.clone();
         let running = self.file.data.own_open_segments(&device).into_iter().next();
         let gaps = self.idle.settle(self.now());
@@ -1100,24 +1478,35 @@ impl Service {
             .remote_devices
             .get(&due.requested_by)
             .map_or("another device", |d| d.name.as_str());
-        let zone = self.viewing_zone();
-        let when = chrono::DateTime::from_timestamp(due.at.secs(), 0).map_or_else(
-            || due.at.iso(),
-            |t| t.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string(),
-        );
+        let when = self.when_text(due.at);
         format!(
             "\"{task}\" was paused because {device} asked for it. Its time stopped at {when}, when that was asked, so anything you did on it after then isn't counted. Resume it if you're still working."
         )
     }
 
+    /// A moment as the user reads it, in the zone they are viewing.
+    pub(crate) fn when_text(&self, at: Ts) -> String {
+        let zone = self.viewing_zone();
+        chrono::DateTime::from_timestamp(at.secs(), 0).map_or_else(
+            || at.iso(),
+            |t| t.with_timezone(&zone).format("%Y-%m-%d %H:%M").to_string(),
+        )
+    }
+
     /// What deserves a system notification now. Each budget threshold and reminder notifies once.
     pub fn take_alerts(&mut self) -> Vec<String> {
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.clock_alerts);
         let figures = self.figures();
         let mut seen = self.file.prefs.budget_alerts_seen.clone();
         for (id, f) in &figures {
+            let told = seen.get(id).copied().unwrap_or(0);
+            let level = f.budget.as_ref().map_or(0, |b| b.level);
+            // Fallen below what was last told, as when a budget is raised: reaching it again is news.
+            if level < told {
+                seen.insert(id.clone(), level);
+            }
             let Some(b) = &f.budget else { continue };
-            if b.level > seen.get(id).copied().unwrap_or(0)
+            if level > told
                 && let Some(p) = self.file.data.projects.get(id).filter(|p| !p.archived)
             {
                 out.push(format!(
@@ -1195,55 +1584,28 @@ impl Service {
     /// store first. What belongs to this device stays: its preferences and sync folders, the reference
     /// prefixes and marks, so no number is reused, and the audit trail, which only grows.
     pub fn restore_backup(&mut self, name: &str) -> Result<String, CoreError> {
-        let mut restored = backup::read(&self.paths, name)?;
+        self.lease_gate()?;
+        let restored = backup::read(&self.paths, name)?;
+        self.refuse_backup_from_before_a_restore(&restored)?;
         self.on_exit()?;
         let safety = backup::safety_copy(&self.paths, &self.file, self.now())?;
-        let mut prefs = self.file.prefs.clone();
-        self.file
-            .data
-            .raise_reference_marks(&mut prefs.reference_marks);
-        restored
-            .data
-            .raise_reference_marks(&mut prefs.reference_marks);
-        prefs.away_since = None;
-        prefs.away_kind = None;
-        restored.prefs = prefs;
-        restored.device_id = self.file.device_id.clone();
-        restored.device_name = self.file.device_name.clone();
-        restored.remote_devices = self.file.remote_devices.clone();
-        restored.data.prefixes = self.file.data.prefixes.clone();
-        restored
-            .data
-            .audit_log
-            .extend(self.file.data.audit_log.clone());
-        restored.data.seed_tags();
-        restored.data.normalize();
-        // A task the backup held running stopped being timed when the backup was taken.
         let now = self.now();
-        let device = restored.device_id.clone();
-        let ctx = Ctx {
-            now,
-            device: &device,
-        };
-        let at = restored.last_heartbeat.unwrap_or(Ts(i64::MIN / 2));
-        let names = restored
-            .data
-            .close_own_open(&ctx, at, &PauseReason::BackupRestored);
-        restored.data.audit(
-            &ctx,
-            "backup",
-            name,
-            "restore",
-            "",
-            Value::Null,
-            serde_json::json!({"safetyCopy": safety}),
-        );
-        persist::save(&self.paths, &restored, now)?;
-        persist::clear_heartbeat(&self.paths);
-        self.file = restored;
-        self.revision += 1;
-        self.warm = false;
-        self.last_worked = None;
+        let names = self.install_restored(
+            restored.data,
+            RestoreNote {
+                entity: "backup",
+                name: name.to_owned(),
+                after: serde_json::json!({"safetyCopy": safety}),
+                // A task the backup held running stopped being timed when the backup was taken.
+                closed_at: restored.last_heartbeat.unwrap_or(Ts(i64::MIN / 2)),
+                reason: PauseReason::BackupRestored,
+                last_heartbeat: restored.last_heartbeat,
+                epoch: None,
+            },
+        )?;
+        if self.lease.active() {
+            self.lease.note_change(now);
+        }
         self.notify(
             "info",
             format!("Restored {name}. The data just before it is kept as {safety}."),
@@ -1267,6 +1629,78 @@ impl Service {
         Ok(safety)
     }
 
+    /// A backup keeps this device's preferences, so it would carry data from before a restored version past the
+    /// fence, and undo that restore on every computer.
+    fn refuse_backup_from_before_a_restore(&self, backup: &LocalFile) -> Result<(), CoreError> {
+        let current = self.file.prefs.epoch.as_ref();
+        let older = EpochInfo::key(backup.prefs.epoch.as_ref()) < EpochInfo::key(current);
+        match current {
+            Some(info) if older && !self.file.prefs.sync_targets.is_empty() => {
+                Err(CoreError::Conflict(format!(
+                    "This backup is from before the version of {} was restored. Restoring it would undo that on every computer. Use Versions instead.",
+                    self.when_text(info.base_taken_at),
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Replaces the replicated data, in one save, keeping what belongs to this device: its preferences and devices,
+    /// the reference prefixes and marks, and the audit trail. Starts cold. Returns the tasks these data held running
+    /// here, now paused. Callers answer for the lease and for telling the user.
+    pub(crate) fn install_restored(
+        &mut self,
+        mut data: Shared,
+        note: RestoreNote,
+    ) -> Result<Vec<String>, CoreError> {
+        let mut prefs = self.file.prefs.clone();
+        self.file
+            .data
+            .raise_reference_marks(&mut prefs.reference_marks);
+        data.raise_reference_marks(&mut prefs.reference_marks);
+        prefs.away_since = None;
+        prefs.away_kind = None;
+        if note.epoch.is_some() {
+            prefs.epoch = note.epoch;
+        }
+        data.prefixes = self.file.data.prefixes.clone();
+        data.audit_log.extend(self.file.data.audit_log.clone());
+        data.seed_tags();
+        data.normalize();
+        let now = self.now();
+        let device = self.file.device_id.clone();
+        let ctx = Ctx {
+            now,
+            device: &device,
+        };
+        let names = data.close_own_open(&ctx, note.closed_at, &note.reason);
+        data.audit(
+            &ctx,
+            note.entity,
+            &note.name,
+            "restore",
+            "",
+            Value::Null,
+            note.after,
+        );
+        let next = LocalFile {
+            version: self.file.version,
+            device_id: device.clone(),
+            device_name: self.file.device_name.clone(),
+            last_heartbeat: note.last_heartbeat,
+            prefs,
+            remote_devices: self.file.remote_devices.clone(),
+            data,
+        };
+        persist::save(&self.paths, &next, now)?;
+        persist::clear_heartbeat(&self.paths);
+        self.file = next;
+        self.revision += 1;
+        self.warm = false;
+        self.last_worked = None;
+        Ok(names)
+    }
+
     pub fn save_shift(&mut self, input: &ShiftInput) -> Result<String, CoreError> {
         self.mutate(|f, c| f.data.save_shift(c, input))
     }
@@ -1280,6 +1714,13 @@ impl Service {
             Ok(())
         })
     }
+    pub fn delete_rate_version(
+        &mut self,
+        id: &str,
+        confirm_retroactive: bool,
+    ) -> Result<(), CoreError> {
+        self.mutate(|f, c| f.data.delete_rate_version(c, id, confirm_retroactive))
+    }
     pub fn set_rounding(&mut self, input: &RoundingInput, today: &str) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.set_rounding(c, input, today))
     }
@@ -1287,6 +1728,9 @@ impl Service {
         self.mutate(|f, c| f.data.delete_rounding(c, id))
     }
     pub fn set_setting(&mut self, key: &str, value: Value) -> Result<(), CoreError> {
+        if VIEW_SETTINGS.contains(&key) {
+            return self.mutate_system(|f, c| f.data.set_setting(c, key, value));
+        }
         self.mutate(|f, c| f.data.set_setting(c, key, value))
     }
 
@@ -1321,10 +1765,35 @@ impl Service {
         })
     }
 
+    /// The spelling a connected folder has, when `root` is that folder spelled another way.
+    #[must_use]
+    pub fn connected_as(&self, root: &str) -> Option<&str> {
+        let targets = &self.file.prefs.sync_targets;
+        if targets.iter().any(|t| t.root == root) {
+            return None;
+        }
+        let key = folder_key(root);
+        targets
+            .iter()
+            .map(|t| t.root.as_str())
+            .find(|r| folder_key(r) == key)
+    }
+
+    /// Refuses a folder that is connected already under another spelling, as it holds the same files.
+    pub fn folder_gate(&self, root: &str) -> Result<(), CoreError> {
+        match self.connected_as(root) {
+            Some(existing) => Err(CoreError::Validation(format!(
+                "That folder is already connected as {existing}."
+            ))),
+            None => Ok(()),
+        }
+    }
+
     pub fn add_sync_target(&mut self, target: SyncTarget) -> Result<(), CoreError> {
         if target.root.trim().is_empty() {
             return Err(CoreError::Validation("choose a folder".into()));
         }
+        self.folder_gate(&target.root)?;
         let under_way = self.setup_pending();
         self.mutate(|f, _| {
             if under_way {
@@ -1335,16 +1804,36 @@ impl Service {
                 f.prefs.sync_targets.push(target);
             }
             Ok(())
-        })
+        })?;
+        self.lease.targets_changed(true);
+        Ok(())
     }
 
-    /// Stops using a folder. Everything already in it stays where it is.
+    /// Stops using a folder. Everything already in it stays where it is. Connecting it again merges with it, as
+    /// with a folder never connected before.
     pub fn remove_sync_target(&mut self, root: &str) -> Result<(), CoreError> {
         self.targets.remove(root);
         self.mutate(|f, _| {
             f.prefs.sync_targets.retain(|t| t.root != root);
+            Self::forget_folder(f, root);
             Ok(())
-        })
+        })?;
+        self.lease
+            .targets_changed(!self.file.prefs.sync_targets.is_empty());
+        Ok(())
+    }
+
+    fn forget_folder(f: &mut LocalFile, root: &str) {
+        if let Some(joined) = &mut f.prefs.sync_joined {
+            joined.retain(|r| r != root);
+        }
+        if f.prefs
+            .join_pending
+            .as_ref()
+            .is_some_and(|p| p.root == root)
+        {
+            f.prefs.join_pending = None;
+        }
     }
 
     /// Records a heartbeat while something is running, so a crash loses at most one interval.
@@ -1376,7 +1865,7 @@ impl Service {
         {
             return Ok(());
         }
-        self.mutate(|f, c| {
+        self.mutate_system(|f, c| {
             f.data.close_own_open(c, c.now, &PauseReason::AppQuit);
             f.last_heartbeat = Some(c.now);
             Ok(())
@@ -1391,6 +1880,19 @@ impl Service {
         seen: BTreeMap<String, RemoteDevice>,
         own_files: Vec<DeviceFile>,
     ) -> bool {
+        // What this may close has to end where it ended on the old clock, if that has just been put back.
+        let found = self.idle.notice_clock(self.now());
+        self.unsaved_steps.extend(self.idle.take_steps_back());
+        if !self.unsaved_steps.is_empty() {
+            let device = self.file.device_id.clone();
+            let running = self.file.data.own_open_segments(&device).into_iter().next();
+            if let Some(segment) = running {
+                self.unsaved_gaps
+                    .extend(found.into_iter().map(|g| (segment.clone(), g)));
+            }
+            // If this can't be saved it stays for the next save, and so does what it found.
+            let _ = self.save_away();
+        }
         let mut merged = merge(&self.file.data, incoming);
         // This device's own file can hold what a restored store lost.
         let mut last_beat = None;
@@ -1409,15 +1911,6 @@ impl Service {
                 seg.end = Some(last_beat.unwrap_or(seg.start).max(seg.start));
             }
         }
-        // Timers running here on tasks just deleted elsewhere. `reconcile` closes them.
-        let own = self.file.device_id.as_str();
-        let timers_lost: Vec<(String, String)> = merged
-            .segments
-            .values()
-            .filter(|s| s.end.is_none() && s.device_id == own)
-            .filter_map(|s| merged.tasks.get(&s.task_id))
-            .filter_map(|t| Some((t.name.clone(), t.discarded.as_ref()?.by.clone())))
-            .collect();
         let mut known = self.file.remote_devices.clone();
         for (id, device) in seen {
             match known.get(&id) {
@@ -1432,25 +1925,62 @@ impl Service {
         if !data_changed && !devices_changed {
             let device = self.file.device_id.clone();
             let mut probe = self.file.data.clone();
-            if !probe.reconcile(&Ctx {
+            let reconciled = probe.reconcile(&Ctx {
                 now: self.now(),
                 device: &device,
-            }) {
+            });
+            // A settlement the owner's own record replaces waits while it is on a summary, until that is voided.
+            if !reconciled && !probe.settlement_due(&device) {
                 return false;
             }
         }
-        let mut paused = Vec::new();
-        let outcome = self.mutate(|f, c| {
+        // What `reconcile` is about to close here, and what the user is told about each.
+        let device = self.file.device_id.clone();
+        let closing = merged.own_segments_to_close(&device);
+        let mut paused = merged.pause_requests_due(&device);
+        paused.retain(|due| merged.live_task(&due.task_id).is_ok());
+        let lost_tasks: BTreeSet<&str> = closing
+            .iter()
+            .filter_map(|id| merged.segments.get(id))
+            .map(|s| s.task_id.as_str())
+            .filter(|t| !paused.iter().any(|due| due.task_id == *t))
+            .collect();
+        let timers_lost: Vec<TimerLost> = lost_tasks
+            .into_iter()
+            .map(|t| TimerLost::of(merged.tasks.get(t)))
+            .collect();
+        // As `settle_away` for every other path that closes the running segment, or time away counts as
+        // work. If the save fails the gaps wait for the next one, as the segment stays open.
+        if !closing.is_empty() {
+            let gaps = self.idle.settle(self.now());
+            for segment in merged.own_open_segments(&device) {
+                self.unsaved_gaps
+                    .extend(gaps.iter().map(|g| (segment.clone(), *g)));
+            }
+        }
+        let (away, away_kind) = (self.idle.away_since(), self.idle.away_kind());
+        let gaps = self.unsaved_gaps.clone();
+        let outcome = self.mutate_system(|f, c| {
             f.data = merged;
             f.remote_devices = known;
-            paused = f.data.pause_requests_due(c.device);
-            paused.retain(|due| f.data.live_task(&due.task_id).is_ok());
             f.data.reconcile(c);
+            // Whether this device or a sync closed the raw end, it's better evidence than a settlement.
+            let lifting = f.data.settlement_due(c.device);
+            let reclaimed = f.data.reclaim_settled(c);
+            for (segment, g) in &gaps {
+                // A segment closed at the moment a pause was asked for only has that much at stake.
+                let closed = f.data.segments.get(segment).and_then(|s| s.end);
+                let end = closed.map_or(g.end, |e| g.end.min(e));
+                f.data.add_gap(c, segment, g.start, end, g.kind);
+            }
+            f.prefs.away_since = away;
+            f.prefs.away_kind = away_kind;
             f.data.raise_reference_marks(&mut f.prefs.reference_marks);
-            Ok(())
+            Ok((lifting, reclaimed))
         });
         match outcome {
-            Ok(()) => {
+            Ok((lifting, reclaimed)) => {
+                self.unsaved_gaps.clear();
                 self.check_recovered();
                 // Saved with the segment closed, so a later cycle finds nothing left to do for it.
                 for due in &paused {
@@ -1458,15 +1988,22 @@ impl Service {
                     self.pause_alerts.push(message.clone());
                     self.notify("warning", message);
                 }
-                for (name, by) in &timers_lost {
-                    let device = self.device_name_of(by);
+                for lost in &timers_lost {
                     let message = format!(
-                        "\"{name}\" was deleted on {device}, so its timer here has stopped. The time logged on it is gone from every view."
+                        "\"{}\" was {} on {}, so its timer here has stopped. {}",
+                        lost.name,
+                        lost.how,
+                        self.device_name_of(&lost.by),
+                        lost.then
                     );
                     self.pause_alerts.push(message.clone());
                     self.notify("warning", message);
                 }
-                data_changed || !paused.is_empty()
+                for told in &reclaimed {
+                    let message = self.reclaim_message(told);
+                    self.notify("warning", message);
+                }
+                data_changed || lifting || !paused.is_empty() || !timers_lost.is_empty()
             }
             Err(e) => {
                 self.local_error = Some(format!(
@@ -1474,6 +2011,29 @@ impl Service {
                 ));
                 false
             }
+        }
+    }
+
+    /// What the owner of a segment hears about a settlement that its own record replaced, or couldn't.
+    fn reclaim_message(&self, told: &Reclaimed) -> String {
+        match told {
+            Reclaimed::Returned {
+                task_name,
+                settled_by,
+                secs,
+            } => format!(
+                "\"{task_name}\": {} logged here after {} closed it is back. Correct it in task details if that time wasn't work.",
+                span_text(*secs),
+                self.device_name_of(settled_by),
+            ),
+            Reclaimed::OnSummary {
+                task_name,
+                reference,
+                secs,
+            } => format!(
+                "\"{task_name}\": the time on {reference} differs from what this computer recorded by {}. To change it, void the summary, then restore the segment or add the time by hand.",
+                span_text(*secs),
+            ),
         }
     }
 
@@ -1501,6 +2061,7 @@ impl Service {
         to: SyncTarget,
         pending: Option<PendingCopy>,
     ) -> Result<(), CoreError> {
+        self.folder_gate(&to.root)?;
         let under_way = self.setup_pending();
         let result = self.mutate(|f, _| {
             if under_way {
@@ -1509,6 +2070,7 @@ impl Service {
             f.prefs.sync_prompt_done = true;
             if let Some(old) = replacing {
                 f.prefs.sync_targets.retain(|t| t.root != old);
+                Self::forget_folder(f, old);
             }
             if !f.prefs.sync_targets.iter().any(|t| t.root == to.root) {
                 f.prefs.sync_targets.push(to);
@@ -1516,10 +2078,12 @@ impl Service {
             f.prefs.pending_copy = pending;
             Ok(())
         });
-        if result.is_ok()
-            && let Some(old) = replacing
-        {
-            self.targets.remove(old);
+        if result.is_ok() {
+            if let Some(old) = replacing {
+                self.targets.remove(old);
+            }
+            self.lease
+                .targets_changed(!self.file.prefs.sync_targets.is_empty());
         }
         result
     }
@@ -1536,6 +2100,11 @@ impl Service {
         self.targets.entry(root.to_owned()).or_default()
     }
 
+    /// When a folder was last read whole in this run, by this computer's clock.
+    pub(crate) fn last_read_at(&self, root: &str) -> Option<Ts> {
+        self.targets.get(root).and_then(|s| s.last_read_at)
+    }
+
     #[must_use]
     pub fn device_file(&self) -> DeviceFile {
         DeviceFile {
@@ -1544,6 +2113,7 @@ impl Service {
             device_name: self.file.device_name.clone(),
             written_at: self.now(),
             last_heartbeat: self.file.last_heartbeat,
+            epoch_info: self.file.prefs.epoch.clone(),
             data: self.file.data.clone(),
         }
     }
@@ -1560,7 +2130,7 @@ impl Service {
     }
 
     /// What `end_of` reads, without a copy of the data it doesn't read. For reports use `export_source`.
-    fn end_source(&self) -> ExportSource {
+    pub(crate) fn end_source(&self) -> ExportSource {
         ExportSource {
             only: None,
             data: Shared {
@@ -1609,10 +2179,20 @@ impl Service {
             .map(|t| t.project_id.as_str())
             .chain(data.summaries.values().map(|b| b.project_id.as_str()))
             .collect();
+        // This device goes by the raw end, as it still closes its own. For another, a settlement closes it.
+        let open_here_or_there = |s: &Segment| {
+            if s.device_id == own {
+                s.end.is_none()
+            } else {
+                s.is_open()
+            }
+        };
         let open_devices: BTreeSet<&str> = data
             .segments
             .values()
-            .filter(|s| s.end.is_none() && data.tasks.get(&s.task_id).is_some_and(Task::is_live))
+            .filter(|s| {
+                open_here_or_there(s) && data.tasks.get(&s.task_id).is_some_and(Task::is_live)
+            })
             .map(|s| s.device_id.as_str())
             .collect();
 
@@ -1648,7 +2228,7 @@ impl Service {
 
         let mut open_elsewhere: BTreeMap<&str, &str> = BTreeMap::new();
         let mut open_here: BTreeSet<&str> = BTreeSet::new();
-        for s in data.segments.values().filter(|s| s.end.is_none()) {
+        for s in data.segments.values().filter(|s| open_here_or_there(s)) {
             if s.device_id == own {
                 open_here.insert(s.task_id.as_str());
             } else {
@@ -1768,6 +2348,12 @@ impl Service {
         }
 
         warnings.extend(self.local_error.clone());
+        if self.packaged && self.file.prefs.sync_targets.is_empty() {
+            warnings.push(
+                "This copy of zWorkTracker keeps its data in a private Windows folder. Uninstalling the app deletes that folder and your hours with it. Connect a OneDrive or Google Drive folder in Settings > Sync between devices.".to_owned(),
+            );
+        }
+        warnings.extend(self.folders_failing());
         for (kind, colors) in [
             (
                 "projects",
@@ -1807,6 +2393,21 @@ impl Service {
                 repeated.join(", ")
             ));
         }
+        for references in data.billed_twice() {
+            warnings.push(format!(
+                "More than one billing summary holds the same time: {}. Void one of them, so it isn't billed twice.",
+                references.join(", ")
+            ));
+        }
+        let short = data.pause_time_short();
+        for id in short.keys() {
+            if let Some(b) = data.summaries.get(*id) {
+                warnings.push(format!(
+                    "Billing summary {} holds pause time that no longer matches what's logged, so it could be billed twice. Void and reissue it.",
+                    b.reference
+                ));
+            }
+        }
         let clashes: Vec<String> = data
             .prefix_clashes(own)
             .iter()
@@ -1831,7 +2432,12 @@ impl Service {
                     .join(APP_FOLDER)
                     .to_string_lossy()
                     .into_owned(),
-                status: self.targets.get(&t.root).cloned().unwrap_or_default(),
+                status: {
+                    let mut status = self.targets.get(&t.root).cloned().unwrap_or_default();
+                    // Conflict copies and damage in the lease folder count with the device files'.
+                    status.ignored_files += self.lease_io.ignored(&t.root);
+                    status
+                },
             })
             .collect();
 
@@ -1894,6 +2500,21 @@ impl Service {
                 prompt_pending: !self.file.prefs.sync_prompt_done
                     && self.file.prefs.sync_targets.is_empty(),
                 pending_copy: self.file.prefs.pending_copy.clone(),
+                join_pending: self
+                    .file
+                    .prefs
+                    .join_pending
+                    .as_ref()
+                    .map(|p| JoinPendingView {
+                        root: p.root.clone(),
+                        taken_from: p.info.restored_from.clone(),
+                        at: p.info.base_taken_at,
+                        device_name: if p.info.by == own {
+                            self.file.device_name.clone()
+                        } else {
+                            self.device_name_of(&p.info.by)
+                        },
+                    }),
             },
             launch: LaunchView {
                 warm: self.warm,
@@ -1941,8 +2562,115 @@ impl Service {
             },
             backup_keep: self.backup_keep(),
             has_pdf_logo: self.paths.dir.join(PDF_LOGO_FILE).exists(),
+            lease: self.lease_view(),
+            platform: PlatformView {
+                packaged: self.packaged,
+            },
         }
     }
+
+    /// A folder that has been failing a while. The status says so too, but only on the page with the status.
+    fn folders_failing(&self) -> Vec<String> {
+        let now = self.now();
+        let targets = &self.file.prefs.sync_targets;
+        let failing = |t: &SyncTarget| {
+            self.targets
+                .get(&t.root)
+                .is_some_and(|s| s.last_error.is_some())
+        };
+        targets
+            .iter()
+            .filter_map(|t| {
+                let status = self.targets.get(&t.root)?;
+                let error = status.last_error.as_deref()?;
+                // What a run knows: a folder failing since the start of this run hasn't been written in it.
+                let since = status.last_written_at.unwrap_or(self.opened);
+                let age = now.secs() - since.secs();
+                if age < FOLDER_FAILING_WARNING_SECS {
+                    return None;
+                }
+                let stop = if error.ends_with(['.', '?', '!']) {
+                    ""
+                } else {
+                    "."
+                };
+                let safe = targets
+                    .iter()
+                    .find(|other| other.root != t.root && !failing(other))
+                    .map_or_else(
+                        || "Your data is safe on this computer.".to_owned(),
+                        |other| {
+                            format!(
+                                "{} folder is fine, so your data is safe there.",
+                                folder_label(other)
+                            )
+                        },
+                    );
+                Some(format!(
+                    "{} folder hasn't been written since {} ago: {error}{stop} {safe}",
+                    folder_label(t),
+                    span_text(age),
+                ))
+            })
+            .collect()
+    }
+}
+
+/// A timer here that a sync is about to close, and how to say so.
+struct TimerLost {
+    name: String,
+    /// The device that did it.
+    by: String,
+    how: &'static str,
+    then: &'static str,
+}
+
+impl TimerLost {
+    fn of(task: Option<&Task>) -> Self {
+        const KEPT: &str = "The time up to now is kept.";
+        let (how, by, then) = match task {
+            Some(t) if t.discarded.is_some() => (
+                "deleted",
+                t.discarded.as_ref().map(|d| d.by.as_str()),
+                "The time logged on it is gone from every view.",
+            ),
+            Some(t) if !t.is_live() => ("deleted", Some(t.deleted_stamp.by.as_str()), KEPT),
+            Some(t) if t.state == TaskState::Stopped => {
+                ("stopped", Some(t.state_stamp.by.as_str()), KEPT)
+            }
+            Some(t) if t.state == TaskState::Paused => (
+                "paused",
+                Some(t.state_stamp.by.as_str()),
+                "The time up to now is kept. Resume it if you're still working.",
+            ),
+            Some(t) => ("changed", Some(t.state_stamp.by.as_str()), KEPT),
+            None => ("removed", None, KEPT),
+        };
+        Self {
+            name: task.map_or_else(|| "A task".to_owned(), |t| t.name.clone()),
+            by: by.unwrap_or_default().to_owned(),
+            how,
+            then,
+        }
+    }
+}
+
+/// A folder's path as compared with another's: the same folder can be written with separators at the end and, on
+/// Windows, in another letter case or with / for \. A drive's root keeps its separator, as `C:` alone is not that root.
+fn folder_key_for(root: &str, windows: bool) -> String {
+    let (mut key, sep) = if windows {
+        (root.replace('/', "\\").to_lowercase(), '\\')
+    } else {
+        (root.to_owned(), '/')
+    };
+    while key.len() > 1 && key.ends_with(sep) && !(windows && key.ends_with(":\\")) {
+        key.pop();
+    }
+    key
+}
+
+fn folder_key(root: &str) -> String {
+    folder_key_for(root, cfg!(windows))
 }
 
 fn name_device(e: CoreError, devices: BTreeMap<String, RemoteDevice>) -> CoreError {
@@ -1959,7 +2687,6 @@ fn name_device(e: CoreError, devices: BTreeMap<String, RemoteDevice>) -> CoreErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::SyncProvider;
     use crate::time::ManualClock;
 
     const T0: &str = "2026-03-01T09:00:00Z";
@@ -6167,5 +6894,1788 @@ mod tests {
         assert_eq!(s.export_source().rows(chrono_tz::UTC).len(), 1);
         s.absorb_remote(&deleted, BTreeMap::new(), Vec::new());
         assert!(s.export_source().rows(chrono_tz::UTC).is_empty());
+    }
+
+    /// A checklist under the limit as typed, and over it once each item has its id.
+    fn list_that_grows_past_the_limit() -> Value {
+        let item = serde_json::json!({"type":"taskItem","attrs":{"checked":false},"content":[{"type":"paragraph","content":[{"type":"text","text":"x"}]}]});
+        let count = (500 * 1024) / item.to_string().len();
+        let list = serde_json::json!({"type":"doc","content":[{"type":"taskList","content": vec![item; count]}]});
+        crate::validate::check_description(&list).unwrap();
+        assert!(
+            crate::validate::check_description(&crate::subtasks::assign_ids(&list, None)).is_err()
+        );
+        list
+    }
+
+    #[test]
+    fn r3_a_draft_that_grows_past_the_limit_lets_the_app_open_and_keeps_the_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        let stored = s.file().data.tasks[&t].description.clone();
+        // Left on disk by a version that only checked what was typed.
+        let mut drafts = BTreeMap::new();
+        drafts.insert(
+            t.clone(),
+            Draft {
+                description: list_that_grows_past_the_limit(),
+                at: clock.now(),
+                base: stored.clone(),
+            },
+        );
+        crate::drafts::write(dir.path(), &drafts).unwrap();
+        drop(s);
+        clock.advance(60);
+        let s = Service::open(dir.path(), Arc::new(clock.clone()), "pc");
+        let s = s.expect("the app opens");
+        assert_eq!(s.file().data.tasks[&t].description, stored);
+        let kept = |s: &Service| {
+            s.snapshot()
+                .notices
+                .into_iter()
+                .filter(|n| n.message.contains("too long") && n.message.contains("x\nx"))
+                .count()
+        };
+        assert_eq!(kept(&s), 1, "{:?}", s.snapshot().notices.len());
+        assert!(crate::drafts::read(dir.path()).unwrap().unwrap().is_empty());
+        drop(s);
+        // And at every launch after, with the words still shown until they are dismissed.
+        clock.advance(60);
+        let s = Service::open(dir.path(), Arc::new(clock), "pc").expect("opens again");
+        assert_eq!(kept(&s), 1);
+    }
+
+    #[test]
+    fn r3_a_stash_ids_would_take_past_the_limit_is_refused_when_it_is_stashed() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        let stored = s.file().data.tasks[&t].description.clone();
+        let e = s
+            .stash_draft(&t, &list_that_grows_past_the_limit(), &stored)
+            .expect_err("the page hears at once");
+        assert!(e.to_string().contains("too large"), "{e}");
+        assert!(crate::drafts::read(dir.path()).unwrap().unwrap().is_empty());
+    }
+
+    #[test]
+    fn r3_a_stored_list_ids_would_take_past_the_limit_lets_the_app_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        // A list saved before items had ids, or by a device that didn't add them.
+        let list = list_that_grows_past_the_limit();
+        s.mutate(|f, _| {
+            f.data.tasks.get_mut(&t).unwrap().description = list.clone();
+            Ok(())
+        })
+        .unwrap();
+        drop(s);
+        let s = Service::open(dir.path(), Arc::new(clock), "pc").expect("the app opens");
+        assert_eq!(s.file().data.tasks[&t].description, list, "left as it was");
+    }
+
+    #[test]
+    fn r11_a_zone_change_reaches_the_view_and_the_day_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-03T09:00:00Z");
+        let mut s = open(dir.path(), &clock);
+        s.set_system_zone("UTC".to_owned());
+        let p = s
+            .create_project(&ProjectInput {
+                budget_hours: Some(100.0),
+                ..pinput("P")
+            })
+            .unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        s.set_rounding(
+            &RoundingInput {
+                project_id: None,
+                effective_from: "2026-01-01".into(),
+                increment_minutes: 15,
+                method: crate::model::RoundMethod::Up,
+                confirm_retroactive: true,
+            },
+            "2026-03-03",
+        )
+        .unwrap();
+        // Either side of midnight in UTC, and the middle of one morning in Tokyo.
+        for (a, b) in [
+            ("2026-03-01T23:50:00Z", "2026-03-01T23:55:00Z"),
+            ("2026-03-02T00:05:00Z", "2026-03-02T00:10:00Z"),
+        ] {
+            s.add_manual_entry(&ManualEntryInput {
+                task_id: t.clone(),
+                start: Ts::parse(a).unwrap(),
+                end: Ts::parse(b).unwrap(),
+                reason: String::new(),
+                subtask_id: None,
+                allow_overlap: true,
+            })
+            .unwrap();
+        }
+        let billable = |s: &Service| s.snapshot().projects[0].figures.billable_secs;
+        assert_eq!(billable(&s), 30 * 60, "a day each, each rounded up");
+        let revision = s.revision();
+
+        assert!(s.observe_system_zone(Some("Asia/Tokyo".to_owned())));
+        assert_eq!(s.snapshot().system_zone, "Asia/Tokyo");
+        assert_eq!(s.viewing_zone(), chrono_tz::Asia::Tokyo);
+        assert_eq!(billable(&s), 15 * 60, "one day now, rounded once");
+        assert!(s.revision() > revision, "no older reply can undo it");
+
+        // Nothing new the next time round, and a failed read or an unknown name changes nothing.
+        let revision = s.revision();
+        assert!(!s.observe_system_zone(Some("Asia/Tokyo".to_owned())));
+        assert!(!s.observe_system_zone(None));
+        assert!(!s.observe_system_zone(Some("Mars/Olympus".to_owned())));
+        assert_eq!(s.snapshot().system_zone, "Asia/Tokyo");
+        assert_eq!(s.revision(), revision);
+    }
+
+    #[test]
+    fn r12_opening_waits_while_something_holds_the_store_and_only_then() {
+        use std::io::{Error, ErrorKind};
+        use std::time::Duration;
+        let held = || CoreError::Read(Error::from(ErrorKind::PermissionDenied));
+        let mut tries = 0;
+        let mut waits = 0;
+        let got = retry_while_held(
+            || {
+                tries += 1;
+                if tries < 3 { Err(held()) } else { Ok(tries) }
+            },
+            |_| waits += 1,
+        );
+        assert_eq!(got.unwrap(), 3, "free by the third try");
+        assert_eq!(waits, 2);
+
+        let mut waited = Duration::ZERO;
+        let got: Result<(), _> = retry_while_held(|| Err(held()), |d| waited += d);
+        assert!(matches!(got, Err(CoreError::Read(_))), "it gives up");
+        assert!(
+            waited >= Duration::from_secs(2) && waited <= Duration::from_secs(10),
+            "{waited:?}"
+        );
+
+        // What waiting can't help opens, or fails, at once.
+        let fails: [fn() -> CoreError; 3] = [
+            || CoreError::Read(Error::from(ErrorKind::IsADirectory)),
+            || CoreError::Io(Error::from(ErrorKind::StorageFull)),
+            || CoreError::Validation("no".into()),
+        ];
+        for fail in fails {
+            let mut tries = 0;
+            let got: Result<(), _> = retry_while_held(
+                || {
+                    tries += 1;
+                    Err(fail())
+                },
+                |_| panic!("no wait"),
+            );
+            assert!(got.is_err());
+            assert_eq!(tries, 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn r12_a_store_held_at_the_first_save_opens_once_it_is_free() {
+        use std::os::unix::fs::PermissionsExt;
+        let clock = ManualClock::at("2026-03-01T09:00:00Z");
+        let dir = tempfile::tempdir().unwrap();
+        let t = {
+            let mut s = Service::open(dir.path(), Arc::new(clock.clone()), "pc").unwrap();
+            let p = s.create_project(&pinput("P")).unwrap();
+            let t = s.create_task(&tinput("T", &p)).unwrap();
+            s.start_task(&t).unwrap();
+            t
+        };
+        // No clean quit, so this launch has a timer to close and the store to write.
+        clock.advance(30);
+        let holding = |mode| {
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        holding(0o500);
+        let got = retry_while_held(
+            || Service::open(dir.path(), Arc::new(clock.clone()), "pc"),
+            |_| holding(0o700),
+        );
+        holding(0o700);
+        let s = got.unwrap();
+        assert_eq!(s.file().data.tasks[&t].state, TaskState::Paused);
+        assert_eq!(
+            s.file().data.own_open_segments(&s.file().device_id).len(),
+            0
+        );
+    }
+
+    #[test]
+    fn r12_a_backup_that_cannot_be_read_does_not_stop_the_app_opening() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("Kept")).unwrap();
+        drop(s);
+        // Something at that path that can't be read as a file, as a locked one can't.
+        let bak = dir.path().join("z-work-data.json.bak");
+        std::fs::remove_file(&bak).unwrap();
+        std::fs::create_dir(&bak).unwrap();
+        let s = Service::open(dir.path(), Arc::new(clock), "pc");
+        let s = s.expect("the main file is fine");
+        assert!(s.file().data.projects.contains_key(&p));
+    }
+
+    #[test]
+    fn r14_raising_a_budget_after_an_alert_lets_it_alert_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-03T09:00:00Z");
+        let mut s = open(dir.path(), &clock);
+        let p = s
+            .create_project(&ProjectInput {
+                budget_hours: Some(1.0),
+                ..pinput("P")
+            })
+            .unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        let entry = |t: &str, a: &str, b: &str| ManualEntryInput {
+            task_id: t.to_owned(),
+            start: Ts::parse(a).unwrap(),
+            end: Ts::parse(b).unwrap(),
+            reason: String::new(),
+            subtask_id: None,
+            allow_overlap: true,
+        };
+        s.add_manual_entry(&entry(&t, "2026-03-01T09:00:00Z", "2026-03-01T10:00:00Z"))
+            .unwrap();
+        assert_eq!(s.take_alerts().len(), 1);
+        assert!(s.take_alerts().is_empty(), "each level alerts once");
+        s.update_project(
+            &p,
+            &ProjectInput {
+                budget_hours: Some(10.0),
+                ..pinput("P")
+            },
+        )
+        .unwrap();
+        assert!(s.take_alerts().is_empty(), "the level fell: nothing to say");
+        // 10.5 hours: past all of the new budget, a level it had reached under the old one.
+        s.add_manual_entry(&entry(&t, "2026-03-02T08:00:00Z", "2026-03-02T17:30:00Z"))
+            .unwrap();
+        let alerts = s.take_alerts();
+        assert_eq!(alerts.len(), 1, "{alerts:?}");
+        assert!(alerts[0].contains("105%"), "{alerts:?}");
+        assert!(s.take_alerts().is_empty());
+    }
+
+    #[test]
+    fn r14_taking_a_budget_away_and_setting_one_again_can_alert_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-03T09:00:00Z");
+        let mut s = open(dir.path(), &clock);
+        let budget = |hours: Option<f64>| ProjectInput {
+            budget_hours: hours,
+            ..pinput("P")
+        };
+        let p = s.create_project(&budget(Some(1.0))).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        s.add_manual_entry(&ManualEntryInput {
+            task_id: t,
+            start: Ts::parse("2026-03-01T09:00:00Z").unwrap(),
+            end: Ts::parse("2026-03-01T10:00:00Z").unwrap(),
+            reason: String::new(),
+            subtask_id: None,
+            allow_overlap: true,
+        })
+        .unwrap();
+        assert_eq!(s.take_alerts().len(), 1);
+        s.update_project(&p, &budget(None)).unwrap();
+        assert!(s.take_alerts().is_empty());
+        s.update_project(&p, &budget(Some(1.0))).unwrap();
+        assert_eq!(s.take_alerts().len(), 1);
+    }
+
+    /// The times of this task's segments, earliest start first.
+    fn stretches(s: &Service, task: &str) -> Vec<(String, Option<String>)> {
+        let mut all: Vec<_> = s
+            .file()
+            .data
+            .segments
+            .values()
+            .filter(|x| x.task_id == task)
+            .map(|x| (x.start, x.end))
+            .collect();
+        all.sort();
+        all.into_iter()
+            .map(|(a, b)| (a.iso(), b.map(|e| e.iso())))
+            .collect()
+    }
+    fn unbilled(s: &Service, task: &str) -> i64 {
+        s.snapshot()
+            .tasks
+            .iter()
+            .find(|x| x.id == task)
+            .unwrap()
+            .unbilled_secs
+    }
+    /// Time passes with someone working, one tick a minute.
+    fn work_for(s: &mut Service, clock: &ManualClock, minutes: i64) {
+        for _ in 0..minutes {
+            clock.advance(60);
+            s.observe_activity(Some(0)).unwrap();
+        }
+    }
+    fn away_times(s: &Service) -> Vec<(String, String)> {
+        let mut all: Vec<_> = s
+            .snapshot()
+            .gaps
+            .iter()
+            .map(|g| (g.start.iso(), g.end.iso()))
+            .collect();
+        all.sort();
+        all
+    }
+    fn iso(text: &str) -> String {
+        text.to_owned()
+    }
+
+    #[test]
+    fn r4_a_clock_put_back_during_a_run_keeps_the_work_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-02T10:00:00Z");
+        let (mut s, t) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 5);
+        // The clock was an hour ahead when the task started, and now it is corrected.
+        clock.set("2026-03-02T09:10:00Z");
+        s.observe_activity(Some(0)).unwrap();
+        assert_eq!(
+            s.file().data.tasks[&t].state,
+            TaskState::Running,
+            "the timer keeps going"
+        );
+        work_for(&mut s, &clock, 40);
+        s.pause_task(&t).unwrap();
+        assert_eq!(
+            stretches(&s, &t),
+            vec![
+                (
+                    iso("2026-03-02T09:10:00Z"),
+                    Some(iso("2026-03-02T09:50:00Z"))
+                ),
+                (
+                    iso("2026-03-02T10:00:00Z"),
+                    Some(iso("2026-03-02T10:05:00Z"))
+                ),
+            ]
+        );
+        assert_eq!(unbilled(&s, &t), 45 * 60);
+        let snap = s.snapshot();
+        assert!(snap.gaps.is_empty(), "no time away: {:?}", snap.gaps);
+        assert_eq!(snap.notices.len(), 1, "{:?}", snap.notices);
+        assert!(snap.notices[0].message.contains("clock went back"));
+        assert!(snap.notices[0].message.contains("\"T\""));
+        assert!(
+            s.take_alerts()
+                .iter()
+                .any(|a| a.contains("clock went back")),
+            "a window that is hidden hears of it too"
+        );
+        assert!(
+            !s.take_alerts()
+                .iter()
+                .any(|a| a.contains("clock went back")),
+            "once"
+        );
+        assert!(
+            s.file()
+                .data
+                .audit_log
+                .values()
+                .any(|a| a.action == "clockPutBack"),
+            "on the record of changes"
+        );
+        // A new stretch starts at the time on the clock, whatever the old one ended at.
+        clock.advance(100);
+        s.resume_task(&t).unwrap();
+        clock.advance(100);
+        s.pause_task(&t).unwrap();
+        assert_eq!(unbilled(&s, &t), 45 * 60 + 100);
+    }
+
+    #[test]
+    fn r4_a_clock_put_back_just_before_a_pause_keeps_the_work_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-02T10:00:00Z");
+        let (mut s, t) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 10);
+        clock.set("2026-03-02T09:10:00Z");
+        s.pause_task(&t).unwrap();
+        assert_eq!(unbilled(&s, &t), 600);
+        assert_eq!(s.snapshot().notices.len(), 1);
+    }
+
+    #[test]
+    fn r4_time_away_under_way_when_the_clock_goes_back_stays_with_what_ran_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-02T10:00:00Z");
+        let (mut s, t) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 5);
+        let mut idle = 0;
+        for _ in 0..15 {
+            clock.advance(60);
+            idle += 60;
+            s.observe_activity(Some(idle)).unwrap();
+        }
+        clock.set("2026-03-02T09:10:00Z");
+        idle += 5;
+        assert!(
+            s.observe_activity(Some(idle)).unwrap(),
+            "time away was found"
+        );
+        assert_eq!(
+            away_times(&s),
+            vec![(iso("2026-03-02T10:05:00Z"), iso("2026-03-02T10:20:00Z"))]
+        );
+        // Still away on the new clock: that is time away from the new stretch, from its start.
+        for _ in 0..20 {
+            clock.advance(60);
+            idle += 60;
+            s.observe_activity(Some(idle)).unwrap();
+        }
+        clock.advance(5);
+        s.observe_activity(Some(1)).unwrap();
+        assert_eq!(
+            away_times(&s),
+            vec![
+                (iso("2026-03-02T09:10:00Z"), iso("2026-03-02T09:30:04Z")),
+                (iso("2026-03-02T10:05:00Z"), iso("2026-03-02T10:20:00Z")),
+            ]
+        );
+        s.pause_task(&t).unwrap();
+        // Five minutes before the first absence and the one second after the second.
+        assert_eq!(unbilled(&s, &t), 5 * 60 + 1);
+    }
+
+    #[test]
+    fn r4_a_lock_under_way_when_the_clock_goes_back_is_an_absence_on_each_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-02T10:00:00Z");
+        let (mut s, t) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 5);
+        let locked_for = |s: &mut Service, minutes: i64| {
+            for _ in 0..minutes {
+                clock.advance(60);
+                // The lock is looked at first, as the app does on every tick.
+                s.observe_lock(Some(true)).unwrap();
+                s.observe_activity(Some(0)).unwrap();
+            }
+        };
+        s.observe_lock(Some(true)).unwrap();
+        locked_for(&mut s, 5);
+        clock.set("2026-03-02T09:10:00Z");
+        s.observe_lock(Some(true)).unwrap();
+        s.observe_activity(Some(0)).unwrap();
+        locked_for(&mut s, 30);
+        s.observe_lock(Some(false)).unwrap();
+        assert_eq!(
+            away_times(&s),
+            vec![
+                (iso("2026-03-02T09:10:00Z"), iso("2026-03-02T09:40:00Z")),
+                (iso("2026-03-02T10:05:00Z"), iso("2026-03-02T10:10:00Z")),
+            ]
+        );
+        work_for(&mut s, &clock, 10);
+        s.pause_task(&t).unwrap();
+        assert_eq!(unbilled(&s, &t), 15 * 60);
+    }
+
+    #[test]
+    fn r4_a_lock_taken_just_after_the_clock_went_back_is_on_the_new_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-02T10:00:00Z");
+        let (mut s, t) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 5);
+        clock.set("2026-03-02T09:10:00Z");
+        s.observe_lock(Some(true)).unwrap();
+        s.observe_activity(Some(0)).unwrap();
+        clock.advance(60);
+        s.observe_lock(Some(false)).unwrap();
+        assert_eq!(
+            away_times(&s),
+            vec![(iso("2026-03-02T09:10:00Z"), iso("2026-03-02T09:11:00Z"))]
+        );
+        s.pause_task(&t).unwrap();
+        assert_eq!(unbilled(&s, &t), 5 * 60);
+    }
+
+    #[test]
+    fn r4_a_crash_soon_after_the_clock_went_back_ends_the_new_stretch_at_its_own_heartbeat() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-02T10:00:00Z");
+        let (mut s, t) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 60);
+        s.heartbeat().unwrap();
+        // 11:00 on a clock an hour ahead, and now corrected.
+        clock.set("2026-03-02T10:00:00Z");
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 5);
+        s.heartbeat().unwrap();
+        drop(s);
+        clock.set("2026-03-02T15:00:00Z");
+        let s = open(dir.path(), &clock);
+        assert_eq!(
+            stretches(&s, &t),
+            vec![
+                (
+                    iso("2026-03-02T10:00:00Z"),
+                    Some(iso("2026-03-02T10:05:00Z"))
+                ),
+                (
+                    iso("2026-03-02T10:00:00Z"),
+                    Some(iso("2026-03-02T11:00:00Z"))
+                ),
+            ],
+            "the hour on the old clock, and the five minutes on the new"
+        );
+        assert_eq!(unbilled(&s, &t), 65 * 60);
+    }
+
+    #[test]
+    fn r4_a_crash_before_the_next_beat_after_the_clock_went_back_adds_nothing_to_the_new_stretch() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-02T10:00:00Z");
+        let (mut s, t) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 60);
+        s.heartbeat().unwrap();
+        clock.set("2026-03-02T10:00:00Z");
+        s.observe_activity(Some(0)).unwrap();
+        drop(s);
+        clock.set("2026-03-02T15:00:00Z");
+        let s = open(dir.path(), &clock);
+        assert_eq!(unbilled(&s, &t), 3600, "{:?}", stretches(&s, &t));
+    }
+
+    #[test]
+    fn r4_a_crash_then_a_boot_on_a_corrected_clock_keeps_a_run_begun_ahead_of_it() {
+        let run = |boot: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let clock = ManualClock::at("2026-03-02T10:00:00Z");
+            let (mut s, t) = running(dir.path(), &clock);
+            s.observe_activity(Some(0)).unwrap();
+            work_for(&mut s, &clock, 60);
+            s.heartbeat().unwrap();
+            drop(s);
+            clock.set(boot);
+            let s = open(dir.path(), &clock);
+            (unbilled(&s, &t), s.snapshot().notices[0].message.clone())
+        };
+        // The clock now reads before the run began, so its heartbeat is the only time on its own clock.
+        let (secs, told) = run("2026-03-02T09:30:00Z");
+        assert_eq!(secs, 3600);
+        assert!(told.contains("2026-03-02T11:00:00Z"), "{told}");
+        // On a clock that wasn't changed, nothing is different.
+        assert_eq!(run("2026-03-02T11:30:00Z").0, 3600);
+        // Inside the run the clock can't say which it was, so nothing past it is counted, as before.
+        assert_eq!(run("2026-03-02T10:30:00Z").0, 1800);
+    }
+
+    #[test]
+    fn r4_a_small_correction_or_a_clock_put_back_with_nothing_running_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-02T10:00:00Z");
+        let (mut s, t) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 10);
+        clock.advance(-crate::idle::JUMP_SECS);
+        s.observe_activity(Some(0)).unwrap();
+        assert_eq!(stretches(&s, &t).len(), 1, "a few seconds isn't a new run");
+        assert!(s.snapshot().notices.is_empty());
+        s.pause_task(&t).unwrap();
+        s.observe_activity(Some(0)).unwrap();
+        let before = stretches(&s, &t);
+        clock.advance(-3600);
+        s.observe_activity(Some(0)).unwrap();
+        assert_eq!(stretches(&s, &t), before);
+        assert!(s.snapshot().notices.is_empty());
+        assert!(s.take_alerts().is_empty());
+    }
+
+    #[test]
+    fn r4_a_clock_put_back_is_kept_for_the_next_save_when_a_save_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at("2026-03-02T10:00:00Z");
+        let (mut s, t) = running(dir.path(), &clock);
+        s.observe_activity(Some(0)).unwrap();
+        work_for(&mut s, &clock, 10);
+        clock.set("2026-03-02T09:10:00Z");
+        let store = dir.path().join("z-work-data.json");
+        let keep = std::fs::read(&store).unwrap();
+        // A directory in the way of the temp file makes the write fail on every platform.
+        let tmp = dir.path().join("z-work-data.json.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(s.observe_activity(Some(0)).is_err());
+        assert_eq!(stretches(&s, &t).len(), 1, "memory stays as it was");
+        assert!(s.snapshot().notices.is_empty());
+        std::fs::remove_dir_all(&tmp).unwrap();
+        std::fs::write(&store, keep).unwrap();
+        clock.advance(60);
+        s.observe_activity(Some(0)).unwrap();
+        assert_eq!(
+            stretches(&s, &t),
+            vec![
+                (iso("2026-03-02T09:10:00Z"), None),
+                (
+                    iso("2026-03-02T10:00:00Z"),
+                    Some(iso("2026-03-02T10:10:00Z"))
+                ),
+            ],
+            "the new stretch starts when the clock was found changed"
+        );
+        assert_eq!(s.snapshot().notices.len(), 1);
+    }
+
+    /// A device with a folder, as `run_cycle` sees it.
+    fn on_folder(dir: &Path, root: &Path, clock: &ManualClock) -> std::sync::Mutex<Service> {
+        let mut s = open(dir, clock);
+        s.add_sync_target(SyncTarget {
+            provider: SyncProvider::Custom,
+            root: root.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+        std::sync::Mutex::new(s)
+    }
+
+    /// A laptop that started a timer, was last heard of an hour in and then died. Returns the desktop on the same
+    /// folder, with the project, the task and the segment left open.
+    fn laptop_lost(
+        dirs: [&Path; 3],
+        clock: &ManualClock,
+    ) -> (std::sync::Mutex<Service>, String, String, String) {
+        use crate::sync::{RealIo, run_cycle};
+        let [here, there, root] = dirs;
+        let laptop = on_folder(here, root, clock);
+        let desktop = on_folder(there, root, clock);
+        let (p, t, seg) = {
+            let mut s = laptop.lock().unwrap();
+            let p = s.create_project(&pinput("P")).unwrap();
+            let t = s.create_task(&tinput("T", &p)).unwrap();
+            s.start_task(&t).unwrap();
+            let seg = s.file().data.segments.keys().next().unwrap().clone();
+            (p, t, seg)
+        };
+        run_cycle(&laptop, &RealIo);
+        run_cycle(&desktop, &RealIo);
+        clock.advance(3600);
+        laptop.lock().unwrap().heartbeat().unwrap();
+        run_cycle(&laptop, &RealIo);
+        drop(laptop);
+        run_cycle(&desktop, &RealIo);
+        (desktop, p, t, seg)
+    }
+
+    #[test]
+    fn r5_a_segment_left_open_by_a_lost_device_can_be_billed_after_settling_and_correcting() {
+        let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+        let clock = ManualClock::at("2026-03-02T09:00:00Z");
+        let (desktop, p, t, seg) = laptop_lost(dirs.each_ref().map(|d| d.path()), &clock);
+        clock.advance(86_400 * 30);
+        let mut s = desktop.lock().unwrap();
+        let fix = CorrectionInput {
+            segment_id: seg.clone(),
+            start: Ts::parse("2026-03-02T09:00:00Z").unwrap(),
+            end: Ts::parse("2026-03-02T09:45:00Z").unwrap(),
+            reason: "left at a quarter to".into(),
+            allow_overlap: false,
+        };
+        let req = this_month(&p);
+        assert!(s.summary_preview(&req).unwrap().running_excluded);
+        assert!(s.pause_task(&t).is_err());
+        assert!(s.correct_segment(&fix).is_err(), "still open, so not yet");
+        assert!(s.void_segment(&seg, "gone").is_err());
+
+        s.settle_lost_segment(&seg, "the laptop is gone").unwrap();
+        assert_eq!(s.file().data.segments[&seg].end, None, "raw stays");
+        assert_eq!(
+            s.file().data.segments[&seg].effective(),
+            Some((
+                Ts::parse("2026-03-02T09:00:00Z").unwrap(),
+                Some(Ts::parse("2026-03-02T10:00:00Z").unwrap())
+            )),
+            "closed at the last moment it was heard of"
+        );
+        assert_eq!(s.file().data.tasks[&t].state, TaskState::Paused);
+        assert!(!s.summary_preview(&req).unwrap().running_excluded);
+        assert_eq!(s.summary_preview(&req).unwrap().billable_secs, 3600);
+
+        s.correct_segment(&fix).unwrap();
+        assert_eq!(s.summary_preview(&req).unwrap().billable_secs, 2700);
+        let id = s.create_summary(&req).unwrap();
+        let summary = &s.file().data.summaries[&id];
+        assert_eq!(summary.segment_ids, vec![seg.clone()]);
+        assert_eq!(summary.rows[0].billable_secs, 2700);
+        assert!(s.void_segment(&seg, "gone").is_err(), "it is billed now");
+    }
+
+    #[test]
+    fn r5_a_pause_asked_for_is_enough_to_close_it_with_no_month_of_silence() {
+        let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+        let clock = ManualClock::at("2026-03-02T09:00:00Z");
+        let (desktop, p, t, seg) = laptop_lost(dirs.each_ref().map(|d| d.path()), &clock);
+        let mut s = desktop.lock().unwrap();
+        // The steps the review found led nowhere: stop leaves the segment, asking changes nothing about it.
+        s.stop_task(&t).unwrap();
+        s.request_remote_pause(&t).unwrap();
+        clock.advance(600);
+        s.settle_lost_segment(&seg, "the laptop is gone").unwrap();
+        let preview = s.summary_preview(&this_month(&p)).unwrap();
+        assert!(!preview.running_excluded);
+        assert_eq!(preview.segment_ids, vec![seg.clone()]);
+        assert_eq!(preview.billable_secs, 3600);
+        s.void_segment(&seg, "gone").unwrap();
+        assert_eq!(s.summary_preview(&this_month(&p)).unwrap().billable_secs, 0);
+    }
+
+    /// As another computer holding the lease leaves this one.
+    fn held_by_laptop(s: &mut Service) {
+        s.lease.state = LeaseStateName::HeldByOtherLive;
+        s.lease.want_claim = false;
+        s.lease.last_change_at = None;
+        s.lease.holder = Some(crate::lease::HolderInfo {
+            device_id: "laptop-id".to_owned(),
+            device_name: "LAPTOP".to_owned(),
+            generation: 4,
+            beat_seq: 9,
+            beat_at: s.now(),
+            last_sign_at: s.now(),
+            clock_suspect: false,
+            open_segments: Vec::new(),
+        });
+    }
+
+    fn custom_folder(root: &str) -> SyncTarget {
+        SyncTarget {
+            provider: SyncProvider::Custom,
+            root: root.to_owned(),
+        }
+    }
+
+    fn read_only_error<T: std::fmt::Debug>(r: Result<T, CoreError>) -> String {
+        match r {
+            Err(e @ CoreError::ReadOnly { .. }) => e.to_string(),
+            other => panic!("not refused as read-only: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_only_refuses_changes_to_shared_data_and_allows_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        let p = s.create_project(&pinput("P")).unwrap();
+        let t = s.create_task(&tinput("T", &p)).unwrap();
+        s.run_daily_backup().unwrap();
+        let backup = s.list_backups().unwrap()[0].name.clone();
+        held_by_laptop(&mut s);
+        let store = dir.path().join("z-work-data.json");
+        let before = std::fs::read(&store).unwrap();
+        let (data, revision) = (s.file().data.clone(), s.revision());
+
+        assert_eq!(
+            read_only_error(s.create_project(&pinput("Q"))),
+            "LAPTOP is using zWorkTracker, so this computer is read-only. Take over from the banner to work here."
+        );
+        read_only_error(s.create_task(&tinput("U", &p)));
+        read_only_error(s.delete_task(&t));
+        read_only_error(s.set_setting("myZone", serde_json::json!("Europe/Lisbon")));
+        read_only_error(s.set_device_prefix("B"));
+        read_only_error(s.restore_backup(&backup));
+        assert_eq!(s.file().data, data);
+        assert_eq!(s.revision(), revision, "nothing was committed");
+        assert_eq!(std::fs::read(&store).unwrap(), before, "nor written");
+        assert!(!s.lease.want_claim, "and nothing asks for the lease");
+
+        // A cold start is checked first, so warm up before it: this is about the lease.
+        s.warm = true;
+        read_only_error(s.start_task(&t));
+
+        // These are this device's own. The data stays the same.
+        s.set_theme(Theme::Dark).unwrap();
+        s.set_hide_earnings(true).unwrap();
+        s.set_backup_keep(9).unwrap();
+        s.mark_client_zone_prompt_done().unwrap();
+        s.remove_sync_target("/somewhere/else").unwrap();
+        assert_eq!(s.file().prefs.theme, Theme::Dark);
+        assert_eq!(s.file().data, data);
+        assert!(s.snapshot().lease.read_only);
+        // Looking at everything still works.
+        assert!(s.summary_preview(&this_month(&p)).is_ok());
+    }
+
+    #[test]
+    fn read_only_still_takes_what_a_sync_brings_and_can_ask_for_a_pause() {
+        let (here, there) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let clock = ManualClock::at(T0);
+        let (mut s, mut other, t) = two_devices(here.path(), there.path(), &clock);
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        other.warm = true;
+        other.start_task(&t).unwrap();
+        s.warm = true;
+        held_by_laptop(&mut s);
+
+        clock.advance(60);
+        assert!(s.absorb_remote(&other.file().data.clone(), BTreeMap::new(), Vec::new()));
+        assert_eq!(s.file().data.tasks[&t].state, TaskState::Running, "merged");
+        s.request_remote_pause(&t).unwrap();
+        assert_eq!(s.file().data.pause_requests.len(), 1);
+        assert!(!s.lease.want_claim, "none of this needs the lease");
+        assert_eq!(s.lease.last_change_at, None);
+    }
+
+    #[test]
+    fn a_timer_that_is_running_can_still_close_when_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        held_by_laptop(&mut s);
+        read_only_error(s.pause_task(&t));
+        // Quitting isn't the user changing anything.
+        clock.advance(60);
+        s.on_exit().unwrap();
+        assert!(
+            s.file()
+                .data
+                .own_open_segments(&s.file().device_id)
+                .is_empty()
+        );
+        assert_eq!(s.file().data.tasks[&t].state, TaskState::Paused);
+    }
+
+    #[test]
+    fn time_away_found_is_kept_when_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, _) = running(dir.path(), &clock);
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        held_by_laptop(&mut s);
+        s.observe_activity(Some(0)).unwrap();
+        clock.advance(3 * 3600);
+        assert!(s.observe_activity(Some(0)).unwrap());
+        assert_eq!(pending_gaps(&s).len(), 1);
+    }
+
+    #[test]
+    fn choosing_a_zone_to_look_at_is_not_a_change_and_works_when_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        s.set_setting("activeZone", serde_json::json!("Asia/Tokyo"))
+            .unwrap();
+        s.set_setting("showBoth", serde_json::json!(true)).unwrap();
+        assert!(!s.lease.want_claim, "looking claims nothing");
+        assert_eq!(s.lease.last_change_at, None);
+        held_by_laptop(&mut s);
+        s.set_setting("activeZone", serde_json::json!("Europe/Lisbon"))
+            .unwrap();
+        assert_eq!(
+            s.file().data.settings["activeZone"].value,
+            serde_json::json!("Europe/Lisbon")
+        );
+        s.set_setting("showBoth", serde_json::json!(false)).unwrap();
+        assert!(
+            s.set_setting("activeZone", serde_json::json!("Nowhere/Land"))
+                .is_err()
+        );
+        read_only_error(s.set_setting("clientZone", serde_json::json!("Asia/Tokyo")));
+    }
+
+    #[test]
+    fn a_change_wants_the_lease_only_with_a_folder_and_only_if_it_changes_shared_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        assert_eq!(s.lease.state, LeaseStateName::Off);
+        s.create_project(&pinput("P")).unwrap();
+        assert!(!s.lease.want_claim, "no folder, no lease");
+        assert_eq!(s.lease.last_change_at, None);
+
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        assert_eq!(s.lease.state, LeaseStateName::Checking);
+        s.set_theme(Theme::Dark).unwrap();
+        assert!(!s.lease.want_claim, "a preference claims nothing");
+        clock.advance(60);
+        s.create_project(&pinput("Q")).unwrap();
+        assert!(s.lease.want_claim);
+        assert_eq!(s.lease.last_change_at, Some(s.now()));
+
+        s.remove_sync_target("/not/there").unwrap();
+        assert_eq!(s.lease.state, LeaseStateName::Off);
+        assert!(!s.lease.want_claim, "forgotten with the last folder");
+
+        // A store with a folder starts by checking, and writable.
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert_eq!(s.lease.state, LeaseStateName::Checking);
+        assert!(!s.read_only());
+    }
+
+    #[test]
+    fn a_change_refused_or_not_saved_does_not_count_as_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        assert!(s.create_task(&tinput("", "no-project")).is_err());
+        assert!(!s.lease.want_claim);
+        // A directory in the way of the temp file makes the write fail on every platform.
+        let tmp = dir.path().join("z-work-data.json.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(s.create_project(&pinput("P")).is_err());
+        assert!(!s.lease.want_claim, "nothing happened that needs the lease");
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    fn restored_elsewhere(at: Ts) -> EpochInfo {
+        EpochInfo {
+            epoch: 2,
+            by: "laptop-id".to_owned(),
+            at,
+            restored_from: "20260301T090000Z--a1b2c3d4--auto".to_owned(),
+            base_taken_at: at,
+        }
+    }
+
+    #[test]
+    fn a_backup_from_before_a_restore_is_refused_while_folders_are_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        s.run_daily_backup().unwrap();
+        let before = s.list_backups().unwrap()[0].name.clone();
+        let info = restored_elsewhere(s.now());
+        s.mutate(|f, _| {
+            f.prefs.epoch = Some(info);
+            Ok(())
+        })
+        .unwrap();
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        s.update_project(&p, &pinput("Renamed")).unwrap();
+        let store = dir.path().join("z-work-data.json");
+        let kept = std::fs::read(&store).unwrap();
+        let refused = s.restore_backup(&before).unwrap_err();
+        assert_eq!(refused.code(), "conflict");
+        assert_eq!(
+            refused.to_string(),
+            "This backup is from before the version of 2026-03-01 09:00 was restored. Restoring it would undo that on every computer. Use Versions instead."
+        );
+        assert_eq!(std::fs::read(&store).unwrap(), kept, "nothing was touched");
+
+        // One taken since is at the same point, so it does no harm.
+        clock.advance(86_400);
+        s.run_daily_backup().unwrap();
+        s.update_project(&p, &pinput("Renamed again")).unwrap();
+        let since = s
+            .list_backups()
+            .unwrap()
+            .into_iter()
+            .find(|b| b.name != before)
+            .unwrap()
+            .name;
+        s.restore_backup(&since).unwrap();
+        assert_eq!(s.file().data.projects[&p].name, "Renamed");
+        assert_eq!(s.file().prefs.epoch.as_ref().unwrap().epoch, 2, "kept");
+
+        // With no folder there is nothing to undo on other computers.
+        s.remove_sync_target("/not/there").unwrap();
+        s.restore_backup(&before).unwrap();
+        assert_eq!(s.file().data.projects[&p].name, "P");
+    }
+
+    #[test]
+    fn a_backup_restored_with_a_folder_counts_as_a_change_that_needs_the_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.create_project(&pinput("P")).unwrap();
+        s.run_daily_backup().unwrap();
+        let name = s.list_backups().unwrap()[0].name.clone();
+        s.add_sync_target(custom_folder("/not/there")).unwrap();
+        assert!(!s.lease.want_claim);
+        s.restore_backup(&name).unwrap();
+        assert!(s.lease.want_claim);
+    }
+
+    #[test]
+    fn restored_data_and_the_restore_it_follows_are_saved_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let (mut s, t) = running(dir.path(), &clock);
+        s.mutate(|f, _| {
+            f.data.set_device_prefix(
+                &Ctx {
+                    now: Ts::parse(T0).unwrap(),
+                    device: "other-device",
+                },
+                "Z",
+            )
+        })
+        .unwrap();
+        let prefixes = s.file().data.prefixes.clone();
+        s.warm = true;
+        // What comes back has a task running here, and an earlier state of this store.
+        let mut version = s.file().data.clone();
+        version.prefixes.clear();
+        version.audit_log.clear();
+        s.mutate(|f, c| {
+            f.data
+                .audit(c, "x", "y", "later", "", Value::Null, Value::Null);
+            Ok(())
+        })
+        .unwrap();
+        let audit_before = s.file().data.audit_log.len();
+        clock.advance(600);
+        let at = Ts::parse(T0).unwrap().later(120);
+        let info = restored_elsewhere(s.now());
+        let names = s
+            .install_restored(
+                version,
+                RestoreNote {
+                    entity: "version",
+                    name: "20260301T090000Z--a1b2c3d4--auto".to_owned(),
+                    after: serde_json::json!({"epoch": 2}),
+                    closed_at: at,
+                    reason: PauseReason::BackupRestored,
+                    last_heartbeat: None,
+                    epoch: Some(info.clone()),
+                },
+            )
+            .unwrap();
+        assert_eq!(names, vec!["T".to_owned()]);
+        assert!(!s.is_warm(), "comes back cold");
+        assert_eq!(s.file().prefs.epoch.as_ref(), Some(&info));
+        assert_eq!(s.device_file().epoch_info.as_ref(), Some(&info));
+        assert_eq!(s.file().data.prefixes, prefixes, "current prefixes stay");
+        assert_eq!(s.file().data.audit_log.len(), audit_before + 1);
+        let log = s
+            .file()
+            .data
+            .audit_log
+            .values()
+            .find(|a| a.entity == "version")
+            .unwrap();
+        assert_eq!(log.action, "restore");
+        assert_eq!(log.after, serde_json::json!({"epoch": 2}));
+        let seg = s.file().data.segments.values().next().unwrap();
+        assert_eq!(seg.end, Some(at));
+        assert_eq!(s.file().data.tasks[&t].state, TaskState::Paused);
+        assert_eq!(
+            s.file().data.tasks[&t].pause_reason,
+            Some(PauseReason::BackupRestored)
+        );
+        // Read back from disk, both are there: one save.
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert_eq!(s.file().prefs.epoch.as_ref(), Some(&info));
+        assert_eq!(
+            s.file().data.segments.values().next().unwrap().end,
+            Some(at)
+        );
+    }
+
+    #[test]
+    fn a_failed_install_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let before = s.file().clone();
+        let tmp = dir.path().join("z-work-data.json.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let result = s.install_restored(
+            Shared::default(),
+            RestoreNote {
+                entity: "version",
+                name: "n".to_owned(),
+                after: Value::Null,
+                closed_at: s.now(),
+                reason: PauseReason::BackupRestored,
+                last_heartbeat: None,
+                epoch: Some(restored_elsewhere(s.now())),
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(s.file(), &before);
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn folders_joined_follow_the_folders_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let joined = |s: &Service| s.file().prefs.sync_joined.clone();
+        let mut s = open(dir.path(), &clock);
+        assert_eq!(
+            joined(&s),
+            Some(Vec::new()),
+            "a new store has joined nothing"
+        );
+        s.add_sync_target(custom_folder("/a")).unwrap();
+        s.add_sync_target(custom_folder("/b")).unwrap();
+        assert_eq!(
+            joined(&s),
+            Some(Vec::new()),
+            "a folder joins once it has been read"
+        );
+
+        // A store from before this field has been merging with its folders all along.
+        s.mutate(|f, _| {
+            f.prefs.sync_joined = None;
+            Ok(())
+        })
+        .unwrap();
+        drop(s);
+        let mut s = open(dir.path(), &clock);
+        assert_eq!(joined(&s), Some(vec!["/a".to_owned(), "/b".to_owned()]));
+
+        // Taken off, it is as new if it comes back, so it merges rather than replaces.
+        s.remove_sync_target("/a").unwrap();
+        assert_eq!(joined(&s), Some(vec!["/b".to_owned()]));
+        s.switch_targets(Some("/b"), custom_folder("/c"), None)
+            .unwrap();
+        assert_eq!(joined(&s), Some(Vec::new()), "and /c isn't joined yet");
+        assert_eq!(s.lease.state, LeaseStateName::Checking);
+        s.switch_targets(Some("/c"), custom_folder("/c"), None)
+            .unwrap();
+        assert_eq!(s.file().prefs.sync_targets, vec![custom_folder("/c")]);
+
+        // One left over from a store changed by hand goes when the store opens.
+        s.mutate(|f, _| {
+            f.prefs.sync_joined = Some(vec!["/gone".to_owned(), "/c".to_owned()]);
+            Ok(())
+        })
+        .unwrap();
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert_eq!(joined(&s), Some(vec!["/c".to_owned()]));
+    }
+
+    /// D1: what makes two spellings one folder, on each kind of system.
+    #[test]
+    fn folder_keys_ignore_trailing_separators_and_on_windows_case_and_slashes() {
+        let same = |a: &str, b: &str, windows: bool| {
+            folder_key_for(a, windows) == folder_key_for(b, windows)
+        };
+        assert!(same("/cloud/OneDrive", "/cloud/OneDrive/", false));
+        assert!(same("/cloud/OneDrive", "/cloud/OneDrive//", false));
+        assert!(!same("/cloud/OneDrive", "/cloud/onedrive", false));
+        assert!(!same("/cloud/One", "/cloud/OneDrive", false));
+        assert!(!same("C:\\Sync", "C:/Sync", false), "\\ is a letter there");
+        assert_eq!(folder_key_for("/", false), "/");
+        assert_eq!(folder_key_for("//", false), "/");
+
+        assert!(same(
+            "C:\\Users\\Me\\OneDrive",
+            "c:/users/me/onedrive/",
+            true
+        ));
+        assert!(same(
+            "C:\\Users\\Me\\OneDrive",
+            "C:\\Users\\Me\\OneDrive\\\\",
+            true
+        ));
+        assert!(same("\\\\nas\\share\\work", "//NAS/share/work/", true));
+        assert!(!same("C:\\Users\\Me\\One", "C:\\Users\\Me\\OneDrive", true));
+        assert_eq!(folder_key_for("D:\\", true), "d:\\");
+        assert_eq!(folder_key_for("D:/", true), "d:\\");
+        assert_eq!(folder_key_for("D:\\\\", true), "d:\\");
+        assert!(
+            !same("D:\\", "D:", true),
+            "D: alone is not the drive's root"
+        );
+    }
+
+    #[test]
+    fn a_folder_waiting_for_a_choice_goes_with_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.add_sync_target(custom_folder("/a")).unwrap();
+        s.add_sync_target(custom_folder("/b")).unwrap();
+        let pending = |s: &mut Service, root: &str| {
+            let info = restored_elsewhere(s.now());
+            let root = root.to_owned();
+            s.mutate(|f, _| {
+                f.prefs.join_pending = Some(crate::model::JoinPending { root, info });
+                Ok(())
+            })
+            .unwrap();
+        };
+        pending(&mut s, "/a");
+        // The page's words: restored from the version of {time} on {name}.
+        let shown = s.snapshot().sync.join_pending.unwrap();
+        assert_eq!(shown.root, "/a");
+        assert_eq!(shown.taken_from, "20260301T090000Z--a1b2c3d4--auto");
+        assert_eq!(shown.at, Ts::parse(T0).unwrap());
+        assert_eq!(shown.device_name, "another device");
+        // A folder this device restored once, connected again.
+        let own = s.file().device_id.clone();
+        s.mutate(|f, _| {
+            if let Some(p) = &mut f.prefs.join_pending {
+                p.info.by = own;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(s.snapshot().sync.join_pending.unwrap().device_name, "pc");
+        s.remove_sync_target("/b").unwrap();
+        assert!(
+            s.file().prefs.join_pending.is_some(),
+            "that was the other one"
+        );
+        s.remove_sync_target("/a").unwrap();
+        assert_eq!(s.file().prefs.join_pending, None);
+        assert!(s.snapshot().sync.join_pending.is_none());
+
+        s.add_sync_target(custom_folder("/c")).unwrap();
+        pending(&mut s, "/c");
+        s.switch_targets(Some("/c"), custom_folder("/d"), None)
+            .unwrap();
+        assert_eq!(s.file().prefs.join_pending, None);
+
+        // One whose folder went while the app wasn't looking goes when the store opens.
+        pending(&mut s, "/gone");
+        drop(s);
+        let s = open(dir.path(), &clock);
+        assert_eq!(s.file().prefs.join_pending, None);
+    }
+
+    #[test]
+    fn a_snapshot_has_the_lease_and_the_platform_as_the_page_reads_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let v = serde_json::to_value(s.snapshot()).unwrap();
+        assert_eq!(
+            v["lease"],
+            serde_json::json!({
+                "state": "off",
+                "readOnly": false,
+                "holder": null,
+                "generation": null,
+                "note": null,
+                "reachableRoots": [],
+                "unreachableRoots": [],
+            })
+        );
+        assert_eq!(v["platform"], serde_json::json!({"packaged": false}));
+        assert_eq!(v["sync"]["joinPending"], Value::Null);
+
+        s.add_sync_target(custom_folder("/a")).unwrap();
+        s.set_packaged(true);
+        assert!(s.packaged());
+        held_by_laptop(&mut s);
+        clock.advance(90);
+        s.lease.reachable_roots = vec!["/a".to_owned()];
+        s.lease.unreachable_roots = vec!["/b".to_owned()];
+        s.lease.note = Some("A note".to_owned());
+        let info = restored_elsewhere(s.now());
+        s.mutate(|f, _| {
+            f.prefs.join_pending = Some(crate::model::JoinPending {
+                root: "/a".to_owned(),
+                info,
+            });
+            Ok(())
+        })
+        .unwrap();
+        let v = serde_json::to_value(s.snapshot()).unwrap();
+        assert_eq!(
+            v["lease"],
+            serde_json::json!({
+                "state": "heldByOtherLive",
+                "readOnly": true,
+                "holder": {
+                    "deviceId": "laptop-id",
+                    "deviceName": "LAPTOP",
+                    "generation": 4,
+                    "beatSeq": 9,
+                    "lastSignAt": T0,
+                    "ageSecs": 90,
+                    "clockSuspect": false,
+                },
+                "generation": 4,
+                "note": "A note",
+                "reachableRoots": ["/a"],
+                "unreachableRoots": ["/b"],
+            })
+        );
+        assert_eq!(v["platform"], serde_json::json!({"packaged": true}));
+        assert_eq!(
+            v["sync"]["joinPending"],
+            serde_json::json!({
+                "root": "/a",
+                "takenFrom": "20260301T090000Z--a1b2c3d4--auto",
+                "at": "2026-03-01T09:01:30Z",
+                "deviceName": "another device",
+            })
+        );
+    }
+
+    #[test]
+    fn the_view_gives_this_devices_own_generation_while_it_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.add_sync_target(custom_folder("/a")).unwrap();
+        s.lease.state = LeaseStateName::HeldByMe;
+        s.lease.claim = Some(crate::lease::Claim {
+            generation: 8,
+            acquired_at: s.now(),
+            beat_seq: 1,
+        });
+        let view = s.lease_view();
+        assert_eq!(view.generation, Some(8));
+        assert!(view.holder.is_none() && !view.read_only);
+    }
+
+    #[test]
+    fn with_no_folder_to_read_the_view_names_the_last_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.add_sync_target(custom_folder("/a")).unwrap();
+        s.lease.state = LeaseStateName::Unknown;
+        // Nobody known: keep working.
+        let view = s.lease_view();
+        assert!(!view.read_only && view.holder.is_none());
+        let memo = crate::model::LeaseMemo {
+            device_id: "laptop-id".to_owned(),
+            device_name: "LAPTOP".to_owned(),
+            generation: 6,
+            at: s.now(),
+        };
+        s.mutate(|f, _| {
+            f.prefs.lease_memo = Some(memo);
+            Ok(())
+        })
+        .unwrap();
+        clock.advance(3600);
+        let view = s.lease_view();
+        assert!(view.read_only);
+        let holder = view.holder.unwrap();
+        assert_eq!(holder.device_name, "LAPTOP");
+        assert_eq!(holder.age_secs, Some(3600));
+        assert_eq!(view.generation, Some(6));
+        read_only_error(s.create_project(&pinput("P")));
+        // Work here anyway.
+        s.lease.offline_claim = Some(6);
+        assert!(!s.lease_view().read_only);
+        s.create_project(&pinput("P")).unwrap();
+        s.lease.offline_claim = None;
+        // A day later it can't stop anyone.
+        clock.advance(86_400);
+        assert!(!s.lease_view().read_only);
+        s.create_project(&pinput("Q")).unwrap();
+        // The last holder being this device says nothing about another.
+        let own = crate::model::LeaseMemo {
+            device_id: s.file().device_id.clone(),
+            device_name: "pc".to_owned(),
+            generation: 7,
+            at: s.now(),
+        };
+        s.mutate(|f, _| {
+            f.prefs.lease_memo = Some(own);
+            Ok(())
+        })
+        .unwrap();
+        let view = s.lease_view();
+        assert!(!view.read_only && view.holder.is_none());
+    }
+
+    #[test]
+    fn a_store_with_no_folder_is_told_of_uninstalling_only_when_packaged() {
+        const WORDS: &str = "This copy of zWorkTracker keeps its data in a private Windows folder. Uninstalling the app deletes that folder and your hours with it. Connect a OneDrive or Google Drive folder in Settings > Sync between devices.";
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        assert!(!s.snapshot().warnings.iter().any(|w| w == WORDS));
+        s.set_packaged(true);
+        assert!(s.snapshot().warnings.iter().any(|w| w == WORDS));
+        s.add_sync_target(custom_folder("/a")).unwrap();
+        assert!(!s.snapshot().warnings.iter().any(|w| w == WORDS));
+    }
+
+    fn folder_warnings(s: &Service) -> Vec<String> {
+        s.snapshot()
+            .warnings
+            .into_iter()
+            .filter(|w| w.contains("hasn't been written"))
+            .collect()
+    }
+
+    #[test]
+    fn a_folder_failing_for_half_an_hour_is_mentioned_and_where_the_data_is_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        for (provider, root) in [
+            (SyncProvider::OneDrive, "/od"),
+            (SyncProvider::GoogleDrive, "/gd"),
+        ] {
+            s.add_sync_target(SyncTarget {
+                provider,
+                root: root.to_owned(),
+            })
+            .unwrap();
+        }
+        let written = s.now();
+        s.target_status_mut("/od").last_written_at = Some(written);
+        s.target_status_mut("/gd").last_written_at = Some(written);
+        assert!(folder_warnings(&s).is_empty());
+
+        s.target_status_mut("/od").last_error = Some("The disk is full".to_owned());
+        clock.advance(29 * 60);
+        assert!(folder_warnings(&s).is_empty(), "not yet");
+        s.target_status_mut("/gd").last_written_at = Some(s.now());
+        clock.advance(60);
+        assert_eq!(
+            folder_warnings(&s),
+            vec![
+                "OneDrive folder hasn't been written since 30 min ago: The disk is full. Google Drive folder is fine, so your data is safe there."
+                    .to_owned()
+            ]
+        );
+
+        // When neither can be written, each is said, and only this computer has it all.
+        s.target_status_mut("/gd").last_error = Some(
+            "Folder not found. Is the drive connected and the desktop client running?".to_owned(),
+        );
+        clock.advance(3600);
+        assert_eq!(
+            folder_warnings(&s),
+            vec![
+                "OneDrive folder hasn't been written since 1 h 30 min ago: The disk is full. Your data is safe on this computer.".to_owned(),
+                "Google Drive folder hasn't been written since 1 h 1 min ago: Folder not found. Is the drive connected and the desktop client running? Your data is safe on this computer.".to_owned(),
+            ]
+        );
+
+        // A write that works ends it.
+        for root in ["/od", "/gd"] {
+            let status = s.target_status_mut(root);
+            status.last_error = None;
+            status.last_written_at = Some(written);
+        }
+        assert!(folder_warnings(&s).is_empty());
+    }
+
+    #[test]
+    fn a_folder_that_has_failed_all_this_run_counts_from_the_start_of_it_and_goes_by_its_own_name()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        s.add_sync_target(custom_folder("/home/me/Dropbox"))
+            .unwrap();
+        s.target_status_mut("/home/me/Dropbox").last_error = Some("It is locked.".to_owned());
+        clock.advance(2 * 86_400);
+        assert_eq!(
+            folder_warnings(&s),
+            vec![
+                "Dropbox folder hasn't been written since 2 days ago: It is locked. Your data is safe on this computer.".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn lengths_of_time_read_as_a_person_says_them() {
+        for (secs, want) in [
+            (-5, "less than a minute"),
+            (59, "less than a minute"),
+            (60, "1 min"),
+            (3599, "59 min"),
+            (3600, "1 h"),
+            (5400, "1 h 30 min"),
+            (86_399, "23 h 59 min"),
+            (86_400, "1 day"),
+            (2 * 86_400 - 1, "1 day"),
+            (2 * 86_400, "2 days"),
+        ] {
+            assert_eq!(span_text(secs), want);
+        }
+    }
+
+    /// Two devices on a folder, called what a person would call them, with a timer running on the laptop.
+    fn laptop_and_desktop(
+        dirs: [&Path; 3],
+        clock: &ManualClock,
+    ) -> (
+        std::sync::Mutex<Service>,
+        std::sync::Mutex<Service>,
+        String,
+        String,
+        String,
+    ) {
+        let [here, there, root] = dirs;
+        let named = |dir: &Path, name: &str| {
+            let mut s = Service::open(dir, Arc::new(clock.clone()), name).unwrap();
+            s.add_sync_target(custom_folder(&root.to_string_lossy()))
+                .unwrap();
+            std::sync::Mutex::new(s)
+        };
+        let (laptop, desktop) = (named(here, "LAPTOP"), named(there, "DESKTOP"));
+        let (p, t, seg) = {
+            let mut s = laptop.lock().unwrap();
+            let p = s.create_project(&pinput("P")).unwrap();
+            let t = s.create_task(&tinput("T", &p)).unwrap();
+            s.start_task(&t).unwrap();
+            let seg = s.file().data.segments.keys().next().unwrap().clone();
+            (p, t, seg)
+        };
+        cycle(&laptop);
+        cycle(&desktop);
+        cycle(&laptop);
+        (laptop, desktop, p, t, seg)
+    }
+
+    fn cycle(s: &std::sync::Mutex<Service>) -> bool {
+        crate::sync::run_cycle(s, &crate::sync::RealIo)
+    }
+
+    fn warning_notices(s: &Service) -> Vec<String> {
+        s.snapshot()
+            .notices
+            .into_iter()
+            .filter(|n| n.level == "warning")
+            .map(|n| n.message)
+            .collect()
+    }
+
+    #[test]
+    fn r5_a_device_that_comes_back_gets_its_time_back_and_hears_of_it() {
+        let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+        let clock = ManualClock::at("2026-03-02T09:00:00Z");
+        let (laptop, desktop, _, t, seg) =
+            laptop_and_desktop(dirs.each_ref().map(|d| d.path()), &clock);
+        // Off the network for a day and more, with its timer still going.
+        clock.advance(25 * 3600);
+        cycle(&desktop);
+        desktop
+            .lock()
+            .unwrap()
+            .settle_lost_segment(&seg, "the laptop is gone")
+            .unwrap();
+        cycle(&desktop);
+        {
+            let s = desktop.lock().unwrap();
+            let snap = s.snapshot();
+            assert_eq!(snap.tasks[0].running_elsewhere, None, "not any more");
+            let view = snap.raw_segments.iter().find(|r| r.id == seg).unwrap();
+            assert!(view.corrected && view.raw_end.is_none());
+            let piece = snap.segments.iter().find(|p| p.segment_id == seg).unwrap();
+            assert_eq!(piece.provisional_end, None);
+            assert!(piece.end.is_some());
+        }
+
+        // Back an hour later. Its timer stops at once, and its record replaces the settlement.
+        clock.advance(3600);
+        assert!(cycle(&laptop));
+        {
+            let s = laptop.lock().unwrap();
+            let closed = &s.file().data.segments[&seg];
+            let real = Ts::parse("2026-03-03T11:00:00Z").unwrap();
+            assert_eq!(closed.end, Some(real));
+            assert_eq!(closed.edit, None, "lifted");
+            assert_eq!(s.file().data.tasks[&t].state, TaskState::Paused);
+            assert!(
+                s.file()
+                    .data
+                    .own_open_segments(&s.file().device_id)
+                    .is_empty()
+            );
+            let told = warning_notices(&s);
+            assert!(
+                told.iter().any(|m| m == "\"T\": 1 day logged here after DESKTOP closed it is back. Correct it in task details if that time wasn't work."),
+                "{told:?}"
+            );
+        }
+        // The other device takes it from the file, and tells nobody.
+        clock.advance(60);
+        assert!(cycle(&desktop));
+        let s = desktop.lock().unwrap();
+        assert_eq!(s.file().data.segments[&seg].edit, None);
+        assert_eq!(
+            s.file().data.segments[&seg].end,
+            Some(Ts::parse("2026-03-03T11:00:00Z").unwrap())
+        );
+        assert!(warning_notices(&s).is_empty());
+        let log = s.audit_entries(Some(&seg));
+        assert!(log.iter().any(|a| a.action == "settleLost"));
+        assert!(log.iter().any(|a| a.action == "reclaimAfterReturn"));
+    }
+
+    #[test]
+    fn r5_a_settled_segment_is_not_called_running_on_two_devices_at_once() {
+        let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+        let clock = ManualClock::at("2026-03-02T09:00:00Z");
+        let (_laptop, desktop, p, t, seg) =
+            laptop_and_desktop(dirs.each_ref().map(|d| d.path()), &clock);
+        clock.advance(25 * 3600);
+        cycle(&desktop);
+        let mut d = desktop.lock().unwrap();
+        let other = d.create_task(&tinput("U", &p)).unwrap();
+        d.warm = true;
+        d.start_task(&other).unwrap();
+        let two = |s: &Service| {
+            s.snapshot()
+                .warnings
+                .iter()
+                .any(|w| w.starts_with("Tasks are running on more than one device"))
+        };
+        let elsewhere = |s: &Service| {
+            s.snapshot()
+                .tasks
+                .iter()
+                .find(|x| x.id == t)
+                .unwrap()
+                .running_elsewhere
+                .clone()
+        };
+        assert!(two(&d));
+        assert_eq!(elsewhere(&d), Some("LAPTOP".to_owned()));
+        d.settle_lost_segment(&seg, "the laptop is gone").unwrap();
+        assert!(!two(&d));
+        assert_eq!(elsewhere(&d), None);
+        // This device's own goes by the raw end, so a timer here stays shown as running here.
+        let snap = d.snapshot();
+        assert_eq!(
+            snap.tasks.iter().find(|x| x.id == other).unwrap().state,
+            TaskState::Running
+        );
+    }
+
+    #[test]
+    fn r5_a_late_file_with_an_earlier_end_lifts_a_settlement_with_nobody_to_tell() {
+        let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+        let clock = ManualClock::at("2026-03-02T09:00:00Z");
+        let (laptop, desktop, _, t, seg) =
+            laptop_and_desktop(dirs.each_ref().map(|d| d.path()), &clock);
+        // The laptop paused at 09:30 and wrote its file, which then took a while to arrive.
+        clock.advance(1800);
+        laptop.lock().unwrap().pause_task(&t).unwrap();
+        let held_back = laptop.lock().unwrap().device_file();
+        drop(laptop);
+        clock.advance(3600);
+        {
+            let mut s = desktop.lock().unwrap();
+            s.request_remote_pause(&t).unwrap();
+            // Its last sign reached the desktop as later than the pause.
+            let seen = BTreeMap::from([(
+                held_back.device_id.clone(),
+                RemoteDevice {
+                    name: "LAPTOP".to_owned(),
+                    last_heartbeat: Some(s.now()),
+                    written_at: s.now(),
+                },
+            )]);
+            s.absorb_remote(&Shared::default(), seen, Vec::new());
+            s.settle_lost_segment(&seg, "the laptop is gone").unwrap();
+            assert_eq!(
+                s.file().data.segments[&seg].edit.as_ref().unwrap().end,
+                s.now(),
+                "the asked moment, as far as is known"
+            );
+            assert!(s.absorb_remote(&held_back.data, BTreeMap::new(), Vec::new()));
+            assert_eq!(s.file().data.segments[&seg].edit, None);
+            assert_eq!(
+                s.file().data.segments[&seg].effective(),
+                Some((
+                    Ts::parse("2026-03-02T09:00:00Z").unwrap(),
+                    Some(Ts::parse("2026-03-02T09:30:00Z").unwrap())
+                ))
+            );
+            assert!(warning_notices(&s).is_empty());
+        }
+    }
+
+    #[test]
+    fn r5_time_already_billed_stays_and_the_device_that_comes_back_hears_once() {
+        let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+        let clock = ManualClock::at("2026-03-02T09:00:00Z");
+        let (laptop, desktop, p, _, seg) =
+            laptop_and_desktop(dirs.each_ref().map(|d| d.path()), &clock);
+        clock.advance(3600);
+        laptop.lock().unwrap().heartbeat().unwrap();
+        cycle(&laptop);
+        cycle(&desktop);
+        clock.advance(25 * 3600);
+        let reference = {
+            let mut s = desktop.lock().unwrap();
+            s.settle_lost_segment(&seg, "the laptop is gone").unwrap();
+            let id = s.create_summary(&this_month(&p)).unwrap();
+            s.file().data.summaries[&id].reference.clone()
+        };
+        cycle(&desktop);
+
+        clock.advance(600);
+        cycle(&laptop);
+        let s = laptop.lock().unwrap();
+        let held = &s.file().data.segments[&seg];
+        assert!(held.end.is_some(), "its own record is there");
+        let edit = held.edit.as_ref().unwrap();
+        assert_eq!(
+            edit.end,
+            Ts::parse("2026-03-02T10:00:00Z").unwrap(),
+            "the summary's"
+        );
+        assert!(!edit.settled);
+        let told = warning_notices(&s);
+        let wanted = format!(
+            "\"T\": the time on {reference} differs from what this computer recorded by 1 day. To change it, void the summary, then restore the segment or add the time by hand."
+        );
+        assert_eq!(told.iter().filter(|m| **m == wanted).count(), 1, "{told:?}");
+        drop(s);
+        clock.advance(600);
+        cycle(&laptop);
+        let told = warning_notices(&laptop.lock().unwrap());
+        assert_eq!(told.iter().filter(|m| **m == wanted).count(), 1, "once");
+    }
+
+    #[test]
+    fn r5_a_settlement_that_waited_on_a_summary_lifts_when_the_summary_is_voided_here() {
+        let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+        let clock = ManualClock::at("2026-03-02T09:00:00Z");
+        let (laptop, desktop, p, t, seg) =
+            laptop_and_desktop(dirs.each_ref().map(|d| d.path()), &clock);
+        clock.advance(25 * 3600);
+        cycle(&desktop);
+        let mut d = desktop.lock().unwrap();
+        d.settle_lost_segment(&seg, "the laptop is gone").unwrap();
+        let summary = d.create_summary(&this_month(&p)).unwrap();
+        // The laptop's record arrives, closed.
+        laptop.lock().unwrap().pause_task(&t).unwrap();
+        let file = laptop.lock().unwrap().device_file();
+        d.absorb_remote(&file.data, BTreeMap::new(), Vec::new());
+        assert!(d.file().data.segments[&seg].edit.as_ref().unwrap().settled);
+        // Nothing arrives now, but something is due.
+        d.void_summary(&summary).unwrap();
+        assert!(d.absorb_remote(&Shared::default(), BTreeMap::new(), Vec::new()));
+        assert_eq!(d.file().data.segments[&seg].edit, None);
+        assert!(!d.absorb_remote(&Shared::default(), BTreeMap::new(), Vec::new()));
     }
 }

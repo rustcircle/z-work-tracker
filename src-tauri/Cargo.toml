@@ -4,8 +4,9 @@ members = [".", "crates/z-work-core", "crates/z-work-session"]
 
 [workspace.package]
 edition = "2024"
-# Tauri 2.12 needs Rust 1.90.
-rust-version = "1.90"
+# The Rust this is built and tested with: rust-toolchain.toml follows stable, which was 1.99.1 when this was set.
+# Tauri 2.12 alone needs 1.90.
+rust-version = "1.99"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -19,10 +20,10 @@ indexing_slicing = "warn"
 
 [package]
 name = "z-work-tracker"
-version = "0.2.0"
+version = "1.3.1"
 description = "Local-first labor hours tracker"
 license = "MIT"
-authors = ["Pedro Jorge <p@rustcircle.com>"]
+authors = ["Pedro Jorge <pmrj@rustcircle.com>"]
 repository = "https://github.com/rustcircle/z-work-tracker"
 edition.workspace = true
 rust-version.workspace = true
@@ -55,6 +56,11 @@ iana-time-zone = "0.1"
 rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
 # Already built as a dependency of tauri. Called directly because tauri discards its result.
 window-vibrancy = "0.8"
+# Start with Windows in the Store build, through the manifest's StartupTask. Already locked, for the crate below.
+windows = { version = "0.62", features = ["ApplicationModel"] }
+# Toasts under the Store package's own AppUserModelID. Already built for the notification plugin, which passes the
+# Tauri identifier instead and drops the result.
+tauri-winrt-notification = "0.8"
 
 [target.'cfg(windows)'.dependencies.winreg]
 version = "0.55"

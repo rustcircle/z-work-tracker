@@ -1,17 +1,18 @@
 // Analytics sheets for the Excel export. They are built from the same metrics as the screen, for
-// the view the Analysis tab last showed (or all logged history when it was never opened), and the
-// sheet title names the period and the zone. Durations are seconds, money is exact cents, shares
+// the view the Analysis tab is showing (or all logged history when it is not open), and the
+// sheet title names the period, the zone and any filter. Durations are seconds, money is exact cents, shares
 // are fractions. Sheets holding money are marked containsPrices so client exports can drop them.
-import { centsFromNumerator, money as fmtMoney } from '../../lib/billing';
+import { ROUNDED_ROWS_NOTE, centsFromNumerator, money as fmtMoney } from '../../lib/billing';
 import { dayOf, parseIso, zoneLabel } from '../../lib/tz';
 import type { AnalyticsSheet, Snapshot } from '../../lib/types';
 import { NO_FILTERS, closedSegs } from './engine';
 import { fmtClock } from './format';
 import { glossaryEntry } from './glossary';
 import { analyze, type Metrics } from './metrics';
-import { dayNum, dayStr, MAX_CUSTOM_DAYS, type RangeSpec } from './range';
+import { dayNum, dayStr, MAX_CUSTOM_DAYS, periodOf, type RangeSpec } from './range';
 import { WEEKDAY_NAMES } from './range';
 import { publishedAnalysisView, type AnalysisView } from './view';
+import { viewFilterText } from './viewText';
 
 type Cell = string | number | null;
 
@@ -28,6 +29,14 @@ export function historyRange(snapshot: Snapshot, zone: string, nowSec: number): 
   return { kind: 'custom', anchor: start, from: start, to: today };
 }
 
+/** What the sheets cover when the Analysis tab is not open, in words and with its period: for the Export dialog. */
+export function historyScopeText(snapshot: Snapshot, zone: string, nowSec: number): string {
+  const range = historyRange(snapshot, zone, nowSec);
+  const period = periodOf(range, zone);
+  if (range.kind === 'week') return `the current week, as nothing is logged yet: ${period.label}`;
+  return `${period.days >= MAX_CUSTOM_DAYS ? `the latest ${MAX_CUSTOM_DAYS} days` : 'all logged history'}: ${period.label}`;
+}
+
 const basisOf = (id: string): string => glossaryEntry(id)?.basis ?? '';
 
 /** The Rate column: a fixed-fee project says so instead of "No rate set". No price is written here. */
@@ -37,7 +46,8 @@ export function buildAnalyticsSheets(snapshot: Snapshot, zone: string, nowSec: n
   const v = view ?? publishedAnalysisView();
   const range = v?.range ?? historyRange(snapshot, zone, nowSec);
   const m = analyze(snapshot, { zone, range, filters: v?.filters ?? NO_FILTERS, compare: v?.compare ?? false }, nowSec, v?.basis ?? 'billable');
-  const where = `${m.period.label}, ${zoneLabel(zone, Math.min(nowSec, m.period.to - 1))}`;
+  const filters = v ? viewFilterText(snapshot, v) : '';
+  const where = `${m.period.label}, ${zoneLabel(zone, Math.min(nowSec, m.period.to - 1))}${filters === '' ? '' : `, filtered to ${filters}`}`;
   const sheets: AnalyticsSheet[] = [kpiSheet(m, where), bandsSheet(snapshot, m, where), projectsSheet(m, where), weekdaysSheet(m, where)];
   if (m.tags.stats.length > 0) sheets.push(tagsSheet(m, where));
   if (m.shifts.configured && m.shifts.stats.length > 0) sheets.push(shiftsSheet(m, where));
@@ -254,7 +264,7 @@ function earningsPeriodSheet(m: Metrics, where: string): AnalyticsSheet {
   ]);
   return {
     name: 'Earnings by period',
-    title: `Earnings by period (Billable time, rate in force when logged): ${where}`,
+    title: `Earnings by period (Billable time, rate in force when logged). ${ROUNDED_ROWS_NOTE} ${where}`,
     columns: [
       { header: 'Period', kind: 'text' },
       { header: 'Billable time', kind: 'duration' },

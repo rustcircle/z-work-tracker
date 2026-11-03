@@ -2,10 +2,12 @@
 import { useState } from 'react';
 
 import { useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { Button, Field } from '../../components/ui';
 import { api } from '../../lib/api';
 import '../billing/billing.css';
 import { errorMessage } from '../../lib/errorMessage';
+import { ReadOnlyNote } from './ReadOnlyNote';
 
 /** The reference the next summary would get under `prefix`: numbers count up per prefix and a voided one still counts. */
 export function nextReference(prefix: string, taken: readonly { prefix: string; number: number }[]): string {
@@ -15,6 +17,7 @@ export function nextReference(prefix: string, taken: readonly { prefix: string; 
 
 export function BillingPrefixSection() {
   const { snapshot, adopt } = useAppState();
+  const { readOnly } = useReadOnly();
   const { prefix, clashes, summaries } = snapshot.billing;
   const [draft, setDraft] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +48,7 @@ export function BillingPrefixSection() {
 
   return (
     <div className="settings-stack">
+      <ReadOnlyNote />
       <p>
         Every billing summary gets a reference of the form <strong>&lt;prefix&gt;-&lt;number&gt;</strong>, such as <code>{prefix}-001</code>. The prefix is this computer&apos;s own, so references stay unique per device, and a number is never reused, even after its summary is voided.
       </p>
@@ -52,7 +56,7 @@ export function BillingPrefixSection() {
         className="bl-prefix-form"
         onSubmit={(e) => {
           e.preventDefault();
-          if (changed && !busy) void save();
+          if (changed && !busy && !readOnly) void save();
         }}
       >
         <Field label="Prefix of this device" hint="1 to 4 letters or digits. Shown in capitals." error={error}>
@@ -65,6 +69,7 @@ export function BillingPrefixSection() {
               maxLength={12}
               autoComplete="off"
               spellCheck={false}
+              disabled={readOnly}
               aria-invalid={error ? true : undefined}
               aria-describedby={describedBy}
               onChange={(e) => {
@@ -75,7 +80,7 @@ export function BillingPrefixSection() {
             />
           )}
         </Field>
-        <Button type="submit" variant="primary" disabled={!changed || busy}>
+        <Button type="submit" variant="primary" disabled={!changed || busy || readOnly}>
           {busy ? 'Saving…' : 'Save prefix'}
         </Button>
       </form>

@@ -1,9 +1,15 @@
 // First-run setup: a full page that stands in for the Shell. Every step has defaults, Back, Skip, and a
 // "Finish with defaults" that ends it in one click. Each step writes through the normal validated commands as
 // it is left, and the step is saved so an interrupted setup resumes. It logs no time.
+//
+// Because it stands in for the Shell it shows the lease line itself. While another computer holds the lease the steps that
+// write data shared between computers (zones, the time rule, the first project, shifts) say whose they are and write nothing.
+// In the Microsoft Store build, whose files Windows removes on uninstall, the cloud folder step asks firmly for a folder, and
+// Skip and Finish with defaults ask once more before setup goes on without one.
 import { useEffect, useRef, useState } from 'react';
 
 import { useApp } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { ruleFor } from '../../lib/billing';
 import { normalizeHex, suggestColor } from '../../lib/color';
@@ -13,9 +19,11 @@ import type { Currency, FolderPreview, RoundMethod } from '../../lib/types';
 import { ColorPicker } from '../../components/ColorPicker';
 import { useColorNotices } from '../../components/colorNotice';
 import { plural } from '../../components/format';
-import { IconBack } from '../../components/icons';
+import { IconBack, IconWarn } from '../../components/icons';
+import { LeaseBanner } from '../../components/LeaseBanner';
 import { RoundingFields, incrementLabel, METHOD_LABEL, type RoundingValue } from '../../components/RoundingFields';
-import { Button, Field } from '../../components/ui';
+import { holderName } from '../../components/TakeOverDialog';
+import { Button, ConfirmDialog, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { parsePrice, validateProjectName } from '../projects/projectLogic';
 import { AutostartSection } from '../settings/OtherSections';
@@ -24,7 +32,25 @@ import { SyncChooser, folderLabel } from '../settings/SyncChooser';
 import { ThemeSection } from '../settings/ThemeSection';
 import { THEME_LABELS } from '../../lib/themes';
 import { ZonePickerDialog } from '../zones';
-import { OPTIONAL_STEPS, STEPS, STEP_TITLE, resumeAt, ruleSentence, ruleTable, stepIndex, visibleSteps, type StepId } from './setupSteps';
+import {
+  FOLDER_OPTIONAL,
+  FOLDER_URGED,
+  NO_FOLDER,
+  STEPS,
+  STEP_TITLE,
+  TWO_FOLDERS,
+  folderLeftUnanswered,
+  folderUrgedNow,
+  followsHolder,
+  resumeAt,
+  ruleSentence,
+  ruleTable,
+  stepIndex,
+  stepNote,
+  visibleSteps,
+  writesSharedData,
+  type StepId,
+} from './setupSteps';
 import './setup.css';
 
 interface Props {
@@ -37,10 +63,16 @@ interface Props {
 type Previews = Map<string, FolderPreview | 'error'>;
 
 export function SetupWizard({ onFinished, rerun = false }: Props) {
-  const { snapshot, zones, nowSec, adopt } = useApp();
+  const { snapshot, zones, nowSec, adopt, error: appError, clearError } = useApp();
   const { act } = useCommands();
   const notices = useColorNotices();
   const today = dayOf(nowSec, zones.active);
+  const folderAsk = { packaged: snapshot.platform.packaged, folders: snapshot.sync.targets.length };
+  const urged = folderUrgedNow(folderAsk);
+  const { readOnly } = useReadOnly();
+  const followNote = followsHolder(holderName(snapshot.lease.holder));
+  // Asked by Skip on the folder step and by Finish with defaults, in a build that urges a folder.
+  const [asking, setAsking] = useState<'skip' | 'finish' | null>(null);
 
   // Another computer's folder with data is offered first. Each detected folder is looked at once.
   const [previews, setPreviews] = useState<Previews>(new Map());
@@ -132,6 +164,7 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
 
   const go = (id: StepId): void => {
     setError(null);
+    clearError();
     setTouched(false);
     setOpened((o) => new Set(o).add(id));
     setAt(id);
@@ -152,6 +185,8 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
       const i = steps.indexOf(current);
       if (i > 0) go(steps[i - 1] as StepId);
     });
+  /** Skip on the folder step. Where a folder is urged and none is connected it asks first. */
+  const skipFolder = (): void => (folderLeftUnanswered('sync', folderAsk) ? setAsking('skip') : skip());
 
   async function finish(confirmed = true): Promise<void> {
     setBusy(true);
@@ -165,6 +200,8 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
   }
 
   const rule = ruleFor(snapshot.rounding, '', today);
+  // The rule in force is all there is to show while another computer holds the lease.
+  const shownRule = readOnly ? { incrementMinutes: rule.incrementMinutes, method: rule.method } : { incrementMinutes: rounding.minutes, method: rounding.method };
   const rounded = rounding.minutes !== rule.incrementMinutes || (rounding.minutes > 0 && rounding.method !== rule.method);
   const nameError = name.trim() === '' ? null : validateProjectName(name, snapshot.projects, null);
   const priceResult = parsePrice(price);
@@ -173,6 +210,8 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
   /** Writes what this step holds through the normal commands. Returns false when something was refused. */
   async function save(id: StepId): Promise<boolean> {
     setError(null);
+    // The backend would refuse these, and the steps offer no way to make them: another computer's data is not written from here.
+    if (readOnly && writesSharedData(id)) return true;
     try {
       if (id === 'rules' && rounded) {
         const ok = await act(() => api.setRounding({ projectId: null, effectiveFrom: today, incrementMinutes: rounding.minutes, method: rounding.method as RoundMethod }, today));
@@ -215,16 +254,19 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
     }
   }
 
-  const optional = OPTIONAL_STEPS.includes(current);
+  const note = stepNote(current, folderAsk);
   const last = current === 'summary';
+  /** Finish with defaults. Setup run again changes no state, so leaving it needs no question. */
+  const finishDefaults = (): void => (!rerun && folderLeftUnanswered(current, folderAsk) ? setAsking('finish') : void finish(false));
   const title = STEP_TITLE[current];
 
   return (
     <main className="firstrun wizard" aria-labelledby="wizard-title" data-testid="setup-wizard" data-step={current}>
       <div className="firstrun-card wizard-card">
+        <LeaseBanner />
         <p className="wizard-progress" data-testid="wizard-progress">
           Step {position + 1} of {steps.length}
-          {optional ? ' (optional)' : ''}
+          {note ? ` (${note})` : ''}
         </p>
         <ol className="wizard-dots" aria-label="Setup steps">
           {steps.map((s, i) => (
@@ -281,14 +323,14 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
 
         {current === 'zones' && (
           <div className="wizard-body">
-            <p className="field-hint">A zone you pick is used straight away. Next keeps it; Skip or Back puts back what it was.</p>
+            {readOnly ? <p className="wizard-note">{followNote}</p> : <p className="field-hint">A zone you pick is used straight away. Next keeps it; Skip or Back puts back what it was.</p>}
             <div className="kv">
               <div>
                 <p className="kv-label">My zone</p>
                 <p data-testid="wizard-my-zone">{zoneLabel(zones.my, nowSec)}</p>
                 <p className="field-hint">{snapshot.settings.myZone ? 'Chosen by you.' : `Detected from this computer (${snapshot.systemZone}). Keep it unless you work in another zone.`}</p>
               </div>
-              <Button small onClick={() => setPick('my')}>
+              <Button small disabled={readOnly} onClick={() => setPick('my')}>
                 Change my zone
               </Button>
             </div>
@@ -299,11 +341,11 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
                 <p className="field-hint">Only if you work with a client in another time zone. Nothing is assumed for you.</p>
               </div>
               <div className="inline-actions">
-                <Button small onClick={() => setPick('client')}>
+                <Button small disabled={readOnly} onClick={() => setPick('client')}>
                   {zones.client ? 'Change client zone' : 'Choose client zone'}
                 </Button>
                 {zones.client && (
-                  <Button small variant="ghost" onClick={() => void act(() => api.setSetting('clientZone', null))}>
+                  <Button small variant="ghost" disabled={readOnly} onClick={() => void act(() => api.setSetting('clientZone', null))}>
                     No client zone
                   </Button>
                 )}
@@ -325,9 +367,10 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
 
         {current === 'rules' && (
           <div className="wizard-body">
+            {readOnly && <p className="wizard-note">{followNote}</p>}
             <p>Billable time is each task's time on one day, rounded once for that day. The default is {incrementLabel(15)}, Up.</p>
-            <RoundingFields legend="Rounding" value={rounding} onChange={setRounding} />
-            <p data-testid="rule-sentence">{ruleSentence({ incrementMinutes: rounding.minutes, method: rounding.method })}</p>
+            {!readOnly && <RoundingFields legend="Rounding" value={rounding} onChange={setRounding} />}
+            <p data-testid="rule-sentence">{ruleSentence(shownRule)}</p>
             <table className="wizard-table" aria-label="What the rule bills">
               <thead>
                 <tr>
@@ -338,7 +381,7 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {ruleTable({ incrementMinutes: rounding.minutes, method: rounding.method }).map((r) => (
+                {ruleTable(shownRule).map((r) => (
                   <tr key={r.worked}>
                     <td>{r.worked} min</td>
                     <td className="num tabular">{r.billed} min</td>
@@ -346,9 +389,11 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
                 ))}
               </tbody>
             </table>
-            <p className="field-hint">
-              {rounding.minutes === 0 ? 'Off' : `${rounding.minutes} min, ${METHOD_LABEL[rounding.method]}`} applies from today on. Past days keep what applied to them.
-            </p>
+            {!readOnly && (
+              <p className="field-hint">
+                {rounding.minutes === 0 ? 'Off' : `${rounding.minutes} min, ${METHOD_LABEL[rounding.method]}`} applies from today on. Past days keep what applied to them.
+              </p>
+            )}
           </div>
         )}
 
@@ -358,6 +403,8 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
               <p role="status" data-testid="project-made">
                 Created the project “{made.project}”. Edit it any time in Projects.
               </p>
+            ) : readOnly ? (
+              <p className="wizard-note">{followNote}</p>
             ) : (
               <>
                 <p>Optional. Name your first project to have it ready; leave the name empty to skip. You can add more in the Projects tab.</p>
@@ -383,7 +430,13 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
           </div>
         )}
 
-        {current === 'shifts' && (
+        {current === 'shifts' && readOnly && (
+          <div className="wizard-body">
+            <p className="wizard-note">{followNote}</p>
+          </div>
+        )}
+
+        {current === 'shifts' && !readOnly && (
           <div className="wizard-body">
             <p>Optional. Shifts shade your usual working hours on the Timeline and feed the shift figures in Analysis. Tick the ones you work; they run Monday to Friday in {zoneLabel(zones.my, nowSec)}. You can edit them in Settings.</p>
             <ul className="wizard-presets" aria-label="Shift presets">
@@ -407,14 +460,25 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
 
         {current === 'sync' && (
           <div className="wizard-body">
-            <p>Optional. To use zWorkTracker on two computers, it can write its data into a OneDrive or Google Drive folder. Nothing is switched on unless you tick a folder and connect it.</p>
+            {urged ? (
+              <div className="banner banner-warning" data-testid="wizard-folder-urged">
+                <IconWarn />
+                <span>
+                  <strong>{FOLDER_URGED.lead}</strong> {FOLDER_URGED.body}
+                </span>
+              </div>
+            ) : (
+              <p>
+                {FOLDER_OPTIONAL} {TWO_FOLDERS}
+              </p>
+            )}
             <SyncChooser detected={snapshot.sync.detected} existing={snapshot.sync.targets.map((t) => t.root)} onConnected={next} />
           </div>
         )}
 
         {current === 'autostart' && (
           <div className="wizard-body">
-            <p>Off by default. If you turn it on, zWorkTracker starts hidden in the system tray when you sign in. It changes only this computer. Next keeps your choice; Skip or Back puts it back as it was.</p>
+            <p>Off by default. If you turn it on, zWorkTracker opens when you sign in to Windows. It changes only this computer. Next keeps your choice; Skip or Back puts it back as it was.</p>
             <AutostartSection />
           </div>
         )}
@@ -458,11 +522,12 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
           </div>
         )}
 
-        {error && (
-          <p className="bl-error" role="alert">
-            {error}
+        {/* What a step wrote and the backend refused (`act`) is told here too: this page has no banner bar. */}
+        {[...new Set([error, appError].filter((m): m is string => m !== null))].map((m) => (
+          <p key={m} className="bl-error" role="alert">
+            {m}
           </p>
-        )}
+        ))}
 
         <div className="wizard-actions">
           <div className="wizard-nav">
@@ -477,7 +542,7 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
               </Button>
             )}
             {current === 'sync' && (
-              <Button variant="ghost" onClick={skip} disabled={busy}>
+              <Button variant="ghost" onClick={skipFolder} disabled={busy}>
                 Skip
               </Button>
             )}
@@ -508,13 +573,27 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
             )}
           </div>
           {!last && (
-            <Button variant="secondary" onClick={() => void finish(false)} disabled={busy} data-testid="finish-defaults">
+            <Button variant="secondary" onClick={finishDefaults} disabled={busy} data-testid="finish-defaults">
               {rerun ? 'Exit setup' : 'Finish with defaults'}
             </Button>
           )}
         </div>
         <p className="wizard-foot muted">Nothing you choose here logs any time or changes your data.</p>
       </div>
+      <ConfirmDialog
+        open={asking !== null}
+        title={NO_FOLDER.title}
+        confirmLabel={NO_FOLDER.confirm}
+        onCancel={() => setAsking(null)}
+        onConfirm={() => {
+          const what = asking;
+          setAsking(null);
+          if (what === 'finish') void finish(false);
+          else if (what === 'skip') skip();
+        }}
+      >
+        <p>{NO_FOLDER.body}</p>
+      </ConfirmDialog>
     </main>
   );
 }

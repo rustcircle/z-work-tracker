@@ -2,20 +2,23 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { Badge, Button, ConfirmDialog, Field } from '../../components/ui';
 import type { BackupInfo } from '../../lib/types';
 import './p2time.css';
 import { errorMessage } from '../../lib/errorMessage';
+import { ReadOnlyNote } from './ReadOnlyNote';
 
 type Load = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; list: BackupInfo[] };
 
 
-/** "48 KB", "1.2 MB". */
+/** "48 KB", "1.2 MB", "1.3 GB". */
 export function bytesText(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 ** 3) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
 export function parseKeep(text: string): { ok: true; keep: number } | { ok: false; message: string } {
@@ -78,6 +81,7 @@ function KeepField({ keep }: { keep: number }) {
 
 export function BackupsSection() {
   const { snapshot, adopt } = useAppState();
+  const { readOnly } = useReadOnly();
   const [load, setLoad] = useState<Load>({ status: 'loading' });
   const [restoring, setRestoring] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -99,9 +103,11 @@ export function BackupsSection() {
     return () => {
       alive = false;
     };
-  }, [fetchList]);
+    // A restore or today's backup can change the list, and a new snapshot is how it is heard of.
+  }, [fetchList, snapshot]);
 
   const restore = async (name: string): Promise<void> => {
+    if (readOnly) return;
     setBusy(true);
     setResult(null);
     try {
@@ -120,6 +126,17 @@ export function BackupsSection() {
       <p>
         zWorkTracker keeps a dated copy of your data on this computer. Backups are separate from sync: they never leave this computer, and they are not shared with your other devices.
       </p>
+      {snapshot.platform.packaged && (
+        <p className="field-hint" data-testid="backups-packaged">
+          These stay in a private Windows folder and are removed if you uninstall the app.
+        </p>
+      )}
+      {snapshot.sync.targets.length > 0 && (
+        <p data-testid="backups-use-versions">
+          To roll back every computer, use Versions. Restoring a backup here doesn&apos;t roll back your other computers, and newer records in your sync folders merge back in.
+        </p>
+      )}
+      <ReadOnlyNote />
       <KeepField keep={snapshot.backupKeep} />
       <div aria-live="polite">
         {result && (
@@ -146,7 +163,7 @@ export function BackupsSection() {
                 </Badge>
               )}
               <span className="muted tabular">{bytesText(b.bytes)}</span>
-              <Button small disabled={busy} aria-label={`Restore ${b.name}`} onClick={() => setRestoring(b.name)}>
+              <Button small disabled={busy || readOnly} aria-label={`Restore ${b.name}`} onClick={() => setRestoring(b.name)}>
                 Restore
               </Button>
             </li>

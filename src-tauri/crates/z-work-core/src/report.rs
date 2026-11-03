@@ -1058,6 +1058,7 @@ pub(crate) mod tests {
                 end: Ts::parse("2026-03-01T15:00:00Z").unwrap(),
                 voided: false,
                 reason: String::new(),
+                settled: false,
             });
             let only = src.narrowed(UTC, &[entry(&t, "2026-03-01")]).unwrap();
             for row in only.segments() {

@@ -1,7 +1,7 @@
 // Changing or adding a sync folder with the data carried over. The flow is an inline panel, not a
 // dialog, so the rest of the app stays usable while a copy runs. Nothing changes until the user
 // confirms, and a failed copy changes nothing.
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { useAppState } from '../../app/store';
 import { api, events } from '../../lib/api';
@@ -45,6 +45,8 @@ export function copiedText(r: Pick<MoveResult, 'filesCopied' | 'filesAlreadyTher
 export interface MoveActions {
   flow: Flow;
   busy: boolean;
+  /** The Sync section tells which element it is while it is on the page, and null when it goes: focus falls back to its first button when the panel closes and the button that opened it is gone. */
+  attach: (section: HTMLElement | null) => void;
   /** Opens the folder chooser. `from` is the folder being replaced, or the first existing folder when adding. */
   begin: (from: string | null, replacing: boolean) => void;
   /** Copies again into a folder that was switched to while the previous one could not be read. */
@@ -54,9 +56,13 @@ export interface MoveActions {
   cancel: () => void;
 }
 
-export function useMoveFlow(restoreRoot: RefObject<HTMLElement | null>): MoveActions {
+export function useMoveFlow(): MoveActions {
   const { adopt } = useAppState();
   const [flow, setFlow] = useState<Flow>({ phase: 'idle' });
+  const root = useRef<HTMLElement | null>(null);
+  const attach = useCallback((section: HTMLElement | null): void => {
+    root.current = section;
+  }, []);
   const seq = useRef(0);
   const opener = useRef<HTMLElement | null>(null);
   const restore = useRef(false);
@@ -70,9 +76,9 @@ export function useMoveFlow(restoreRoot: RefObject<HTMLElement | null>): MoveAct
   useEffect(() => {
     if (!idle || !restore.current) return;
     restore.current = false;
-    const target = opener.current?.isConnected ? opener.current : restoreRoot.current?.querySelector<HTMLElement>('button:not([disabled])');
+    const target = opener.current?.isConnected ? opener.current : root.current?.querySelector<HTMLElement>('button:not([disabled])');
     target?.focus();
-  }, [idle, restoreRoot]);
+  }, [idle]);
 
   const close = useCallback((): void => {
     seq.current += 1;
@@ -99,6 +105,9 @@ export function useMoveFlow(restoreRoot: RefObject<HTMLElement | null>): MoveAct
         setFlow({ phase: 'done', params, result, retry });
       } catch (e) {
         setFlow({ phase: 'failed', params, message: errorMessage(e), retry });
+        // A refusal can leave something behind that only the snapshot tells of, such as the question about a folder that holds a restore.
+        // The backend sends no event for a move that failed, so the page asks.
+        void api.getSnapshot().then(adopt, () => undefined);
       } finally {
         unlisten?.();
       }
@@ -142,7 +151,25 @@ export function useMoveFlow(restoreRoot: RefObject<HTMLElement | null>): MoveAct
     [run],
   );
 
-  return { flow, busy: flow.phase !== 'idle', begin, retryCopy, pick, confirm, cancel: close };
+  return useMemo(() => ({ flow, busy: flow.phase !== 'idle', attach, begin, retryCopy, pick, confirm, cancel: close }), [flow, attach, begin, retryCopy, pick, confirm, close]);
+}
+
+const MoveFlowContext = createContext<MoveActions | null>(null);
+
+/**
+ * Holds the flow above the tabs, which unmount when another is shown. A copy under way, and what it came to, are then still
+ * there when Settings is opened again, and what starts a second one waits for it.
+ */
+export function MoveFlowProvider({ children }: { children: ReactNode }) {
+  const move = useMoveFlow();
+  return <MoveFlowContext.Provider value={move}>{children}</MoveFlowContext.Provider>;
+}
+
+/** The flow kept by `MoveFlowProvider`. */
+export function useSharedMoveFlow(): MoveActions {
+  const v = useContext(MoveFlowContext);
+  if (!v) throw new Error('useSharedMoveFlow needs MoveFlowProvider');
+  return v;
 }
 
 function Facts({ params, p }: { params: Params; p: MovePreview }) {
@@ -195,8 +222,11 @@ export function MovePanel({ actions, detected, existing }: { actions: MoveAction
   const heading = useRef<HTMLHeadingElement | null>(null);
   const titleId = useId();
   const phase = flow.phase;
+  // The heading takes focus when the panel opens or goes on to its next step, not when the page is shown again with a step under way.
+  const shown = useRef(phase);
   useEffect(() => {
-    if (phase !== 'idle') heading.current?.focus();
+    if (shown.current !== phase && phase !== 'idle') heading.current?.focus();
+    shown.current = phase;
   }, [phase]);
   if (flow.phase === 'idle') return null;
 

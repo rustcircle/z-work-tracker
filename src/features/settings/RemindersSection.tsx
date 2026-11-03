@@ -3,11 +3,13 @@
 import { useState } from 'react';
 
 import { useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { Button, Field, Switch } from '../../components/ui';
 import { plural } from '../../components/format';
 import './p2time.css';
 import { errorMessage } from '../../lib/errorMessage';
+import { ReadOnlyNote } from './ReadOnlyNote';
 
 export const MAX_MINUTES = 10_080;
 
@@ -24,6 +26,7 @@ const current = (m: number): string => (m === 0 ? 'Off' : plural(m, 'minute'));
 
 function MinutesField({ settingKey, label, hint, value }: { settingKey: 'idleMinutes' | 'longRunMinutes'; label: string; hint: string; value: number }) {
   const { adopt } = useAppState();
+  const { readOnly } = useReadOnly();
   // What is typed, or null while the field just shows the saved value: a save keeps this form mounted,
   // so "Saved." and the focus stay.
   const [draft, setDraft] = useState<string | null>(null);
@@ -33,6 +36,7 @@ function MinutesField({ settingKey, label, hint, value }: { settingKey: 'idleMin
   const shown = draft ?? String(value);
 
   const save = async (): Promise<void> => {
+    if (readOnly) return;
     setSaved(false);
     const parsed = parseMinutes(shown);
     if (!parsed.ok) {
@@ -66,8 +70,8 @@ function MinutesField({ settingKey, label, hint, value }: { settingKey: 'idleMin
             <input id={id} className="input input-narrow" type="text" inputMode="numeric" value={shown} onChange={(e) => {
               setDraft(e.target.value);
               setSaved(false);
-            }} aria-describedby={describedBy} aria-invalid={error ? true : undefined} />
-            <Button type="submit" disabled={busy}>
+            }} aria-describedby={describedBy} aria-invalid={error ? true : undefined} disabled={readOnly} />
+            <Button type="submit" disabled={busy || readOnly}>
               Save
             </Button>
             <span className="muted" data-testid={`current-${settingKey}`}>
@@ -85,10 +89,12 @@ function MinutesField({ settingKey, label, hint, value }: { settingKey: 'idleMin
 
 export function RemindersSection() {
   const { snapshot, adopt } = useAppState();
+  const { readOnly } = useReadOnly();
   const s = snapshot.reminderSettings;
   const [error, setError] = useState<string | null>(null);
 
   const setPastShift = async (v: boolean): Promise<void> => {
+    if (readOnly) return;
     setError(null);
     try {
       adopt(await api.setSetting('remindPastShift', v));
@@ -99,6 +105,7 @@ export function RemindersSection() {
 
   return (
     <div className="settings-stack">
+      <ReadOnlyNote />
       <p>
         While a task runs, zWorkTracker watches for time away from the computer and for a timer that may have been left running. The app sends the system notification itself, and the same reminder shows at the top of this window with a Pause button.
       </p>
@@ -115,7 +122,7 @@ export function RemindersSection() {
         value={s.longRunMinutes}
       />
       <div>
-        <Switch checked={s.remindPastShift} onChange={(v) => void setPastShift(v)} label="Remind me when a task runs past the end of my shift" hint="Uses the shifts set up under Shifts." />
+        <Switch checked={s.remindPastShift} disabled={readOnly} onChange={(v) => void setPastShift(v)} label="Remind me when a task runs past the end of my shift" hint="Uses the shifts set up under Shifts." />
         {error && (
           <p className="field-error" role="alert">
             {error}

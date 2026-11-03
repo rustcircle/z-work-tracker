@@ -1,0 +1,22 @@
+/* Settings > Versions: saved copies of the data in the sync folders, by month, each with what changed. */
+.sv-month { margin: 0; font-size: 14px; }
+.sv-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.sv-row { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.sv-row:last-child { border-bottom: 0; }
+.sv-main { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.sv-when { font-weight: 600; font-variant-numeric: tabular-nums; }
+.sv-copies { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.badge-button { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.badge-button[aria-pressed='true'] { color: var(--accent); border-color: var(--accent); }
+.badge-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sv-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.sv-changes { margin: 0; padding: 10px 12px; max-height: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: 'Cascadia Mono', Consolas, ui-monospace, monospace; font-size: 12.5px; line-height: 1.5; background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.sv-problem { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.sv-problem p { margin: 0; }
+.sv-counts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+.sv-counts dt { font-weight: 600; }
+.sv-counts dd { margin: 0; }
+.sv-sources { display: flex; flex-direction: column; gap: 6px; border: 0; padding: 0; margin: 0; }
+.sv-sources legend { padding: 0; font-weight: 600; margin-bottom: 4px; }
+.sv-step { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+.sv-pin { margin-right: 4px; }

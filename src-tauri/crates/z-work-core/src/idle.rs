@@ -4,7 +4,8 @@
 use crate::model::GapKind;
 use crate::time::Ts;
 
-/// Ticks arrive every few seconds. A wall-clock step beyond this means the machine wasn't running.
+/// Ticks arrive every few seconds. A wall-clock step beyond this means the machine wasn't running. A step
+/// back beyond this means the clock was put back: less is a correction, which costs at most this much time.
 pub const JUMP_SECS: i64 = 120;
 /// A lock isn't believed past this long without the OS confirming it, so a failing query can't
 /// leave the app thinking the screen is locked while someone works.
@@ -22,6 +23,8 @@ pub struct IdleTracker {
     locked_since: Option<Ts>,
     /// The last time the OS answered that the session is locked.
     locked_confirmed: Option<Ts>,
+    /// Steps back found and not yet asked for.
+    steps_back: Vec<ClockStep>,
 }
 
 /// The gap for a lock, unless it is too short to measure.
@@ -43,6 +46,13 @@ pub struct NewGap {
     pub kind: GapKind,
 }
 
+/// The clock was put back. `last` is the last moment seen on the old clock, and `now` the time it reads now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockStep {
+    pub last: Ts,
+    pub now: Ts,
+}
+
 impl IdleTracker {
     /// `idle_secs` is `None` where the OS can't say. `threshold_secs` 0 turns idle detection off;
     /// a sleep or clock jump is always noticed, because it can overbill by hours.
@@ -53,7 +63,7 @@ impl IdleTracker {
         idle_secs: Option<u64>,
         threshold_secs: u64,
     ) -> Vec<NewGap> {
-        let mut out = Vec::new();
+        let mut out = self.notice_clock(now);
         let last = self.last_tick.replace(now);
         if let Some(since) = self.locked_since {
             // The unlock closes this absence. A sleep during it is part of it, even when the lock
@@ -152,6 +162,40 @@ impl IdleTracker {
         gaps
     }
 
+    /// Whether the clock was put back since the last look. Times read before and after that can't be compared,
+    /// so an absence under way ends at the last moment seen on the old clock, which is returned, and goes on
+    /// from the time the clock reads now. The step itself is for `take_steps_back`.
+    pub fn notice_clock(&mut self, now: Ts) -> Vec<NewGap> {
+        let Some(last) = self
+            .last_tick
+            .filter(|last| last.secs() - now.secs() > JUMP_SECS)
+        else {
+            return Vec::new();
+        };
+        self.last_tick = Some(now);
+        self.steps_back.push(ClockStep { last, now });
+        self.settled_until = Some(now);
+        let away = self.away_since.take();
+        if let Some(since) = self.locked_since {
+            self.locked_since = Some(now);
+            self.locked_confirmed = Some(now);
+            return lock_gap(away.map_or(since, |a| a.min(since)), last, since);
+        }
+        away.filter(|a| last > *a)
+            .map(|start| NewGap {
+                start,
+                end: last,
+                kind: GapKind::Idle,
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// The steps back found since this was last asked, oldest first.
+    pub fn take_steps_back(&mut self) -> Vec<ClockStep> {
+        std::mem::take(&mut self.steps_back)
+    }
+
     /// What the current absence is, for a crash to label it correctly.
     #[must_use]
     pub fn away_kind(&self) -> Option<GapKind> {
@@ -174,9 +218,9 @@ impl IdleTracker {
     /// The running segment is about to close, so an absence in progress has to be recorded now. The
     /// user is back or the app is going away; the last tick is the last moment known to be away.
     pub fn settle(&mut self, now: Ts) -> Vec<NewGap> {
+        let mut out = self.notice_clock(now);
         let last = self.last_tick.replace(now);
         let away = self.away_since.take();
-        let mut out = Vec::new();
         if let Some(since) = self.locked_since {
             // Still locked as far as is known, so what follows belongs to the same absence.
             self.locked_since = Some(now);
@@ -185,7 +229,8 @@ impl IdleTracker {
             if !gaps.is_empty() {
                 self.settled_until = Some(now);
             }
-            return gaps;
+            out.extend(gaps);
+            return out;
         }
         if let Some(l) = last
             && now.secs() - l.secs() > JUMP_SECS
@@ -451,5 +496,109 @@ mod tests {
         t.tick(Ts(T), true, Some(900), 600);
         t.tick(Ts(T + 5), false, Some(905), 600);
         assert!(t.tick(Ts(T + 10), true, Some(0), 600).is_empty());
+    }
+
+    #[test]
+    fn r4_a_clock_put_back_is_noticed_and_a_small_correction_is_not() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 600);
+        t.tick(Ts(T + 5), true, Some(0), 600);
+        t.tick(Ts(T + 5 - JUMP_SECS), true, Some(0), 600);
+        assert!(t.take_steps_back().is_empty(), "a correction");
+        t.tick(Ts(T + 5), true, Some(0), 600);
+        assert!(t.tick(Ts(T - 3000), true, Some(0), 600).is_empty());
+        assert_eq!(
+            t.take_steps_back(),
+            vec![ClockStep {
+                last: Ts(T + 5),
+                now: Ts(T - 3000)
+            }]
+        );
+        assert!(t.take_steps_back().is_empty(), "told once");
+        assert!(t.tick(Ts(T - 2995), true, Some(0), 600).is_empty());
+        assert!(t.take_steps_back().is_empty());
+    }
+
+    #[test]
+    fn r4_idle_under_way_when_the_clock_goes_back_ends_at_the_last_tick_and_goes_on() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(900), 600);
+        t.tick(Ts(T + 5), true, Some(905), 600);
+        assert_eq!(
+            t.tick(Ts(T - 3000), true, Some(910), 600),
+            vec![NewGap {
+                start: Ts(T - 900),
+                end: Ts(T + 5),
+                kind: GapKind::Idle
+            }]
+        );
+        // The count from the OS goes on, but what came before this moment is on the old clock.
+        assert_eq!(t.away_since(), Some(Ts(T - 3000)));
+        for i in 1..10 {
+            let tick = t.tick(
+                Ts(T - 3000 + i * 100),
+                true,
+                Some(910 + 100 * i as u64),
+                600,
+            );
+            assert!(tick.is_empty());
+        }
+        assert_eq!(
+            t.tick(Ts(T - 2000), true, Some(0), 600),
+            vec![NewGap {
+                start: Ts(T - 3000),
+                end: Ts(T - 2000),
+                kind: GapKind::Idle
+            }]
+        );
+    }
+
+    #[test]
+    fn r4_a_lock_under_way_when_the_clock_goes_back_is_cut_at_the_last_tick_and_goes_on() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(0), 600);
+        t.set_locked(Ts(T + 5), true);
+        t.tick(Ts(T + 100), true, Some(0), 600);
+        assert_eq!(
+            t.tick(Ts(T - 3000), true, Some(0), 600),
+            vec![NewGap {
+                start: Ts(T + 5),
+                end: Ts(T + 100),
+                kind: GapKind::Lock
+            }]
+        );
+        assert_eq!(t.away_since(), Some(Ts(T - 3000)));
+        assert!(t.lock_unknown(Ts(T - 2995)).is_empty(), "still believed");
+        assert_eq!(
+            t.set_locked(Ts(T - 2000), false),
+            vec![NewGap {
+                start: Ts(T - 3000),
+                end: Ts(T - 2000),
+                kind: GapKind::Lock
+            }]
+        );
+    }
+
+    #[test]
+    fn r4_settling_notices_a_clock_put_back() {
+        let mut t = IdleTracker::default();
+        t.tick(Ts(T), true, Some(900), 600);
+        t.tick(Ts(T + 5), true, Some(905), 600);
+        assert_eq!(
+            t.settle(Ts(T - 3000)),
+            vec![NewGap {
+                start: Ts(T - 900),
+                end: Ts(T + 5),
+                kind: GapKind::Idle
+            }]
+        );
+        assert_eq!(
+            t.take_steps_back(),
+            vec![ClockStep {
+                last: Ts(T + 5),
+                now: Ts(T - 3000)
+            }]
+        );
+        assert!(t.settle(Ts(T - 2995)).is_empty(), "and only once");
     }
 }

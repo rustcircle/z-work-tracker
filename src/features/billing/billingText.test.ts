@@ -9,6 +9,25 @@ const rows: SummaryRow[] = [
 ];
 const base: SummaryTextInput = { projectName: 'Brand refresh', noAmount: null, fee: '', from: '2026-03-01', to: '2026-03-31', zone: 'Europe/Lisbon', rows, totals: { USD: 47250, EUR: 100 }, hide: false };
 
+describe('r7: rows that do not add up to their total', () => {
+  const NOTE = 'Row amounts are rounded; the total is worked out from the exact amounts.';
+  const eight = (day: string): SummaryRow => ({ taskId: 't', taskName: 'Guide', day, exactSecs: 900, pauseSecs: 0, billableSecs: 900, cents: { EUR: 833 } });
+  const three = { ...base, rows: [eight('2026-03-02'), eight('2026-03-03'), eight('2026-03-04')], totals: { EUR: 2500 } };
+
+  it('the copied text says why, under the total', () => {
+    const lines = summaryText(three).split('\n');
+    expect(lines.at(-2)).toContain('€25.00');
+    expect(lines.at(-1)).toBe(NOTE);
+  });
+
+  it('the copied text has no such line where they do add up, or where no amount shows', () => {
+    expect(summaryText(base)).not.toContain(NOTE);
+    expect(summaryText({ ...three, totals: { EUR: 2499 } })).not.toContain(NOTE);
+    expect(summaryText({ ...three, hide: true })).not.toContain(NOTE);
+    expect(summaryText({ ...three, noAmount: 'fixedFee' })).not.toContain(NOTE);
+  });
+});
+
 describe('summary wording', () => {
   it('the guidance label is exactly the one the spec gives', () => {
     expect(GUIDANCE).toBe('For your own guidance. Not an invoice, not a tax document.');

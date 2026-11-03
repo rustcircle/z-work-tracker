@@ -13,9 +13,9 @@ use crate::model::{
 use crate::subtasks;
 use crate::time::Ts;
 use crate::validate::{
-    MAX_NAME, MAX_PROJECT_NAME, check_date, check_description, check_hhmm, check_rate,
-    check_rounding, check_shift, clean_color, clean_non_negative, clean_text, is_currency,
-    parse_zone,
+    MAX_NAME, MAX_PROJECT_NAME, check_chosen_date, check_date, check_description, check_hhmm,
+    check_rate, check_rounding, check_shift, clean_color, clean_non_negative, clean_text,
+    is_currency, parse_zone,
 };
 
 /// The moment and the device an operation happens on.
@@ -353,6 +353,10 @@ impl Shared {
                 fee_currency: clean.fee_currency,
                 created_at: ctx.now,
                 stamp: ctx.stamp(),
+                identity_stamp: Some(ctx.stamp()),
+                billing_stamp: Some(ctx.stamp()),
+                budget_stamp: Some(ctx.stamp()),
+                archive_stamp: Some(ctx.stamp()),
             },
         );
         Ok(id)
@@ -370,14 +374,28 @@ impl Shared {
             .projects
             .get_mut(id)
             .ok_or(CoreError::NotFound("project"))?;
-        p.name = clean.name;
-        p.color = clean.color;
-        p.billable = clean.billable;
-        p.budget_hours = clean.budget_hours;
-        p.client_zone = clean.client_zone;
-        p.billing_type = clean.billing_type;
-        p.fixed_fee_cents = clean.fixed_fee_cents;
-        p.fee_currency = clean.fee_currency;
+        p.pin_clocks();
+        // Each group has its own clock, so edits to different groups on two devices both survive.
+        if (&p.name, &p.color, &p.client_zone) != (&clean.name, &clean.color, &clean.client_zone) {
+            p.name = clean.name;
+            p.color = clean.color;
+            p.client_zone = clean.client_zone;
+            p.identity_stamp = Some(ctx.next(p.identity_clock()));
+        }
+        let billing_changed = (p.billable, p.billing_type, p.fixed_fee_cents)
+            != (clean.billable, clean.billing_type, clean.fixed_fee_cents)
+            || p.fee_currency != clean.fee_currency;
+        if billing_changed {
+            p.billable = clean.billable;
+            p.billing_type = clean.billing_type;
+            p.fixed_fee_cents = clean.fixed_fee_cents;
+            p.fee_currency = clean.fee_currency;
+            p.billing_stamp = Some(ctx.next(p.billing_clock()));
+        }
+        if p.budget_hours != clean.budget_hours {
+            p.budget_hours = clean.budget_hours;
+            p.budget_stamp = Some(ctx.next(p.budget_clock()));
+        }
         p.stamp = ctx.next(&p.stamp);
         Ok(())
     }
@@ -411,7 +429,11 @@ impl Shared {
             .projects
             .get_mut(id)
             .ok_or(CoreError::NotFound("project"))?;
-        p.archived = archived;
+        p.pin_clocks();
+        if p.archived != archived {
+            p.archived = archived;
+            p.archive_stamp = Some(ctx.next(p.archive_clock()));
+        }
         p.stamp = ctx.next(&p.stamp);
         Ok(())
     }
@@ -434,6 +456,7 @@ impl Shared {
             .projects
             .get_mut(id)
             .ok_or(CoreError::NotFound("project"))?;
+        p.pin_clocks();
         p.deleted = true;
         p.stamp = ctx.next(&p.stamp);
         Ok(())
@@ -589,6 +612,9 @@ impl Shared {
             }
             Some(d) => {
                 check_description(d)?;
+                // Ids make a list longer, and what is too long with them could never be saved.
+                let d = subtasks::assign_ids(d, Some(&current.description));
+                check_description(&d)?;
                 Some(d)
             }
             None => None,
@@ -621,13 +647,12 @@ impl Shared {
             t.project_id = project_id;
             t.project_stamp = ctx.next(&t.project_stamp);
         }
-        if let Some(d) = description {
-            let d = subtasks::assign_ids(d, Some(&t.description));
-            if t.description != d {
-                t.description = d;
-                t.description_stamp = ctx.next(&t.description_stamp);
-                clear_missing_active(t, ctx);
-            }
+        if let Some(d) = description
+            && t.description != d
+        {
+            t.description = d;
+            t.description_stamp = ctx.next(&t.description_stamp);
+            clear_missing_active(t, ctx);
         }
         if let Some(tags) = tags
             && t.tags != *tags
@@ -723,7 +748,7 @@ impl Shared {
         }
     }
 
-    fn set_state(
+    pub(crate) fn set_state(
         &mut self,
         ctx: &Ctx<'_>,
         id: &str,
@@ -760,14 +785,9 @@ impl Shared {
         outcome
     }
 
+    /// Starts at the time on the clock and nothing else. An earlier segment may end later than that, if the
+    /// clock has been put back since, and starting from there would record nothing until it caught up.
     pub(crate) fn open_segment(&mut self, ctx: &Ctx<'_>, task_id: &str) {
-        let last_end = self
-            .segments
-            .values()
-            .filter(|s| s.task_id == task_id && s.device_id == ctx.device)
-            .filter_map(|s| s.end)
-            .max(); // own device only: another's clock may run ahead
-        let start = last_end.map_or(ctx.now, |e| e.max(ctx.now));
         let subtask_id = self.tasks.get(task_id).and_then(|t| {
             // Merged state can hold an active id whose item is gone.
             t.active_subtask
@@ -781,13 +801,42 @@ impl Shared {
                 id,
                 task_id: task_id.to_owned(),
                 device_id: ctx.device.to_owned(),
-                start,
+                start: ctx.now,
                 end: None,
                 subtask_id,
                 edit_stamp: ctx.stamp(),
                 ..Segment::default()
             },
         );
+    }
+
+    /// This device's clock was put back while its timers ran. What ran so far ends at `last`, the last moment
+    /// seen on the old clock, and each running task goes on in a new segment from the time the clock reads now.
+    /// Closing it later on the new clock would leave it with no time at all. Returns the tasks' names.
+    pub fn restart_after_clock_step(&mut self, ctx: &Ctx<'_>, last: Ts) -> Vec<String> {
+        let mut names = Vec::new();
+        for seg_id in self.own_open_segments(ctx.device) {
+            let Some(seg) = self.segments.get(&seg_id) else {
+                continue;
+            };
+            let (task_id, before) = (seg.task_id.clone(), crate::adjust::seg_json(seg));
+            self.close_segment(&seg_id, last);
+            let after = self
+                .segments
+                .get(&seg_id)
+                .map_or(Value::Null, crate::adjust::seg_json);
+            self.audit(ctx, "segment", &seg_id, "clockPutBack", "", before, after);
+            let Some(task) = self
+                .tasks
+                .get(&task_id)
+                .filter(|t| t.is_live() && t.state == TaskState::Running)
+            else {
+                continue;
+            };
+            names.push(task.name.clone());
+            self.open_segment(ctx, &task_id);
+        }
+        names
     }
 
     fn check_startable(&self, t: &Task) -> Result<(), CoreError> {
@@ -858,7 +907,7 @@ impl Shared {
             let other = self
                 .segments
                 .values()
-                .find(|s| s.task_id == id && s.end.is_none())
+                .find(|s| s.task_id == id && s.is_open())
                 .map(|s| s.device_id.clone());
             if let Some(device) = other {
                 return Err(CoreError::RunningElsewhere(device));
@@ -908,7 +957,7 @@ impl Shared {
             let still_open = self
                 .segments
                 .values()
-                .any(|s| s.task_id == task_id && s.end.is_none());
+                .any(|s| s.task_id == task_id && s.is_open());
             let is_running = self
                 .tasks
                 .get(&task_id)
@@ -953,10 +1002,33 @@ impl Shared {
             .collect()
     }
 
-    /// Restores local invariants after a merge. Only this device's own segments are ever altered.
+    /// This device's open segments that `reconcile` closes as things stand: those it has been asked to
+    /// pause, and those whose task isn't running any more.
+    #[must_use]
+    pub fn own_segments_to_close(&self, device: &str) -> Vec<String> {
+        let due = self.pause_requests_due(device);
+        self.own_open_segments(device)
+            .into_iter()
+            .filter(|id| {
+                self.segments.get(id).is_some_and(|s| {
+                    let running = self
+                        .tasks
+                        .get(&s.task_id)
+                        .is_some_and(|t| t.is_live() && t.state == TaskState::Running);
+                    !running
+                        || due
+                            .iter()
+                            .any(|d| d.segment_id == s.id || d.task_id == s.task_id)
+                })
+            })
+            .collect()
+    }
+
+    /// Restores local invariants after a merge. Only the raw times of this device's own segments are ever altered.
     /// Returns true when something changed.
     pub fn reconcile(&mut self, ctx: &Ctx<'_>) -> bool {
         let mut changed = false;
+        let closing = self.own_segments_to_close(ctx.device);
         // A pause asked for from another device: this device closes its own segment, at the moment
         // of the request or at once if that has passed the segment's own start.
         for due in self.pause_requests_due(ctx.device) {
@@ -978,15 +1050,9 @@ impl Shared {
             );
             changed = true;
         }
-        for seg_id in self.own_open_segments(ctx.device) {
-            let Some(task_id) = self.segments.get(&seg_id).map(|s| s.task_id.clone()) else {
-                continue;
-            };
-            let keep = self
-                .tasks
-                .get(&task_id)
-                .is_some_and(|t| t.is_live() && t.state == TaskState::Running);
-            if !keep {
+        for seg_id in closing {
+            // One asked to pause has just closed, at the moment that was asked.
+            if self.segments.get(&seg_id).is_some_and(|s| s.end.is_none()) {
                 self.close_segment(&seg_id, ctx.now);
                 changed = true;
             }
@@ -999,7 +1065,7 @@ impl Shared {
                 !self
                     .segments
                     .values()
-                    .any(|s| s.task_id == t.id && s.end.is_none())
+                    .any(|s| s.task_id == t.id && s.is_open())
             })
             .map(|t| t.id.clone())
             .collect();
@@ -1099,7 +1165,7 @@ impl Shared {
         let segment_id = self
             .segments
             .values()
-            .find(|s| s.task_id == task_id && s.end.is_none() && s.device_id != ctx.device)
+            .find(|s| s.task_id == task_id && s.is_open() && s.device_id != ctx.device)
             .map(|s| s.id.clone())
             .ok_or_else(|| {
                 CoreError::Conflict("this task isn't running on another device".into())
@@ -1162,6 +1228,7 @@ impl Shared {
             Some(raw) => Ts::parse(raw)
                 .ok_or_else(|| CoreError::Validation("invalid effective date".into()))?,
         };
+        check_chosen_date(from, "the price's start date")?;
         if from < ctx.now && !input.confirm_retroactive {
             return Err(CoreError::Conflict(
                 "a backdated price changes past earnings and needs confirmation".into(),
@@ -1188,6 +1255,38 @@ impl Shared {
         };
         check_rate(&version)?;
         self.rates.insert(id, version);
+        Ok(())
+    }
+
+    /// Takes one price version away, so the one before it applies again. Taking away one that has already
+    /// started changes past earnings, so it needs the same confirmation as a backdated price. A summary
+    /// keeps the amounts it was made with. The version stays as a tombstone, so sync does not bring it back.
+    pub fn delete_rate_version(
+        &mut self,
+        ctx: &Ctx<'_>,
+        id: &str,
+        confirm_retroactive: bool,
+    ) -> Result<(), CoreError> {
+        let v = self
+            .rates
+            .get_mut(id)
+            .filter(|v| !v.deleted)
+            .ok_or(CoreError::NotFound("price version"))?;
+        if v.effective_from < ctx.now && !confirm_retroactive {
+            return Err(CoreError::Conflict(
+                "taking away a price that has started changes past earnings and needs confirmation"
+                    .into(),
+            ));
+        }
+        v.deleted = true;
+        v.stamp = ctx.next(&v.stamp);
+        let before = serde_json::json!({
+            "projectId": v.project_id,
+            "effectiveFrom": v.effective_from,
+            "rateCents": v.rate_cents,
+            "currency": v.currency,
+        });
+        self.audit(ctx, "price", id, "removed", "", before, Value::Null);
         Ok(())
     }
 
@@ -1941,6 +2040,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn r4_a_new_segment_starts_at_the_time_on_the_clock_whatever_the_last_one_ended_at() {
+        let (mut s, _, t) = base();
+        s.start(&ctx("2026-01-01T10:00:00Z"), &t).unwrap();
+        s.pause(&ctx("2026-01-01T10:30:00Z"), &t).unwrap();
+        s.resume(&ctx("2026-01-01T09:10:00Z"), &t).unwrap();
+        s.pause(&ctx("2026-01-01T09:50:00Z"), &t).unwrap();
+        let mut times: Vec<_> = s
+            .segments
+            .values()
+            .map(|x| (x.start.iso(), x.end.unwrap().iso()))
+            .collect();
+        times.sort();
+        assert_eq!(
+            times,
+            vec![
+                (
+                    "2026-01-01T09:10:00Z".to_owned(),
+                    "2026-01-01T09:50:00Z".to_owned()
+                ),
+                (
+                    "2026-01-01T10:00:00Z".to_owned(),
+                    "2026-01-01T10:30:00Z".to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn remote_segment_is_not_altered() {
         let (mut s, _, t) = base();
         s.start(
@@ -2009,6 +2136,88 @@ pub(crate) mod tests {
         assert_eq!(after.name_stamp, before.name_stamp);
         assert_eq!(after.project_stamp, before.project_stamp);
         assert_ne!(after.description_stamp, before.description_stamp);
+    }
+
+    #[test]
+    fn r10_only_the_groups_an_edit_changes_get_a_new_clock() {
+        let (mut s, p, _) = base();
+        let made = s.projects[&p].clone();
+        assert_eq!(made.identity_stamp.as_ref(), Some(&made.stamp));
+        assert_eq!(made.billing_stamp.as_ref(), Some(&made.stamp));
+        assert_eq!(made.budget_stamp.as_ref(), Some(&made.stamp));
+        assert_eq!(made.archive_stamp.as_ref(), Some(&made.stamp));
+        let c = ctx("2026-01-01T10:00:00Z");
+        let mut edit = project_input(&made.name);
+        edit.budget_hours = Some(40.0);
+        s.update_project(&c, &p, &edit).unwrap();
+        let after = s.projects[&p].clone();
+        assert_eq!(after.budget_hours, Some(40.0));
+        assert_eq!(after.budget_stamp, Some(c.stamp()));
+        assert_eq!(after.stamp, c.stamp());
+        assert_eq!(after.identity_stamp, made.identity_stamp);
+        assert_eq!(after.billing_stamp, made.billing_stamp);
+        assert_eq!(after.archive_stamp, made.archive_stamp);
+        // Each of the others in turn.
+        let c = ctx("2026-01-01T11:00:00Z");
+        edit.name = "Renamed".into();
+        s.update_project(&c, &p, &edit).unwrap();
+        let renamed = s.projects[&p].clone();
+        assert_eq!(renamed.identity_stamp, Some(c.stamp()));
+        assert_eq!(renamed.budget_stamp, after.budget_stamp);
+        let c = ctx("2026-01-01T12:00:00Z");
+        edit.billing_type = BillingType::FixedFee;
+        edit.fixed_fee_cents = Some(500_000);
+        edit.fee_currency = Some("EUR".into());
+        s.update_project(&c, &p, &edit).unwrap();
+        assert_eq!(s.projects[&p].billing_stamp, Some(c.stamp()));
+        assert_eq!(s.projects[&p].identity_stamp, renamed.identity_stamp);
+        let c = ctx("2026-01-01T13:00:00Z");
+        s.set_project_archived(&c, &p, true).unwrap();
+        assert_eq!(s.projects[&p].archive_stamp, Some(c.stamp()));
+        assert_eq!(s.projects[&p].stamp, c.stamp());
+        assert_eq!(s.projects[&p].identity_stamp, renamed.identity_stamp);
+    }
+
+    /// With no clocks written out, the rename here would make the fee it never touched look as new as itself.
+    #[test]
+    fn r10_editing_a_record_from_an_older_file_leaves_its_other_groups_as_old_as_they_were() {
+        let (mut s, p, _) = base();
+        let older = s.projects.get_mut(&p).unwrap();
+        older.identity_stamp = None;
+        older.billing_stamp = None;
+        older.budget_stamp = None;
+        older.archive_stamp = None;
+        let stamp_then = older.stamp.clone();
+        let name = older.name.clone();
+        let mut there = s.clone();
+        let mut fee = project_input(&name);
+        fee.billing_type = BillingType::FixedFee;
+        fee.fixed_fee_cents = Some(500_000);
+        fee.fee_currency = Some("EUR".into());
+        there
+            .update_project(
+                &Ctx {
+                    now: Ts::parse("2026-01-01T10:00:00Z").unwrap(),
+                    device: "device-b",
+                },
+                &p,
+                &fee,
+            )
+            .unwrap();
+        s.update_project(
+            &ctx("2026-01-01T11:00:00Z"),
+            &p,
+            &project_input("Renamed here"),
+        )
+        .unwrap();
+        assert_eq!(s.projects[&p].billing_stamp.as_ref(), Some(&stamp_then));
+        for m in [
+            crate::merge::merge(&s, &there),
+            crate::merge::merge(&there, &s),
+        ] {
+            assert_eq!(m.projects[&p].name, "Renamed here");
+            assert_eq!(m.projects[&p].fixed_fee_cents, Some(500_000));
+        }
     }
 
     #[test]
@@ -2207,5 +2416,114 @@ pub(crate) mod tests {
         let task = &s.tasks[&t];
         assert!(task.deleted_stamp.at > stamp.at);
         assert_eq!(task.discarded.as_ref(), Some(&task.deleted_stamp));
+    }
+
+    #[test]
+    fn r1_a_price_date_no_reader_would_take_is_refused_when_it_is_entered() {
+        let (mut s, p, _) = base();
+        let c = ctx("2026-03-02T09:00:00Z");
+        let rate = |raw: &str| RateInput {
+            project_id: p.clone(),
+            rate_cents: Some(5000),
+            currency: "EUR".into(),
+            effective_from: Some(raw.to_owned()),
+            confirm_retroactive: true,
+        };
+        for raw in [
+            "2206-03-02T00:00:00Z",
+            "2100-01-01T00:00:01Z",
+            "1999-12-31T23:59:59Z",
+            "0026-01-01T00:00:00Z",
+        ] {
+            let e = s.set_rate(&c, &rate(raw)).unwrap_err();
+            assert_eq!(e.code(), "validation", "{raw}");
+            assert!(e.to_string().contains("2000-01-01"), "{raw}: {e}");
+        }
+        assert!(s.rates.is_empty());
+        // Both ends of the range are open to a price, and to the reader: the same bound decides.
+        for raw in ["2100-01-01T00:00:00Z", "2000-01-01T00:00:00Z"] {
+            s.set_rate(&c, &rate(raw)).unwrap();
+        }
+        assert_eq!(s.rates.len(), 2);
+        crate::validate::check_shared(&s, c.now).unwrap();
+    }
+
+    #[test]
+    fn r3_a_patch_ids_would_take_past_the_limit_is_refused_before_it_is_stored() {
+        let (mut s, _, t) = base();
+        let c = ctx("2026-03-02T09:00:00Z");
+        let item = json!({"type":"taskItem","attrs":{"checked":false},"content":[{"type":"paragraph","content":[{"type":"text","text":"x"}]}]});
+        let count = (500 * 1024) / item.to_string().len();
+        let list =
+            json!({"type":"doc","content":[{"type":"taskList","content": vec![item; count]}]});
+        check_description(&list).unwrap();
+        let before = s.tasks[&t].description.clone();
+        let patch = TaskPatch {
+            description: Some(list),
+            ..TaskPatch::default()
+        };
+        let got = s.patch_task(&c, &t, &patch, &TaskExpected::default());
+        let e = got.expect_err("too large with its ids");
+        assert!(e.to_string().contains("too large"), "{e}");
+        assert_eq!(s.tasks[&t].description, before);
+    }
+
+    #[test]
+    fn the_segments_reconcile_will_close_are_the_ones_it_closes() {
+        let mut s = Shared::default();
+        let c = ctx("2026-03-02T09:00:00Z");
+        let p = s.create_project(&c, &project_input("P")).unwrap();
+        let running = |name: &str, s: &mut Shared| {
+            let t = s.create_task(&c, &task_input(name, &p)).unwrap();
+            s.tasks.get_mut(&t).unwrap().state = TaskState::Running;
+            s.open_segment(&c, &t);
+            t
+        };
+        let (keep, asked, stopped, paused, gone) = (
+            running("Keep", &mut s),
+            running("Asked", &mut s),
+            running("Stopped", &mut s),
+            running("Paused", &mut s),
+            running("Gone", &mut s),
+        );
+        let seg_of = |s: &Shared, t: &str| {
+            s.segments
+                .values()
+                .find(|x| x.task_id == t)
+                .unwrap()
+                .id
+                .clone()
+        };
+        let asked_seg = seg_of(&s, &asked);
+        // A second one on the same task, which stops running when the first is asked to pause.
+        s.open_segment(&c, &asked);
+        s.pause_requests.insert(
+            "q".into(),
+            PauseRequest {
+                id: "q".into(),
+                task_id: asked.clone(),
+                segment_id: asked_seg,
+                requested_by: "other".into(),
+                at: c.now,
+                stamp: c.stamp(),
+            },
+        );
+        s.tasks.get_mut(&stopped).unwrap().state = TaskState::Stopped;
+        s.tasks.get_mut(&paused).unwrap().state = TaskState::Paused;
+        s.tasks.get_mut(&gone).unwrap().discarded = Some(c.stamp());
+        let mut will: Vec<String> = s.own_segments_to_close(DEV);
+        will.sort();
+        let open_before = s.own_open_segments(DEV);
+        assert_eq!(open_before.len(), 6);
+        assert!(!will.contains(&seg_of(&s, &keep)));
+        s.reconcile(&c);
+        let still_open = s.own_open_segments(DEV);
+        let mut closed: Vec<String> = open_before
+            .into_iter()
+            .filter(|x| !still_open.contains(x))
+            .collect();
+        closed.sort();
+        assert_eq!(closed, will);
+        assert_eq!(still_open, vec![seg_of(&s, &keep)]);
     }
 }

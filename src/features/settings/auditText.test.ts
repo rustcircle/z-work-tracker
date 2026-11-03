@@ -85,3 +85,136 @@ describe('a deleted task in the history', () => {
     expect(summarize({ name: 'X', segments: 'many', pauses: 0 }, 'UTC')).toBe('name X, segments many, pauses 0');
   });
 });
+
+describe('another computer stopped responding, and came back', () => {
+  const start = '2026-03-09T09:00:00Z';
+  const settledEdit = { start, end: '2026-03-09T11:50:00Z', voided: false, reason: 'Closed from Office PC: LAPTOP stopped responding. Ended at its last known moment.', settled: true };
+  const open = { rawStart: start, rawEnd: null, edit: null, subtaskId: null };
+  const closedFor = { ...open, edit: settledEdit };
+  const back = { rawStart: start, rawEnd: '2026-03-09T12:30:00Z', subtaskId: null };
+
+  it('words the closing, and says that the computer never recorded that end', () => {
+    expect(actionWords('settleLost')).toBe('closed for a computer that stopped responding');
+    const e = entry({ action: 'settleLost', reason: settledEdit.reason, before: open, after: closedFor });
+    expect(auditLine(e, 'UTC', 'dev', 'Office PC')).toMatchObject({
+      by: 'this computer (Office PC)',
+      before: 'recorded 2026-03-09 09:00, still running',
+      after: '2026-03-09 09:00 to 11:50 (closed at its last known moment; recorded 2026-03-09 09:00, still running)',
+    });
+  });
+
+  it('words the owner coming back: its own end replaces the closing', () => {
+    expect(actionWords('reclaimAfterReturn')).toBe('set back to the end its own computer recorded');
+    const e = entry({ action: 'reclaimAfterReturn', reason: "this device's own record", before: { ...back, edit: settledEdit }, after: { ...back, edit: null } });
+    expect(auditLine(e, 'UTC', 'dev', 'Office PC')).toMatchObject({
+      before: '2026-03-09 09:00 to 11:50 (closed at its last known moment; recorded 2026-03-09 09:00 to 12:30)',
+      after: 'recorded 2026-03-09 09:00 to 12:30',
+    });
+  });
+
+  it('words a closing that stays because the time is billed', () => {
+    expect(actionWords('reclaimOnSummary')).toBe('kept as billed, though its own computer recorded another end');
+    const kept = { start, end: settledEdit.end, voided: false, reason: settledEdit.reason };
+    const e = entry({ action: 'reclaimOnSummary', reason: "this device's record differs", before: { ...back, edit: settledEdit }, after: { ...back, edit: kept } });
+    expect(auditLine(e, 'UTC', 'dev', 'Office PC')).toMatchObject({
+      before: '2026-03-09 09:00 to 11:50 (closed at its last known moment; recorded 2026-03-09 09:00 to 12:30)',
+      after: '2026-03-09 09:00 to 11:50 (recorded 2026-03-09 09:00 to 12:30)',
+    });
+  });
+
+  it('keeps a correction that is not a closing worded as before', () => {
+    const corrected = { ...open, edit: { start, end: '2026-03-09T11:05:00Z', voided: false, reason: 'x' } };
+    expect(summarize(corrected, 'UTC')).toBe('2026-03-09 09:00 to 11:05 (recorded 2026-03-09 09:00, still running)');
+  });
+});
+
+describe('this computer\'s clock put back while a task ran', () => {
+  it('reads as an entry closed because of the clock, with where it ended', () => {
+    expect(actionWords('clockPutBack')).toBe("closed because its computer's clock was put back");
+    const before = { rawStart: '2026-03-09T09:00:00Z', rawEnd: null, edit: null, subtaskId: null };
+    const after = { ...before, rawEnd: '2026-03-09T10:00:00Z' };
+    const line = auditLine(entry({ action: 'clockPutBack', before, after }), 'UTC', 'dev', 'Office PC');
+    expect(line).toMatchObject({ before: 'recorded 2026-03-09 09:00, still running', after: 'recorded 2026-03-09 09:00 to 10:00' });
+  });
+});
+
+describe('the turn to change data going to another computer', () => {
+  const lost = (by: unknown, closed: string[]) => entry({ entity: 'lease', entityId: 'dev', action: 'leaseLost', before: null, after: { by, generation: 5, closed } });
+
+  it('names the entity and the action in plain words', () => {
+    expect(entityLabel('lease')).toBe('Use of the app');
+    expect(actionWords('leaseLost')).toBe('went to another computer, as recorded');
+  });
+
+  it('says who took over and how many running entries stopped here', () => {
+    expect(auditLine(lost('LAPTOP', ['s1']), 'UTC', 'dev', 'Office PC')).toEqual({
+      when: '2026-03-12 15:20',
+      by: 'this computer (Office PC)',
+      before: 'this computer could change data',
+      after: 'LAPTOP took over; 1 running entry stopped here',
+    });
+    expect(auditLine(lost('LAPTOP', ['s1', 's2']), 'UTC', 'dev', 'Office PC').after).toBe('LAPTOP took over; 2 running entries stopped here');
+    expect(auditLine(lost('LAPTOP', []), 'UTC', 'dev', 'Office PC').after).toBe('LAPTOP took over');
+  });
+
+  it('reads from the viewer\'s side, and never prints a device id as a name', () => {
+    expect(auditLine(lost('LAPTOP', []), 'UTC', 'other-dev', 'Home PC')).toMatchObject({ by: 'another computer', before: 'that computer could change data' });
+    expect(auditLine(lost('22222222-2222-4222-8222-222222222222', []), 'UTC', 'dev', 'Office PC').after).toBe('another computer took over');
+    expect(auditLine(lost(null, ['s1']), 'UTC', 'dev', 'Office PC').after).toBe('another computer took over; 1 running entry stopped here');
+  });
+});
+
+describe('a saved version restored', () => {
+  const name = '20260301T090000Z--a1b2c3d4--auto';
+  const restored = (after: unknown) => entry({ entity: 'version', entityId: name, action: 'restore', before: null, after });
+
+  it('names the version by its date and why it was made, and what was kept of the data before', () => {
+    expect(entityLabel('version')).toBe('Saved version');
+    expect(actionWords('restore')).toBe('restored');
+    const after = { safetyCopy: 'pre-restore-2026-03-12T12-00-00.json', preRestore: '20260312T120000Z--0a1b2c3d--pre-restore', epoch: 2 };
+    expect(auditLine(restored(after), 'UTC', 'dev', 'Office PC')).toMatchObject({
+      before: 'the data in use',
+      after: 'the version of 2026-03-01 09:00 (automatic hourly copy); the data from just before is kept as pre-restore-2026-03-12T12-00-00.json and as the version of 2026-03-12 12:00 (copy of the data before a restore)',
+    });
+  });
+
+  it('copes with no copy in the folders, and with a name that is not a version name', () => {
+    expect(auditLine(restored({ safetyCopy: 's.json', preRestore: null }), 'UTC', 'dev', 'x').after).toBe('the version of 2026-03-01 09:00 (automatic hourly copy); the data from just before is kept as s.json');
+    expect(auditLine(entry({ entity: 'version', entityId: 'odd.json', action: 'restore', after: { safetyCopy: 's.json' } }), 'UTC', 'dev', 'x').after).toBe('odd.json; the data from just before is kept as s.json');
+  });
+
+  it('shows the time in the zone on screen', () => {
+    expect(auditLine(restored({ safetyCopy: 's.json' }), 'America/New_York', 'dev', 'x').after).toMatch(/^the version of 2026-03-01 04:00 /);
+  });
+});
+
+describe('a price version taken away', () => {
+  const priceBefore = { projectId: 'p1', effectiveFrom: '2026-04-01T00:00:00Z', rateCents: 7000, currency: 'EUR' };
+  const removed = (before: unknown) => entry({ entity: 'price', entityId: 'r1', action: 'removed', before, after: null });
+
+  it('reads as a price removed, with the rate and the day it applied from', () => {
+    expect(entityLabel('price')).toBe('Price');
+    expect(actionWords('removed')).toBe('removed');
+    expect(auditLine(removed(priceBefore), 'UTC', 'dev', 'Office PC')).toMatchObject({ before: '€70.00/h from 2026-04-01', after: 'nothing' });
+    expect(summarize({ ...priceBefore, currency: 'USD', rateCents: 12_550 }, 'UTC')).toBe('$125.50/h from 2026-04-01');
+  });
+
+  it('gives the day in the zone on screen, where that day started', () => {
+    expect(summarize(priceBefore, 'America/New_York')).toBe('€70.00/h from 2026-03-31');
+  });
+
+  it('hides the amount while earnings are hidden, as everything else does', () => {
+    expect(auditLine(removed(priceBefore), 'UTC', 'dev', 'Office PC', true).before).toBe('rate hidden from 2026-04-01');
+    expect(auditLine(removed(priceBefore), 'UTC', 'dev', 'Office PC', false).before).toBe('€70.00/h from 2026-04-01');
+  });
+
+  it('copes with no rate and with a currency it does not know', () => {
+    expect(summarize({ ...priceBefore, rateCents: null }, 'UTC')).toBe('no rate from 2026-04-01');
+    expect(summarize({ ...priceBefore, currency: 'GBP' }, 'UTC')).toBe('70.00 GBP/h from 2026-04-01');
+    expect(summarize({ ...priceBefore, currency: null }, 'UTC')).toBe('70.00/h from 2026-04-01');
+  });
+
+  it('is not mistaken for an unknown shape', () => {
+    expect(summarize(priceBefore, 'UTC')).not.toContain('projectId');
+  });
+});

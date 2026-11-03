@@ -50,7 +50,10 @@ impl Shared {
     /// agree without a new stamp: subtask ids for lists older than them, and canonical colours.
     pub fn normalize(&mut self) {
         for t in self.tasks.values_mut() {
-            if let Some(d) = crate::subtasks::stable_ids(&t.id, &t.description) {
+            // What ids would take past the limit could never be saved, so it stays as it is.
+            if let Some(d) = crate::subtasks::stable_ids(&t.id, &t.description)
+                .filter(|d| crate::validate::check_description(d).is_ok())
+            {
                 t.description = d;
             }
         }

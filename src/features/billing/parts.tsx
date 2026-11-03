@@ -5,9 +5,11 @@ import { Button, Segmented } from '../../components/ui';
 import { IconCheck, IconWarn } from '../../components/icons';
 import { dayLabel, formatDuration } from '../../components/format';
 import type { Zones } from '../../app/store';
+import { ROUNDED_ROWS_NOTE, rowsDifferFromTotal } from '../../lib/billing';
 import { addDays, zoneLabel } from '../../lib/tz';
 import type { SummaryRow } from '../../lib/types';
-import { defaultRange, labelOf, shiftRange, spanDays, MAX_CUSTOM_DAYS, type RangeKind, type RangeSpec } from '../analysis/range';
+import { DayInput } from '../analysis/DayInput';
+import { defaultRange, labelOf, shiftRange, spanDays, withCustomEnd, MAX_CUSTOM_DAYS, type RangeKind, type RangeSpec } from '../analysis/range';
 import { GUIDANCE, centsText, pauseNote, sumRows, type Cents } from './billingText';
 import './billing.css';
 
@@ -69,6 +71,11 @@ export function RowsTable({ rows, totals, hide, showAmount, caption }: { rows: r
           </tr>
         </tfoot>
       </table>
+      {showAmount && !hide && rowsDifferFromTotal(rows.map((r) => r.cents), totals) && (
+        <p className="bl-hint" data-testid="billing-rounded-rows">
+          {ROUNDED_ROWS_NOTE}
+        </p>
+      )}
     </div>
   );
 }
@@ -173,16 +180,24 @@ export function PeriodPicker({ range, onChange, today, legend = 'Period' }: { ra
         <div className="bl-row">
           <label className="bl-inline">
             <span>From</span>
-            <input className="input" type="date" value={span.fromDay} max={span.toDay} onChange={(e) => e.target.value && onChange({ kind: 'custom', anchor: e.target.value, from: e.target.value, to: span.toDay })} />
+            <DayInput className="input" value={span.fromDay} max={span.toDay} onDay={(day) => onChange(withCustomEnd(range, 'from', day))} />
           </label>
           <label className="bl-inline">
             <span>To</span>
-            <input className="input" type="date" value={span.toDay} min={span.fromDay} max={addDays(span.fromDay, MAX_CUSTOM_DAYS - 1)} onChange={(e) => e.target.value && onChange({ kind: 'custom', anchor: span.fromDay, from: span.fromDay, to: e.target.value })} />
+            <DayInput className="input" value={span.toDay} min={span.fromDay} max={addDays(span.fromDay, MAX_CUSTOM_DAYS - 1)} onDay={(day) => onChange(withCustomEnd(range, 'to', day))} />
           </label>
         </div>
       )}
     </fieldset>
   );
+}
+
+/**
+ * The zone picked in a select, while it is still one of the options; otherwise the default. A select whose value
+ * is not among its options shows the first one, so a stale pick would stay in use without being on screen.
+ */
+export function chosenZone(pick: string | null, options: readonly { z: string }[], fallback: string): string {
+  return pick !== null && options.some((o) => o.z === pick) ? pick : fallback;
 }
 
 /** One option per distinct zone, named by the roles it plays, with the project's client zone first. */

@@ -51,3 +51,44 @@ describe('wall clock to instant', () => {
     expect(fieldFromInstant(utc('2026-10-25T01:30:00Z'), zone)).toEqual({ day: '2026-10-25', time: '01:30', second: true });
   });
 });
+
+describe('R16: a field that was not touched keeps the instant it was made from', () => {
+  // 09:00:37 in Lisbon on 12 March 2026, which is UTC+0 then. A date and a time input hold minutes only.
+  const kept = utc('2026-03-12T09:00:37Z');
+
+  it('gives back that instant, seconds and all, while the fields still show its minute', () => {
+    const field = fieldFromInstant(kept, zone);
+    expect(field).toEqual({ day: '2026-03-12', time: '09:00', second: false });
+    expect(wallToInstant(field, zone, 'Start', kept)).toEqual({ ok: true, at: kept });
+  });
+
+  it('resolves the fields as before once the day or the time was changed', () => {
+    const field = fieldFromInstant(kept, zone);
+    expect(wallToInstant({ ...field, time: '09:01' }, zone, 'Start', kept)).toEqual({ ok: true, at: utc('2026-03-12T09:01:00Z') });
+    expect(wallToInstant({ ...field, day: '2026-03-11' }, zone, 'Start', kept)).toEqual({ ok: true, at: utc('2026-03-11T09:00:00Z') });
+  });
+
+  it('counts a change back to the minute shown as no change', () => {
+    const field = fieldFromInstant(kept, zone);
+    const there = { ...field, time: '09:05' };
+    expect(wallToInstant(there, zone, 'Start', kept)).toEqual({ ok: true, at: utc('2026-03-12T09:05:00Z') });
+    expect(wallToInstant({ ...there, time: '09:00' }, zone, 'Start', kept)).toEqual({ ok: true, at: kept });
+  });
+
+  it('keeps the second pass of a repeated hour while it is the one chosen, and resolves the first when that is chosen', () => {
+    const second = utc('2026-10-25T01:30:41Z');
+    const field = fieldFromInstant(second, zone);
+    expect(field.second).toBe(true);
+    expect(wallToInstant(field, zone, 'Start', second)).toEqual({ ok: true, at: second });
+    expect(wallToInstant({ ...field, second: false }, zone, 'Start', second)).toEqual({ ok: true, at: utc('2026-10-25T00:30:00Z') });
+  });
+
+  it('still refuses a wall time that does not exist, whatever instant was kept', () => {
+    const field = fieldFromInstant(kept, zone);
+    expect(wallToInstant({ ...field, day: '2026-03-29', time: '01:30' }, zone, 'Start', kept)).toEqual({ ok: false, message: expect.stringContaining('does not exist') });
+  });
+
+  it('without a kept instant a field is resolved to its minute, as every other form does', () => {
+    expect(wallToInstant(fieldFromInstant(kept, zone), zone, 'Start')).toEqual({ ok: true, at: utc('2026-03-12T09:00:00Z') });
+  });
+});

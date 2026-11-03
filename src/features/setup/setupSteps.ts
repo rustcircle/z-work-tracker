@@ -77,6 +77,66 @@ export function resumeAt(saved: number, steps: readonly StepId[]): StepId {
 
 export const stepIndex = (id: StepId): number => STEPS.indexOf(id);
 
+// ---- The cloud folder in the Microsoft Store build
+
+/**
+ * The one switch for asking firmly for a cloud folder. The Microsoft Store build keeps its files in a private Windows folder that
+ * Windows removes when the app is uninstalled, so a OneDrive or Google Drive folder is what keeps the hours. The installer build
+ * leaves the question as it was. Two folders are offered in both builds, recommended in the Store build, and required in neither.
+ */
+export const isPermanentFolderUrged = (packaged: boolean): boolean => packaged;
+
+/** What the build is and how many folders are connected: all that decides whether setup asks firmly for one. */
+export interface FolderAsk {
+  packaged: boolean;
+  folders: number;
+}
+
+/** Whether setup asks firmly for a folder right now: in a build that urges one, while none is connected. */
+export const folderUrgedNow = (o: FolderAsk): boolean => isPermanentFolderUrged(o.packaged) && o.folders === 0;
+
+/** What the progress line calls a step the person may leave out. The folder step is recommended, not optional, while it is urged. */
+export function stepNote(step: StepId, o: FolderAsk): 'optional' | 'recommended' | null {
+  if (!OPTIONAL_STEPS.includes(step)) return null;
+  return step === 'sync' && folderUrgedNow(o) ? 'recommended' : 'optional';
+}
+
+/**
+ * Whether setup is about to leave the folder question unanswered while it is urged: the folder step is this one or still ahead.
+ * That is Skip on the folder step, and also Finish with defaults from any step before it. Past the step the person has answered
+ * it, by connecting or by being asked.
+ */
+export function folderLeftUnanswered(step: StepId, o: FolderAsk): boolean {
+  return folderUrgedNow(o) && stepIndex(step) <= stepIndex('sync');
+}
+
+export const FOLDER_URGED = {
+  lead: 'Choose a cloud folder.',
+  body: 'The Microsoft Store version keeps its files privately, and Windows removes them when the app is uninstalled. A OneDrive or Google Drive folder is what keeps your hours safe. Two folders are better: pick both if you use both.',
+} as const;
+
+export const FOLDER_OPTIONAL =
+  'Optional. To use zWorkTracker on two computers, it can write its data into a OneDrive or Google Drive folder. Nothing is switched on unless you tick a folder and connect it.';
+
+export const TWO_FOLDERS = 'Connecting both OneDrive and Google Drive keeps a working copy in each.';
+
+/** The question before setup goes on without a folder in a build that urges one. */
+export const NO_FOLDER = {
+  title: 'Continue without a folder?',
+  body: 'If you uninstall the app without one, your hours are gone. You can connect a folder later in Settings.',
+  confirm: 'Continue without a folder',
+} as const;
+
+// ---- While another computer holds the lease
+
+/** Steps that write data shared between computers. They cannot be changed from here while another computer holds the lease. */
+export const SHARED_DATA_STEPS: readonly StepId[] = ['zones', 'rules', 'project', 'shifts'];
+
+export const writesSharedData = (step: StepId): boolean => SHARED_DATA_STEPS.includes(step);
+
+/** What those steps say instead of their controls. */
+export const followsHolder = (name: string): string => `These follow ${name}. You can change them after taking over.`;
+
 export interface RuleRow {
   worked: number;
   billed: number;

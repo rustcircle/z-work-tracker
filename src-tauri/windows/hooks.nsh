@@ -20,13 +20,16 @@
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
-  ; WebView2 ships with Windows 11. It is the one deliberate system dependency and is never downloaded.
+  ; WebView2 is the one deliberate system dependency, and the installer never downloads it. Windows 11 includes it;
+  ; many Windows 10 computers have it, but not all. This only warns: the app checks again when opened, through the
+  ; WebView2 API, which also sees a fixed-version runtime this registry check can miss.
   ClearErrors
   ReadRegStr $0 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
   StrCmp $0 "" 0 lt_webview_ok
   ReadRegStr $0 HKCU "Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
   StrCmp $0 "" 0 lt_webview_ok
-  MessageBox MB_OK|MB_ICONEXCLAMATION "Microsoft Edge WebView2 Runtime was not found. It normally comes with Windows 11.$\r$\n$\r$\nzWorkTracker needs it and will show this message again when opened. Run Windows Update or reinstall the WebView2 Runtime from Microsoft."
+  MessageBox MB_YESNO|MB_ICONEXCLAMATION "zWorkTracker needs the Microsoft Edge WebView2 Runtime, and it wasn't found on this computer. Windows 11 includes it. Many Windows 10 computers have it, but not all.$\r$\n$\r$\nGet the Evergreen runtime from Microsoft:$\r$\nhttps://developer.microsoft.com/en-us/microsoft-edge/webview2/$\r$\n$\r$\nInstall it, then open zWorkTracker. Open the download page now?" /SD IDNO IDNO lt_webview_ok
+  ExecShell "open" "https://developer.microsoft.com/en-us/microsoft-edge/webview2/"
   lt_webview_ok:
   !insertmacro LT_QUIT_RUNNING_APP
 !macroend

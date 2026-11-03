@@ -1,6 +1,6 @@
 // Analysis periods: whole calendar days in one zone, from day/week/month/quarter/year or a custom
 // span. Weeks start on Monday. All edges are zone days, so a period is 23h or 25h long on DST days.
-import { addDays, startOfDay, weekdayOf } from '../../lib/tz';
+import { addDays, isDay, startOfDay, utcMillis, weekdayOf } from '../../lib/tz';
 
 export type RangeKind = 'day' | 'week' | 'month' | 'quarter' | 'year' | 'custom';
 
@@ -37,8 +37,17 @@ export const WEEKDAY_SHORT = WEEKDAY_NAMES.map((d) => d.slice(0, 3));
 /** Days since 1970-01-01 of a `YYYY-MM-DD` string. */
 export function dayNum(day: string): number {
   const [y, m, d] = day.split('-').map(Number) as [number, number, number];
-  return Math.round(Date.UTC(y, m - 1, d) / 86_400_000);
+  return Math.round(utcMillis(y, m - 1, d) / 86_400_000);
 }
+
+/** The first day a range can start on: nothing is logged before 1970. */
+const FIRST_RANGE_DAY = '1970-01-01';
+
+/**
+ * A day a range can be made of: a real `YYYY-MM-DD` from 1970 on. A date input reports every year as it is
+ * typed (0002, 0020, 0202, 2026), and none of those but the last is a day to show.
+ */
+export const isRangeDay = (day: string | undefined): day is string => day !== undefined && day >= FIRST_RANGE_DAY && isDay(day);
 
 export function dayStr(n: number): string {
   return new Date(n * 86_400_000).toISOString().slice(0, 10);
@@ -88,8 +97,11 @@ export function spanDays(range: RangeSpec): { fromDay: string; toDay: string } {
       return { fromDay: `${y}-01-01`, toDay: `${y}-12-31` };
     }
     case 'custom': {
-      let f = range.from ?? a;
-      let t = range.to ?? a;
+      const from = range.from ?? a;
+      const to = range.to ?? a;
+      // An end that is no day yet (a year typed halfway) leaves the range as the other end has it.
+      let f = isRangeDay(from) ? from : to;
+      let t = isRangeDay(to) ? to : f;
       if (t < f) [f, t] = [t, f];
       const max = addDays(f, MAX_CUSTOM_DAYS - 1);
       return { fromDay: f, toDay: t > max ? max : t };
@@ -154,6 +166,20 @@ export function shiftRange(range: RangeSpec, dir: -1 | 1): RangeSpec {
       return { kind: 'custom', anchor: f, from: f, to: addDays(f, len - 1) };
     }
   }
+}
+
+/**
+ * The custom range with one end set to `day`. The other end stays as it was set, not as the range reads once
+ * cut to the longest span, so a cut never costs the other end. An end set past the other swaps them, as the range
+ * reads, so the days kept are always the ones on screen.
+ */
+export function withCustomEnd(range: RangeSpec, end: 'from' | 'to', day: string): RangeSpec {
+  const span = spanDays(range);
+  const kept = (raw: string | undefined, shown: string): string => (isRangeDay(raw) ? raw : shown);
+  const a = end === 'from' ? day : kept(range.from, span.fromDay);
+  const b = end === 'to' ? day : kept(range.to, span.toDay);
+  const [from, to] = a <= b ? [a, b] : [b, a];
+  return { kind: 'custom', anchor: from, from, to };
 }
 
 /** The previous equivalent period, used for comparison. */

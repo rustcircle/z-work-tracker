@@ -1,11 +1,11 @@
 //! What counts as time. Raw segments are never altered: corrections, away-time decisions and billable
 //! pauses are overlays, and this module turns segment + overlays into the pieces every report reads.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::model::{GapDecision, Segment, Shared};
+use crate::model::{BillablePause, GapDecision, Segment, Shared};
 use crate::time::Ts;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -61,6 +61,17 @@ fn subtract(intervals: &mut Vec<(Ts, Ts)>, cut: (Ts, Ts)) {
 /// The pieces of every live task, in no particular order. `end_of` decides where an open segment ends.
 #[must_use]
 pub fn pieces(shared: &Shared, end_of: &dyn Fn(&Segment) -> Ts) -> Vec<Piece> {
+    pieces_for_summary(shared, end_of, &[])
+}
+
+/// As `pieces`, with the pauses a new summary will list already in the place they take once it is made.
+/// What it freezes is then what it goes on to hold, whichever period is billed first.
+#[must_use]
+pub(crate) fn pieces_for_summary(
+    shared: &Shared,
+    end_of: &dyn Fn(&Segment) -> Ts,
+    listed: &[String],
+) -> Vec<Piece> {
     let mut gaps_by_segment: BTreeMap<&str, Vec<(Ts, Ts, GapDecision)>> = BTreeMap::new();
     for g in shared.gaps.values() {
         gaps_by_segment
@@ -134,8 +145,25 @@ pub fn pieces(shared: &Shared, end_of: &dyn Fn(&Segment) -> Ts) -> Vec<Piece> {
         }
     }
     // Sorted by a replicated key, so every device gets the same result, and a span marked twice bills once.
+    // A pause on a live summary goes first, earliest summary first, as each summary was worked out with the
+    // ones before it holding their time. Otherwise a pause marked where a summary hadn't arrived would take a
+    // share of what that summary holds, and go on to bill it a second time.
+    let mut on_summary: BTreeMap<&str, (Ts, u32, &str)> = BTreeMap::new();
+    for b in shared.summaries.values().filter(|b| !b.voided) {
+        let claim = (b.created_at, b.number, b.id.as_str());
+        for id in &b.pause_ids {
+            let first = on_summary.entry(id.as_str()).or_insert(claim);
+            *first = (*first).min(claim);
+        }
+    }
+    let listed: BTreeSet<&str> = listed.iter().map(String::as_str).collect();
+    let order = |p: &BillablePause| {
+        let claim = on_summary.get(p.id.as_str()).copied();
+        let next = listed.contains(p.id.as_str());
+        (claim.is_none(), claim, !next, p.start, p.id.clone())
+    };
     let mut live_pauses: Vec<_> = shared.pauses.values().filter(|p| !p.deleted).collect();
-    live_pauses.sort_by(|a, b| (a.start, &a.id).cmp(&(b.start, &b.id)));
+    live_pauses.sort_by_cached_key(|p| order(p));
     let mut billed_pauses: BTreeMap<&str, Vec<(Ts, Ts)>> = BTreeMap::new();
     for pause in live_pauses {
         let Some(task) = shared.tasks.get(&pause.task_id).filter(|t| t.is_live()) else {

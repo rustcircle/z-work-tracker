@@ -8,12 +8,14 @@ import { PROJECT_PALETTE, distinctColor } from '../lib/color';
 import { RateBook, isCurrency, taskDays } from '../lib/billing';
 import { docHasText, docPlainText } from '../lib/docText';
 import { assignSubtaskIds, resetSubtasks, subtaskItems } from '../lib/subtasks';
-import { isZone, parseIso, toIso } from '../lib/tz';
+import { clockAt, isZone, parseIso, toIso } from '../lib/tz';
 import { summaryCsv } from './summaryCsv';
 import { capAtPauseRequest, computePieces, effective, projectFigures, summaryPreview, taskTotals, unconfirmedSecs, type MockSegment, type PieceInput } from './pieces';
 import { sameJson } from '../lib/sameJson';
 import type {
   AuditEntry,
+  AutostartInfo,
+  AutostartState,
   BackupInfo,
   BillablePause,
   BillingSummary,
@@ -23,6 +25,10 @@ import type {
   ExportRequest,
   GapDecision,
   IdleGap,
+  JoinChoice,
+  JoinPending,
+  LeaseHolderView,
+  LeaseView,
   ManualEntryInput,
   MovePreview,
   MoveResult,
@@ -36,6 +42,7 @@ import type {
   RateInput,
   RateVersion,
   RequiredField,
+  RestorePreview,
   RichDoc,
   SelectedEntry,
   RoundingInput,
@@ -48,6 +55,10 @@ import type {
   SummaryRequest,
   Tag,
   TagInput,
+  TakeOverExpected,
+  TakeOverMode,
+  TakeOverPreview,
+  TakeOverResult,
   Task,
   TaskInput,
   PatchReply,
@@ -57,6 +68,8 @@ import type {
   Template,
   TemplateInput,
   Theme,
+  VersionInfo,
+  VersionList,
 } from '../lib/types';
 
 export const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
@@ -83,6 +96,22 @@ export type MockTask = Omit<Task, 'tags' | 'activeSubtask' | 'subtasks' | 'bille
   Partial<Pick<Task, 'tags' | 'activeSubtask'>>;
 
 export type { MockSegment };
+
+/** A saved version as the mock holds it: what the list shows, plus what reading it and restoring it need. */
+export interface MockVersion extends VersionInfo {
+  /** The text of its `.changes.txt`. */
+  changes: string;
+  /** The data a restore installs, as `captureData` writes it. Without it a restore only pauses and goes cold, like a backup that holds none. */
+  data?: string;
+  /** The counts the restore preview shows when there is no `data` to count. */
+  counts?: DataCounts;
+  /** This copy can't be read here, as if it were still syncing: in every folder holding it (true), or only in the roots listed. */
+  failRead?: boolean | string[];
+  /** Records the restore leaves out because they couldn't be read. */
+  warnings?: string[];
+  /** A reason only the backend knows why a restore can't go ahead, such as a newer app having saved it. */
+  blockedReason?: string | null;
+}
 
 /** The seeded starter tags, the same ids and colours the backend creates for a store that has none. */
 export const STARTER_TAGS: readonly [string, string, string][] = [
@@ -165,6 +194,30 @@ export interface MockState {
   /** Launch-scoped, like the Rust service: false until the first task of this launch has started. */
   warm: boolean;
   lastWorked: string | null;
+  /**
+   * Who holds the lease, as the folders would say if they could all be read; `leaseView` adds what the folders and the
+   * connected targets change. The default, `off`, with no sync folder, refuses nothing. Use `seedLease` for a coherent state.
+   * A holder's `ageSecs` follows its `lastSignAt` and the clock of the mock.
+   */
+  lease: LeaseView;
+  /** Test hook: the next `lease_take_over` ends this way whatever the lease says, and then it is back to the real checks. */
+  takeOverNext?: 'done' | 'changed' | 'unreachable';
+  /** Test hook: a Microsoft Store (packaged) build. */
+  packaged: boolean;
+  /**
+   * Start with Windows as Windows reports it. Only `state` is read: `canChange` and `note` follow from it as in the backend,
+   * and `packaged` from the field above. `on` and `off` follow `autostart`. Use `autostartFor` for a whole value.
+   */
+  autostartInfo: AutostartInfo;
+  /** Saved versions in the sync folders (`locations` names the roots holding each). `addVersion` or `seedVersions` fill it in. */
+  versions: MockVersion[];
+  /** A folder waiting for the user to choose between its restored data and this computer's own. */
+  joinPending: JoinPending | null;
+  /**
+   * The other computers whose file this one has read (`remote_devices`), by device id: their name and when each last wrote it.
+   * `settle_lost_segment` measures a computer's silence from `writtenAt`. One with no entry is known only by its segments.
+   */
+  remoteDevices?: Record<string, { name: string; writtenAt: string }>;
 }
 
 export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
@@ -220,6 +273,11 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     nextId: 1,
     warm: false,
     lastWorked: null,
+    lease: { state: 'off', readOnly: false, holder: null, generation: null, note: null, reachableRoots: [], unreachableRoots: [] },
+    packaged: false,
+    autostartInfo: { packaged: false, state: 'off', canChange: true, note: null },
+    versions: [],
+    joinPending: null,
   };
 }
 
@@ -461,7 +519,7 @@ export function raiseReferenceMarks(marks: Record<string, number>, summaries: re
 }
 
 function pieceInput(s: MockState): PieceInput {
-  return { segments: s.segments, gaps: s.gaps, pauses: s.pauses, liveTasks: liveTaskIds(s) };
+  return { segments: s.segments, gaps: s.gaps, pauses: s.pauses, liveTasks: liveTaskIds(s), summaries: s.summaries };
 }
 
 function billedSets(s: MockState): { segments: Set<string>; pauses: Set<string> } {
@@ -635,8 +693,10 @@ function snapshot(s: MockState, read = false): Snapshot {
       micaAvailable: s.micaAvailable,
     },
     notices: s.notices,
-    warnings: [...s.warnings, ...colorWarnings(s), ...referenceWarnings(s)],
-    sync: { targets: s.targets, detected: s.detected, promptPending: !s.syncPromptDone && s.targets.length === 0, pendingCopy: s.pendingCopy },
+    warnings: [...s.warnings, ...colorWarnings(s), ...referenceWarnings(s), ...(s.packaged && s.targets.length === 0 ? [PACKAGED_NO_FOLDER_WARNING] : [])],
+    sync: { targets: s.targets, detected: s.detected, promptPending: !s.syncPromptDone && s.targets.length === 0, pendingCopy: s.pendingCopy, joinPending: s.joinPending },
+    lease: leaseView(s),
+    platform: { packaged: s.packaged },
     launch: { warm: s.warm, coldRequired: coldRequired(s), copySource: s.warm ? copySource(s) : null },
     rawSegments,
     gaps: s.gaps.filter((g) => input.liveTasks.has(g.taskId)),
@@ -749,6 +809,12 @@ function begin(s: MockState, id: string, required: TaskState, action: string) {
 const NOT_HANDLED = Symbol('not handled');
 const MAX_REASON = 500;
 const MAX_SEGMENT_SECS = 366 * 86_400;
+/** The limits of a date someone chose, as `check_chosen_date` in validate.rs holds them: 2000-01-01 to 2100-01-01, UTC. */
+const EARLIEST_CHOSEN = Date.UTC(2000, 0, 1) / 1000;
+const LATEST_CHOSEN = Date.UTC(2100, 0, 1) / 1000;
+function checkChosenDate(sec: number, what: string): void {
+  if (sec < EARLIEST_CHOSEN || sec > LATEST_CHOSEN) throw err('validation', `${what} must be between 2000-01-01 and 2100-01-01`);
+}
 
 function checkTagIds(s: MockState, ids: readonly string[]): void {
   if (ids.length > 32) throw err('validation', 'too many tags');
@@ -779,6 +845,8 @@ function checkRange(s: MockState, startIso: string, endIso: string): [number, nu
   const end = parseIso(endIso);
   if (end <= start) throw err('validation', 'the end must be after the start');
   if (end > s.now) throw err('validation', "the end can't be in the future");
+  checkChosenDate(start, 'the start');
+  checkChosenDate(end, 'the end');
   if (end - start > MAX_SEGMENT_SECS) throw err('validation', 'that span is too long');
   return [start, end];
 }
@@ -820,10 +888,13 @@ function checkSelection(s: MockState, selection: SelectedEntry[] | null | undefi
   }
 }
 
+/** `Segment::is_open`: no end and no recorded edit. A settled segment (see `settleSegments`) has no end of its own but is closed for everyone else. */
+const isOpen = (seg: Pick<MockSegment, 'end' | 'edit'>): boolean => seg.end === null && !seg.edit;
+
 function correctable(s: MockState, id: string): MockSegment {
   const seg = s.segments.find((x) => x.id === id);
   if (!seg) throw err('not_found', 'work segment not found');
-  if (seg.end === null) throw err('conflict', 'this segment is still running; pause the task first');
+  if (isOpen(seg)) throw err('conflict', 'this segment is still running; pause the task first');
   if (billedSets(s).segments.has(id)) throw err('conflict', BILLED);
   task(s, seg.taskId);
   return seg;
@@ -847,6 +918,7 @@ function summaryInput(s: MockState) {
     tasksLive: s.tasks.filter((t) => live.has(t.id)).map((t) => ({ id: t.id, projectId: t.projectId, name: t.name })),
     billedSegments: billedSets(s).segments,
     billedPauses: billedSets(s).pauses,
+    summaries: s.summaries,
   };
 }
 
@@ -903,6 +975,42 @@ function closeBackupRunning(s: MockState, heartbeat: number | null): string[] {
     names.push(t.name);
   }
   return names;
+}
+
+/** A copy of the data as it is now, kept before a restore so that it can be undone (`backup::safety_copy`). Returns its name. */
+function takeSafetyCopy(s: MockState): string {
+  const safety = `pre-restore-${toIso(s.now).replace(/:/g, '-').replace('Z', '')}.json`;
+  s.backupData[safety] = captureData(s);
+  s.backups = s.backups.filter((b) => b.name !== safety);
+  s.backups.push({ name: safety, bytes: s.backupData[safety].length, safety: true });
+  sortBackups(s);
+  pruneSafetyCopies(s);
+  return safety;
+}
+
+/**
+ * `install_restored`, shared by a restored backup and a restored version: the data held replaces the records here, the log keeps
+ * both sets of entries, and the numbers already issued stay issued. `held` is `captureData` output, or nothing, when only the
+ * running task is closed. A running task ends at the heartbeat the data holds, else `heartbeatIfNone`.
+ */
+function installRestored(s: MockState, held: string | undefined, heartbeatIfNone: number | null): { names: string[]; heartbeat: number | null } {
+  // Numbers already issued, here or in the backup, are never issued again.
+  raiseReferenceMarks(s.referenceMarks, s.summaries);
+  let names: string[] = [];
+  let heartbeat: number | null = null;
+  if (held) {
+    const restored = JSON.parse(held) as Captured;
+    raiseReferenceMarks(s.referenceMarks, restored.summaries);
+    // The log only grows: the backup's entries and every entry made since both stay.
+    const log = new Map(restored.audit.map((e) => [e.id, e]));
+    for (const e of s.audit) log.set(e.id, e);
+    const keep = [...log.values()];
+    Object.assign(s, Object.fromEntries(dataKeys.map((k) => [k, restored[k]])));
+    s.audit = keep;
+    heartbeat = restored.heartbeat ?? heartbeatIfNone;
+    names = closeBackupRunning(s, heartbeat);
+  }
+  return { names, heartbeat };
 }
 
 /** `Shared::summaries_listing`: the references of the live summaries listing any of this task's time, in order. */
@@ -977,12 +1085,15 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
     case 'void_segment': {
       const reason = cleanReason(a.reason as string);
       const seg = correctable(s, a.id as string);
-      applyEdit(s, seg, { start: seg.start, end: seg.end ?? seg.start, voided: true, reason }, 'void', reason);
+      // The times that count come first, so voiding a settled segment keeps the end it was settled at.
+      const eff = effective(seg);
+      applyEdit(s, seg, { start: eff ? toIso(eff[0]) : seg.start, end: eff && eff[1] !== null ? toIso(eff[1]) : (seg.end ?? seg.start), voided: true, reason }, 'void', reason);
       return snapshot(s);
     }
     case 'restore_segment': {
       const reason = cleanReason(a.reason as string);
       const seg = correctable(s, a.id as string);
+      if (seg.end === null) throw err('conflict', "this segment's device never reported an end, so it can only be corrected");
       applyEdit(s, seg, null, 'restore', reason);
       return snapshot(s);
     }
@@ -1147,7 +1258,7 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
     }
     case 'request_remote_pause': {
       const t = task(s, a.taskId as string);
-      const open = s.segments.find((x) => x.taskId === t.id && x.end === null && x.deviceId !== DEVICE_ID);
+      const open = s.segments.find((x) => x.taskId === t.id && isOpen(x) && x.deviceId !== DEVICE_ID);
       if (!open) throw err('conflict', "this task isn't running on another device");
       if (!s.pauseRequests.some((q) => q.segmentId === open.id)) {
         const id = newId(s, 'pausereq');
@@ -1203,28 +1314,8 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
       const held = s.backupData[name];
       // A running task is closed first, like a quit, so the safety copy holds the data as it is now.
       closeAllAndPause(s, { kind: 'appQuit' });
-      const safety = `pre-restore-${toIso(s.now).replace(/:/g, '-').replace('Z', '')}.json`;
-      s.backupData[safety] = captureData(s);
-      s.backups = s.backups.filter((b) => b.name !== safety);
-      s.backups.push({ name: safety, bytes: s.backupData[safety].length, safety: true });
-      sortBackups(s);
-      pruneSafetyCopies(s);
-      // Numbers already issued, here or in the backup, are never issued again.
-      raiseReferenceMarks(s.referenceMarks, s.summaries);
-      let names: string[] = [];
-      let heartbeat: number | null = null;
-      if (held) {
-        const restored = JSON.parse(held) as Captured;
-        raiseReferenceMarks(s.referenceMarks, restored.summaries);
-        // The log only grows: the backup's entries and every entry made since both stay.
-        const log = new Map(restored.audit.map((e) => [e.id, e]));
-        for (const e of s.audit) log.set(e.id, e);
-        const keep = [...log.values()];
-        Object.assign(s, Object.fromEntries(dataKeys.map((k) => [k, restored[k]])));
-        s.audit = keep;
-        heartbeat = restored.heartbeat ?? null;
-        names = closeBackupRunning(s, heartbeat);
-      }
+      const safety = takeSafetyCopy(s);
+      const { names, heartbeat } = installRestored(s, held, null);
       addAudit(s, 'backup', name, 'restore', '', null, { safetyCopy: safety });
       // The launch counts as cold afterwards.
       s.warm = false;
@@ -1258,7 +1349,565 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
   }
 }
 
+// ---- Who may change the data (the single-device lease), saved versions, the packaged build and Start with Windows.
+// This models what a page can see of them, not the folders: `MockState.lease` is what the folders say when all can be read,
+// and `leaseView` adds what the connected folders change. Rules, limits and words follow the backend's.
+
+/** The other computer a seeded lease belongs to. */
+export const OTHER_DEVICE_ID = '22222222-2222-4222-8222-222222222222';
+export const OTHER_DEVICE_NAME = 'LAPTOP';
+
+const OFF_LEASE: LeaseView = { state: 'off', readOnly: false, holder: null, generation: null, note: null, reachableRoots: [], unreachableRoots: [] };
+/** The folder a seeded lease connects when none is. It is also the one `?sync=1` uses. */
+const SEED_ROOT = 'C:\\Users\\me\\OneDrive';
+const SEED_SECOND_ROOT = 'G:\\My Drive';
+
+/** `CoreError::ReadOnly`: the code is `read_only`. */
+export const readOnlyMessage = (holder: string): string => `${holder} is using zWorkTracker, so this computer is read-only. Take over from the banner to work here.`;
+
+/** `Service::snapshot`: a packaged build with no folder keeps its only copy where uninstalling deletes it. */
+export const PACKAGED_NO_FOLDER_WARNING =
+  'This copy of zWorkTracker keeps its data in a private Windows folder. Uninstalling the app deletes that folder and your hours with it. Connect a OneDrive or Google Drive folder in Settings > Sync between devices.';
+
+/**
+ * The commands that change data shared between computers, or restore it. The backend refuses them while this computer is
+ * read-only, and so does `handle`, before the command is looked at. `set_setting` is one of them, except for the two view
+ * settings in `VIEW_SETTINGS`. Everything that only changes this computer's own preferences, folders or files is not, and
+ * neither is `request_remote_pause`. `parity.test.ts` places every command in one list or the other, so a new one must be classified.
+ */
+export const READ_ONLY_BLOCKED: ReadonlySet<string> = new Set([
+  'create_project', 'update_project', 'set_project_archived', 'delete_project',
+  'create_task', 'update_task', 'patch_task', 'delete_draft', 'delete_task', 'start_task', 'resume_task', 'pause_task', 'stop_task',
+  'save_shift', 'delete_shift', 'revert_shift_version', 'set_rate', 'delete_rate_version', 'set_rounding', 'delete_rounding', 'set_setting',
+  'add_manual_entry', 'correct_segment', 'void_segment', 'restore_segment', 'settle_lost_segment',
+  'decide_gap', 'mark_billable_pause', 'unmark_billable_pause', 'set_active_subtask',
+  'save_tag', 'delete_tag', 'save_template', 'delete_template', 'task_from_template',
+  'create_summary', 'void_summary', 'set_device_prefix',
+  'restore_backup', 'restore_version', 'save_version_now',
+]);
+
+/** Changing these is viewing, so a read-only computer may (`Service::set_setting`). */
+const VIEW_SETTINGS: ReadonlySet<string> = new Set(['activeZone', 'showBoth']);
+
+const holderWithAge = (s: MockState, h: LeaseHolderView): LeaseHolderView => ({ ...h, ageSecs: h.lastSignAt === null ? null : Math.max(0, s.now - parseIso(h.lastSignAt)) });
+
+/**
+ * What the page is told. With no sync folder connected it is `off`, which refuses nothing. A folder that can't be read
+ * (`MockFolder.available`) is unreachable, and with none readable the lease is `unknown`: read-only only when another computer held it.
+ */
+export function leaseView(s: MockState): LeaseView {
+  if (s.targets.length === 0) return structuredClone(OFF_LEASE);
+  const readable = (root: string): boolean => folderOf(s, root).available;
+  const reachableRoots = s.targets.map((t) => t.root).filter(readable);
+  const unreachableRoots = s.targets.map((t) => t.root).filter((root) => !readable(root));
+  let view: LeaseView = { ...s.lease, holder: s.lease.holder && holderWithAge(s, s.lease.holder), reachableRoots, unreachableRoots };
+  // A folder is connected and nobody holds it.
+  if (view.state === 'off') view = { ...view, state: 'free' };
+  if (reachableRoots.length === 0 && view.state !== 'unknown') {
+    const other = view.state === 'heldByOtherLive' || view.state === 'heldByOtherStale';
+    // With no folder to read only the last holder's name, generation and time are known, not its beat.
+    view = { ...view, state: 'unknown', readOnly: other, holder: other && view.holder ? { ...view.holder, beatSeq: 0 } : null };
+  }
+  return structuredClone(view);
+}
+
+const readOnlyRefusal = (s: MockState) => err('read_only', readOnlyMessage(leaseView(s).holder?.deviceName ?? 'Another computer'));
+
+/**
+ * Coherent lease states for tests and the e2e build (`?lease=`). A folder is connected first when none is. `live` and `stale` are
+ * another computer holding the lease; `mine` is this one; `unknown` is every folder unreadable after another computer held it
+ * (read-only), `unknown-writable` the same after nobody did. `holder` overrides what the seeded holder is like.
+ */
+export type LeaseSeed = 'checking' | 'free' | 'mine' | 'live' | 'stale' | 'unknown' | 'unknown-writable';
+export const LEASE_SEEDS: readonly LeaseSeed[] = ['checking', 'free', 'mine', 'live', 'stale', 'unknown', 'unknown-writable'];
+export const isLeaseSeed = (value: string): value is LeaseSeed => (LEASE_SEEDS as readonly string[]).includes(value);
+
+export function seedLease(s: MockState, kind: LeaseSeed, holder: Partial<LeaseHolderView> = {}): void {
+  if (s.targets.length === 0) handle(s, 'add_sync_target', { provider: 'oneDrive', root: SEED_ROOT });
+  const quiet = kind === 'unknown' ? 2 * 3600 : kind === 'stale' ? 40 * 60 : 90;
+  const other: LeaseHolderView = { deviceId: OTHER_DEVICE_ID, deviceName: OTHER_DEVICE_NAME, generation: 4, beatSeq: 83, lastSignAt: toIso(s.now - quiet), ageSecs: quiet, clockSuspect: false, ...holder };
+  const lease = (state: LeaseView['state'], readOnly: boolean, who: LeaseHolderView | null, generation: number | null): LeaseView => ({ state, readOnly, holder: who, generation, note: null, reachableRoots: [], unreachableRoots: [] });
+  switch (kind) {
+    case 'checking':
+      s.lease = lease('checking', false, null, null);
+      break;
+    case 'free':
+    case 'unknown-writable':
+      s.lease = lease('free', false, null, other.generation);
+      break;
+    case 'mine':
+      s.lease = lease('heldByMe', false, null, other.generation + 1);
+      break;
+    case 'live':
+    case 'unknown':
+      s.lease = lease('heldByOtherLive', true, other, other.generation);
+      break;
+    case 'stale':
+      s.lease = lease('heldByOtherStale', true, other, other.generation);
+      break;
+    default: {
+      const unreachable: never = kind;
+      throw new Error(`unknown lease seed ${String(unreachable)}`);
+    }
+  }
+  // Every folder can be read, except for the two kinds whose point is that none can.
+  const none = kind === 'unknown' || kind === 'unknown-writable';
+  for (const t of s.targets) {
+    const known = s.folders[t.root];
+    if (none) s.folders[t.root] = { ...folderOf(s, t.root), available: false };
+    else if (known && !known.available) s.folders[t.root] = { ...known, available: true };
+  }
+}
+
+/**
+ * Another computer takes the lease over while this one holds it: a running task closes now as `syncReconciled`, this computer is
+ * read-only behind the new holder, and a notice says what happened (`Service::on_lease_lost`). Needs a connected folder.
+ */
+export function loseLease(s: MockState, by: Partial<LeaseHolderView> = {}): void {
+  const holder: LeaseHolderView = { deviceId: OTHER_DEVICE_ID, deviceName: OTHER_DEVICE_NAME, generation: (s.lease.generation ?? 0) + 1, beatSeq: 1, lastSignAt: toIso(s.now), ageSecs: 0, clockSuspect: false, ...by };
+  const running = s.tasks.filter((t) => t.state === 'running' && !t.runningElsewhere);
+  const stopped = closeAllAndPause(s, { kind: 'syncReconciled' });
+  s.lease = { state: 'heldByOtherLive', readOnly: true, holder, generation: holder.generation, note: null, reachableRoots: [], unreachableRoots: [] };
+  addAudit(s, 'lease', holder.deviceId, 'leaseLost', '', null, { by: holder.deviceName, generation: holder.generation, closed: running.map((t) => t.id) });
+  const timer = stopped[0] === undefined ? '' : ` "${stopped[0]}" stopped timing here at ${clockAt(s.now, s.systemZone)}.`;
+  s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'warning', message: `${holder.deviceName} took over, so this computer is now read-only.${timer} Nothing was lost: it will sync.` });
+}
+
+// ---- Take over (`lease_io::take_over`): the page shows a preview, asks twice, and the backend reads again before it acts.
+
+/** `end_of` for another device's open segment: its last heartbeat, else its start, and nothing after a pause request. */
+function lastKnownEnd(s: MockState, seg: MockSegment): number {
+  const start = parseIso(seg.start);
+  const beat = seg.provisionalEnd ? parseIso(seg.provisionalEnd) : start;
+  return Math.min(Math.max(capAtPauseRequest(beat, seg, s.pauseRequests, DEVICE_ID), start), s.now);
+}
+
+/** The holder's open segments with the end a take over gives each: the later of what its device last reported and the holder's last sign, but never after a pause request. */
+function holderOpenSegments(s: MockState, holder: LeaseHolderView): { seg: MockSegment; end: number }[] {
+  const out: { seg: MockSegment; end: number }[] = [];
+  for (const seg of s.segments) {
+    if (!isOpen(seg) || seg.deviceId !== holder.deviceId) continue;
+    const start = parseIso(seg.start);
+    const asked = Math.min(Infinity, ...s.pauseRequests.filter((q) => q.segmentId === seg.id).map((q) => parseIso(q.at)));
+    const beat = holder.clockSuspect || holder.lastSignAt === null ? -Infinity : parseIso(holder.lastSignAt);
+    out.push({ seg, end: Math.max(Math.min(Math.max(lastKnownEnd(s, seg), Math.min(beat, asked)), s.now), start) });
+  }
+  return out;
+}
+
+function takeOverPreview(s: MockState): TakeOverPreview {
+  const view = leaseView(s);
+  const other = view.state === 'heldByOtherLive' || view.state === 'heldByOtherStale';
+  const segments = view.holder && other ? holderOpenSegments(s, view.holder) : [];
+  return {
+    holder: view.holder,
+    live: view.state === 'heldByOtherLive',
+    unreachable: s.targets.length > 0 && view.reachableRoots.length === 0,
+    segments: segments.map(({ seg, end }) => ({ segmentId: seg.id, taskName: s.tasks.find((t) => t.id === seg.taskId)?.name ?? '', end: toIso(end), secs: end - parseIso(seg.start) })),
+  };
+}
+
+/** The task has no open segment left anywhere, so it is no longer running on another computer. */
+function endRunningElsewhere(s: MockState, taskId: string): void {
+  const t = s.tasks.find((x) => x.id === taskId);
+  if (!t || s.segments.some((x) => x.taskId === taskId && isOpen(x))) return;
+  t.runningElsewhere = null;
+  if (t.state === 'running') setState(t, 'paused', { kind: 'syncReconciled' });
+}
+
+function leaseTakeOver(s: MockState, expected: TakeOverExpected | undefined, mode: TakeOverMode): TakeOverResult {
+  if (!expected || typeof expected.generation !== 'number' || typeof expected.beatSeq !== 'number') throw err('validation', 'say which holder this take over was shown');
+  if (mode !== 'stale' && mode !== 'live' && mode !== 'offline') throw err('validation', 'the mode must be stale, live or offline');
+  const forced = s.takeOverNext;
+  s.takeOverNext = undefined;
+  const result = (outcome: TakeOverResult['outcome'], preview: TakeOverPreview | null): TakeOverResult => ({ outcome, preview, snapshot: snapshot(s) });
+  const view = leaseView(s);
+
+  if (forced === 'unreachable') return result('unreachable', null);
+  if (forced === 'changed') {
+    // The holder came back to life while the dialog was open.
+    if (s.lease.holder) s.lease = { ...s.lease, state: 'heldByOtherLive', readOnly: true, holder: { ...s.lease.holder, beatSeq: s.lease.holder.beatSeq + 1, lastSignAt: toIso(s.now) } };
+    return result('changed', takeOverPreview(s));
+  }
+  if (forced === undefined) {
+    if (mode !== 'offline' && s.targets.length > 0 && view.reachableRoots.length === 0) return result('unreachable', null);
+    // The double check: the holder must still be the one the dialog showed.
+    const top = view.holder;
+    if (mode !== 'offline' && (!top || top.generation !== expected.generation || top.beatSeq !== expected.beatSeq)) return result('changed', takeOverPreview(s));
+  }
+
+  const holder = view.holder;
+  if (mode === 'offline') {
+    // Only a claim for now: nothing is settled until a folder comes back, and then only if nobody else took over meanwhile.
+    s.lease = { state: 'heldByMe', readOnly: false, holder: null, generation: expected.generation + 1, note: null, reachableRoots: [], unreachableRoots: [] };
+    return result('done', null);
+  }
+  const closed = holder ? settleHolderSegments(s, holder) : 0;
+  s.lease = { state: 'heldByMe', readOnly: false, holder: null, generation: (holder?.generation ?? view.generation ?? 0) + 1, note: null, reachableRoots: [], unreachableRoots: [] };
+  const tasks = closed === 0 ? '' : closed === 1 ? ' 1 running task was closed at its last known time.' : ` ${closed} running tasks were closed at their last known time.`;
+  s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'info', message: `You took over from ${holder?.deviceName ?? 'the other computer'}.${tasks}` });
+  return result('done', null);
+}
+
+/** `finish_take_over`: each open segment of the old holder gets a recorded end (raw times stay) and the audit trail says why. Returns how many. */
+function settleHolderSegments(s: MockState, holder: LeaseHolderView): number {
+  const reason = `Closed from ${OWN_DEVICE}: ${holder.deviceName} stopped responding. Ended at its last known moment.`;
+  const open = holderOpenSegments(s, holder);
+  for (const { seg, end } of open) {
+    applyEdit(s, seg, { start: seg.start, end: toIso(end), voided: false, reason }, 'settleLost', reason);
+    endRunningElsewhere(s, seg.taskId);
+  }
+  return open.length;
+}
+
+/**
+ * `lease_io::release_now` ("Release now"): this computer lets go and keeps the generation it held. A computer that holds nothing has
+ * nothing to do. A timer running here keeps it in use, and with no folder to write the release into it still holds the lease: both
+ * are refused as the backend words them, in that order.
+ */
+function leaseRelease(s: MockState): Snapshot {
+  if (s.lease.state !== 'heldByMe') return snapshot(s);
+  if (s.segments.some((x) => x.deviceId === DEVICE_ID && isOpen(x))) throw err('conflict', 'a task is running here, so this computer is still in use. Pause it first.');
+  if (leaseView(s).reachableRoots.length === 0) throw err('conflict', 'no sync folder could be written just now, so this computer still holds it. Try again when a folder can be reached.');
+  s.lease = { ...s.lease, state: 'free', holder: null };
+  return snapshot(s);
+}
+
+/** `lease::LOST_DEVICE_SILENCE_SECS`: how long another computer must have said nothing before its open segment can be closed without a pause request. */
+const LOST_DEVICE_SILENCE_SECS = 86_400;
+
+/** `service::span_text`: a length of time to the minute, as a refusal words it ("1 h 30 min", "less than a minute"). */
+function spanText(secs: number): string {
+  const minutes = Math.floor(Math.max(0, secs) / 60);
+  const days = Math.floor(minutes / 1440);
+  if (days >= 1) return days === 1 ? '1 day' : `${days} days`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours === 0) return rest === 0 ? 'less than a minute' : `${rest} min`;
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
+}
+
+/**
+ * `Service::settle_lost_segment`: the fallback with no take over. Needs a pause request, or a computer that has written nothing for a
+ * day (measured from its file's `written_at`, else from the segment's start). A blank reason takes the default text. Never automatic.
+ */
+function settleLostSegment(s: MockState, segmentId: string, why: string): Snapshot {
+  const seg = s.segments.find((x) => x.id === segmentId);
+  if (!seg) throw err('not_found', 'work segment not found');
+  if (!isOpen(seg) || seg.deviceId === DEVICE_ID) throw err('conflict', "this segment isn't running on another computer");
+  const known = s.remoteDevices?.[seg.deviceId];
+  const owner = task(s, seg.taskId);
+  // The backend says "another device" for one it has never read a file from. A task card names the computer it runs on, so that name does too.
+  const name = known?.name ?? owner.runningElsewhere ?? 'another device';
+  const silent = s.now - parseIso(known ? known.writtenAt : seg.start);
+  if (!s.pauseRequests.some((q) => q.segmentId === seg.id) && silent < LOST_DEVICE_SILENCE_SECS) {
+    throw err('conflict', `${name} was seen ${spanText(silent)} ago, so it may still be running this`);
+  }
+  const reason = cleanReason(why) || `Closed from ${OWN_DEVICE}: ${name} stopped responding. Ended at its last known moment.`;
+  applyEdit(s, seg, { start: seg.start, end: toIso(lastKnownEnd(s, seg)), voided: false, reason }, 'settleLost', reason);
+  endRunningElsewhere(s, seg.taskId);
+  return snapshot(s);
+}
+
+// ---- Saved versions (`versions.rs`). Names, reasons and words follow the backend.
+
+const VERSION_NAME = /^\d{8}T\d{6}Z--[0-9a-f]{8}--(auto|quit|manual|takeover|pre-restore|pre-adopt|restored)$/;
+/** Kept for a year whatever the retention rule says. */
+const PINNED_REASONS: ReadonlySet<string> = new Set(['takeover', 'pre-restore', 'pre-adopt', 'restored']);
+const VERSION_BUDGET_BYTES = 1024 ** 3;
+const REASON_WORDS: Record<string, string> = {
+  auto: 'automatic hourly copy',
+  quit: 'copy when the app was closed',
+  manual: 'saved by hand',
+  takeover: 'copy when a computer took over',
+  'pre-restore': 'copy of the data before a restore',
+  'pre-adopt': 'copy of the data before following a restore',
+  restored: 'copy of the restored data',
+};
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "2 Nov 2026, 14:25 UTC", the way a change record dates a version. */
+function utcLabel(iso: string): string {
+  const d = new Date(iso);
+  const two = (n: number): string => String(n).padStart(2, '0');
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()] ?? ''} ${d.getUTCFullYear()}, ${two(d.getUTCHours())}:${two(d.getUTCMinutes())} UTC`;
+}
+
+/** A `.changes.txt` in the shape of the backend's, with the counts of the data as it is now and whatever lines `done` adds. */
+function changesText(s: MockState, takenAt: string, reason: string, deviceName: string, done: string[] = []): string {
+  const lines = [
+    `zWorkTracker version saved ${utcLabel(takenAt)}`,
+    `Saved by ${deviceName} (app mock). Reason: ${REASON_WORDS[reason] ?? reason}.`,
+    '',
+    `Now: ${s.projects.length} projects, ${s.tasks.length} tasks, ${s.segments.length} time segments.`,
+  ];
+  if (done.length > 0) lines.push('', 'What was done, from the audit trail:', ...done);
+  return lines.join('\n');
+}
+
+/** `20261102T142530Z--a1b2c3d4--auto`: the writer's UTC time, the first 8 digits of its device id, and the reason. */
+export const versionName = (takenAt: string, deviceId: string, reason: string): string => `${takenAt.replace(/[-:]/g, '')}--${deviceId.slice(0, 8)}--${reason}`;
+
+export interface NewVersion {
+  takenAt: string;
+  /** The reason code. Defaults to `auto`. */
+  reason?: string;
+  /** Defaults to this computer. */
+  deviceName?: string;
+  deviceId?: string;
+  /** The folders holding a copy. Defaults to every connected one. */
+  roots?: string[];
+  /** Bytes of each copy. */
+  bytes?: number;
+  changes?: string;
+  data?: string;
+  counts?: DataCounts;
+  failRead?: MockVersion['failRead'];
+  warnings?: string[];
+  blockedReason?: string | null;
+  pinned?: boolean;
+}
+
+/** Adds a saved version, or replaces the one of the same name, like writing the same file again. Returns it. */
+export function addVersion(s: MockState, o: NewVersion): MockVersion {
+  const reason = o.reason ?? 'auto';
+  const deviceName = o.deviceName ?? OWN_DEVICE;
+  const deviceId = o.deviceId ?? (deviceName === OWN_DEVICE ? DEVICE_ID : OTHER_DEVICE_ID);
+  const roots = o.roots ?? s.targets.map((t) => t.root);
+  const bytes = o.bytes ?? (o.data ? Math.ceil(o.data.length / 8) : 150_000);
+  const v: MockVersion = {
+    name: versionName(o.takenAt, deviceId, reason),
+    takenAt: o.takenAt,
+    deviceName,
+    reason,
+    pinned: o.pinned ?? PINNED_REASONS.has(reason),
+    locations: roots.map((root) => ({ root, provider: s.targets.find((t) => t.root === root)?.provider ?? 'custom', bytes })),
+    changes: o.changes ?? changesText(s, o.takenAt, reason, deviceName),
+    data: o.data,
+    counts: o.counts,
+    failRead: o.failRead,
+    warnings: o.warnings,
+    blockedReason: o.blockedReason,
+  };
+  s.versions = [...s.versions.filter((x) => x.name !== v.name), v];
+  return v;
+}
+
+/**
+ * Two connected folders (OneDrive and Google Drive) holding seven versions between them, for the e2e build (`?versions=1`):
+ * a copy only one folder has, one that is pinned, and one whose Google Drive copy can't be read, so the page's fallback shows.
+ */
+export function seedVersions(s: MockState): void {
+  for (const [provider, root] of [['oneDrive', SEED_ROOT], ['googleDrive', SEED_SECOND_ROOT]] as const) {
+    if (!s.targets.some((t) => t.root === root)) handle(s, 'add_sync_target', { provider, root });
+  }
+  s.detected = s.detected.filter((d) => !s.targets.some((t) => t.root === d.root));
+  const ago = (secs: number): string => toIso(s.now - secs);
+  const both = [SEED_ROOT, SEED_SECOND_ROOT];
+  const first = ago(55 * 60);
+  addVersion(s, {
+    takenAt: first,
+    roots: both,
+    bytes: 182_400,
+    counts: { projects: 4, tasks: 6, segments: 118 },
+    changes: changesText(s, first, 'auto', OWN_DEVICE, [`${clockAt(s.now - 40 * 60, 'UTC')}  ${OWN_DEVICE}  corrected a time segment on "Logo concepts": 09:00-10:00 became 09:10-10:00. Reason: started late`]),
+  });
+  addVersion(s, { takenAt: ago(5 * 3600), reason: 'quit', deviceName: OTHER_DEVICE_NAME, roots: both, bytes: 181_000, counts: { projects: 4, tasks: 6, segments: 112 } });
+  addVersion(s, { takenAt: ago(26 * 3600), reason: 'manual', roots: [SEED_ROOT], bytes: 176_500, counts: { projects: 4, tasks: 5, segments: 104 } });
+  addVersion(s, { takenAt: ago(9 * 86_400), reason: 'pre-restore', roots: both, bytes: 160_200, counts: { projects: 3, tasks: 5, segments: 90 } });
+  addVersion(s, { takenAt: ago(20 * 86_400), deviceName: OTHER_DEVICE_NAME, roots: [SEED_SECOND_ROOT], bytes: 140_800, counts: { projects: 3, tasks: 4, segments: 71 } });
+  addVersion(s, { takenAt: ago(40 * 86_400), roots: both, bytes: 120_300, counts: { projects: 2, tasks: 3, segments: 40 }, failRead: [SEED_SECOND_ROOT] });
+  addVersion(s, { takenAt: ago(75 * 86_400), reason: 'takeover', deviceName: OTHER_DEVICE_NAME, roots: [SEED_ROOT], bytes: 90_000, counts: { projects: 1, tasks: 2, segments: 12 } });
+}
+
+function listVersions(s: MockState, extraRoot: string | null): VersionList {
+  const roots = s.targets.map((t) => t.root);
+  if (extraRoot !== null && !roots.includes(extraRoot)) roots.push(extraRoot);
+  const readable = new Set(roots.filter((root) => folderOf(s, root).available));
+  const errors = roots.filter((root) => !readable.has(root)).map((root) => ({ root, message: FOLDER_NOT_FOUND }));
+  const versions: VersionInfo[] = s.versions
+    .map((v) => ({ v, locations: v.locations.filter((l) => readable.has(l.root)) }))
+    .filter(({ locations }) => locations.length > 0)
+    .map(({ v, locations }) => ({ name: v.name, takenAt: v.takenAt, deviceName: v.deviceName, reason: v.reason, pinned: v.pinned, locations: locations.map((l) => ({ ...l })) }))
+    .sort((x, y) => (x.takenAt < y.takenAt ? 1 : x.takenAt > y.takenAt ? -1 : x.name < y.name ? 1 : -1));
+  const totalBytes = versions.reduce((sum, v) => sum + v.locations.reduce((n, l) => n + l.bytes, 0), 0);
+  return { versions, errors, totalBytes, overBudget: totalBytes > VERSION_BUDGET_BYTES };
+}
+
+/** The version as one folder holds it, or the backend's refusal: not a version name, not there, folder unreadable, or a copy that is still syncing. */
+function readableVersion(s: MockState, root: string, name: string): MockVersion {
+  if (!VERSION_NAME.test(name)) throw err('validation', 'that is not the name of a saved version');
+  const v = s.versions.find((x) => x.name === name && x.locations.some((l) => l.root === root));
+  if (!v) throw err('not_found', 'version not found');
+  if (!folderOf(s, root).available) throw err('io', FOLDER_NOT_FOUND);
+  if (v.failRead === true || (Array.isArray(v.failRead) && v.failRead.includes(root))) throw err('io', `${name}.json.gz can't be read in ${root}: it may still be syncing`);
+  return v;
+}
+
+function versionCounts(v: MockVersion): DataCounts {
+  if (v.data) {
+    // Written by `captureData`, so these keys are there.
+    const held = JSON.parse(v.data) as Partial<Record<'projects' | 'tasks' | 'segments', unknown[]>>;
+    return { projects: held.projects?.length ?? 0, tasks: held.tasks?.length ?? 0, segments: held.segments?.length ?? 0 };
+  }
+  return v.counts ?? { ...NO_COUNTS };
+}
+
+function previewRestore(s: MockState, root: string, name: string): RestorePreview {
+  const v = readableVersion(s, root, name);
+  return {
+    name: v.name,
+    takenAt: v.takenAt,
+    reason: v.reason,
+    version: versionCounts(v),
+    current: localCounts(s),
+    warnings: [...(v.warnings ?? [])],
+    blockedReason: leaseView(s).readOnly ? 'Take over first to restore.' : (v.blockedReason ?? null),
+  };
+}
+
+function saveVersionNow(s: MockState): Snapshot {
+  if (s.targets.length === 0) throw err('conflict', 'Connect a sync folder first: versions are saved there.');
+  const roots = s.targets.map((t) => t.root).filter((root) => folderOf(s, root).available);
+  if (roots.length === 0) throw err('io', "Couldn't save a version: no sync folder could be written.");
+  addVersion(s, { takenAt: toIso(s.now), reason: 'manual', roots, data: captureData(s) });
+  return snapshot(s);
+}
+
+function restoreVersion(s: MockState, root: string, name: string): Snapshot {
+  const v = readableVersion(s, root, name);
+  const writable = s.targets.map((t) => t.root).filter((r) => folderOf(s, r).available);
+  if (s.targets.length > 0 && writable.length === 0) throw err('conflict', "Couldn't save a copy of today's data to any folder first, so nothing was changed.");
+  // A running task is closed first, like a quit, so the copies hold the data as it is now.
+  closeAllAndPause(s, { kind: 'appQuit' });
+  const before = writable.length > 0 ? addVersion(s, { takenAt: toIso(s.now), reason: 'pre-restore', roots: writable, data: captureData(s) }) : null;
+  const safety = takeSafetyCopy(s);
+  const { names, heartbeat } = installRestored(s, v.data, parseIso(v.takenAt));
+  addAudit(s, 'version', name, 'restore', '', null, { safetyCopy: safety, preRestore: before?.name ?? null });
+  // The launch counts as cold afterwards.
+  s.warm = false;
+  s.lastWorked = null;
+  const kept = before ? `${safety} and as the version ${before.name}` : safety;
+  s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'info', message: `Restored the version from ${utcLabel(v.takenAt)}. The data just before it is kept as ${kept}.` });
+  if (names.length > 0) {
+    s.notices.push({
+      id: `notice-${newId(s, 'n')}`,
+      level: 'info',
+      message: `${names.join(', ')} was running when this version was saved. It is paused at the last moment the version knows about (${heartbeat === null ? 'its start' : toIso(heartbeat)}).`,
+    });
+  }
+  return snapshot(s);
+}
+
+function resolveJoin(s: MockState, root: string, choice: JoinChoice): Snapshot {
+  if (choice !== 'follow' && choice !== 'keep') throw err('validation', 'the choice must be follow or keep');
+  const waiting = s.joinPending;
+  if (!waiting || waiting.root !== root) throw err('conflict', 'that folder is not waiting for a choice');
+  // As in Rust: Keep makes a new restore, so it is refused while another computer is making changes. Follow is allowed.
+  if (choice === 'keep' && leaseView(s).readOnly) throw readOnlyRefusal(s);
+  s.joinPending = null;
+  let message = `Kept this computer's data together with the version restored on ${waiting.deviceName}. Rolled-back items may return on every computer.`;
+  if (choice === 'follow') {
+    // The mock has no restored data in the folder to adopt, so it makes the two copies that come with following, and says so.
+    const safety = takeSafetyCopy(s);
+    const roots = s.targets.map((t) => t.root).filter((root) => folderOf(s, root).available);
+    const before = roots.length > 0 ? addVersion(s, { takenAt: toIso(s.now), reason: 'pre-adopt', roots, data: captureData(s) }) : null;
+    message = `${waiting.deviceName} restored the version from ${utcLabel(waiting.at)}. This computer now follows it. What was here before is kept in ${safety}${before ? ` and in the version ${before.name}` : ''}.`;
+  }
+  s.notices.push({ id: `notice-${newId(s, 'n')}`, level: 'info', message });
+  return snapshot(s);
+}
+
+/**
+ * A folder whose data was restored on the other computer while this one has data from before it, waiting for the user's choice.
+ * By default the first connected folder (one is connected when none is). `root` is the folder as given, which need not be connected:
+ * a move into a folder past a restore leaves the question on the destination (`restores_before_move`), and the answer is taken for
+ * such a root too (`join_folder` skips a root that is not a sync target).
+ */
+export function seedJoinPending(s: MockState, options: { root?: string } = {}): void {
+  if (s.targets.length === 0) handle(s, 'add_sync_target', { provider: 'oneDrive', root: SEED_ROOT });
+  const root = options.root ?? s.targets[0]?.root ?? SEED_ROOT;
+  const taken = toIso(s.now - 3 * 86_400);
+  s.joinPending = { root, takenFrom: versionName(taken, OTHER_DEVICE_ID, 'auto'), at: taken, deviceName: OTHER_DEVICE_NAME };
+}
+
+// ---- Start with Windows (`get_autostart_info`). A packaged build asks Windows, which can refuse.
+
+const AUTOSTART_NOTES: Record<AutostartState, string | null> = {
+  on: null,
+  off: null,
+  offByUser: 'You turned this off in Windows, so only Windows can turn it back on: Settings > Apps > Startup.',
+  offByPolicy: "A policy on this computer doesn't allow this, or the device doesn't support it.",
+  onByPolicy: 'A policy on this computer keeps this on.',
+  unavailable: "Windows couldn't find this app's startup entry.",
+};
+
+/** The whole answer for a state, as the backend words it. */
+export function autostartFor(state: AutostartState, packaged = true): AutostartInfo {
+  return { packaged, state, canChange: state === 'on' || state === 'off', note: AUTOSTART_NOTES[state] };
+}
+
+export const isAutostartState = (value: string): value is AutostartState => Object.hasOwn(AUTOSTART_NOTES, value);
+
+const autostartIsOn = (state: AutostartState): boolean => state === 'on' || state === 'onByPolicy';
+
+/** `on` and `off` follow `MockState.autostart`, which the setup wizard's switch has always used. */
+function autostartView(s: MockState): AutostartInfo {
+  const kept = s.autostartInfo.state;
+  return autostartFor(kept === 'on' || kept === 'off' ? (s.autostart ? 'on' : 'off') : kept, s.packaged);
+}
+
+function setAutostart(s: MockState, enabled: boolean): boolean {
+  const { state } = autostartView(s);
+  // Windows has the last word: a switch it won't move is an error with its reason, never a quiet no-op.
+  if (state === 'unavailable' || (enabled && (state === 'offByUser' || state === 'offByPolicy')) || (!enabled && state === 'onByPolicy')) {
+    throw err('autostart', AUTOSTART_NOTES[state] ?? '');
+  }
+  if (state === 'on' || state === 'off') s.autostart = enabled;
+  return autostartIsOn(autostartView(s).state);
+}
+
+function leaseCommands(s: MockState, cmd: string, a: Record<string, unknown>): unknown {
+  switch (cmd) {
+    case 'lease_preview_take_over':
+      return takeOverPreview(s);
+    case 'lease_take_over':
+      return leaseTakeOver(s, a.expected as TakeOverExpected | undefined, a.mode as TakeOverMode);
+    case 'lease_release':
+      return leaseRelease(s);
+    case 'settle_lost_segment':
+      return settleLostSegment(s, a.segmentId as string, a.reason as string);
+    case 'list_versions':
+      return listVersions(s, (a.extraRoot as string | null | undefined) ?? null);
+    case 'read_version_changes':
+      return readableVersion(s, a.root as string, a.name as string).changes;
+    case 'save_version_now':
+      return saveVersionNow(s);
+    case 'preview_restore_version':
+      return previewRestore(s, a.root as string, a.name as string);
+    case 'restore_version':
+      return restoreVersion(s, a.root as string, a.name as string);
+    case 'resolve_join':
+      return resolveJoin(s, a.root as string, a.choice as JoinChoice);
+    case 'get_autostart_info':
+      return autostartView(s);
+    case 'open_startup_settings':
+      return null;
+    default:
+      return NOT_HANDLED;
+  }
+}
+
+/**
+ * Every command goes through here. While this computer is read-only the commands in `READ_ONLY_BLOCKED` are refused with the
+ * backend's `read_only` error before anything else is looked at, so a refused command changes nothing.
+ */
 export function handle(s: MockState, cmd: string, a: Record<string, unknown>): unknown {
+  if (READ_ONLY_BLOCKED.has(cmd) && !(cmd === 'set_setting' && VIEW_SETTINGS.has(String(a.key))) && leaseView(s).readOnly) throw readOnlyRefusal(s);
+  return dispatch(s, cmd, a);
+}
+
+function dispatch(s: MockState, cmd: string, a: Record<string, unknown>): unknown {
   switch (cmd) {
     case 'get_snapshot':
       return snapshot(s, true);
@@ -1413,14 +2062,31 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       for (const v of s.shifts) if (v.shiftId === a.shiftId) v.deleted = true;
       return snapshot(s);
     case 'set_rate': {
+      // machine.rs `set_rate`, in its order: the project, then the date (readable, within the limits), then the confirmation of a
+      // backdated price, and only then the price and its currency. A project keeps one live version per instant: setting that instant
+      // again changes that version, and a version taken away stays a tombstone.
       const input = a.input as RateInput;
-      if (!isCurrency(input.currency)) throw err('validation', 'currency must be EUR or USD');
+      if (!s.projects.some((p) => p.id === input.projectId)) throw err('not_found', 'project not found');
       const from = input.effectiveFrom ? parseIso(input.effectiveFrom) : s.now;
+      if (Number.isNaN(from)) throw err('validation', 'invalid effective date');
+      checkChosenDate(from, "the price's start date");
       if (from < s.now && !input.confirmRetroactive) throw err('conflict', 'a backdated price changes past earnings and needs confirmation');
+      if (!isCurrency(input.currency)) throw err('validation', 'currency must be EUR or USD');
       if (input.rateCents !== null && (input.rateCents < 0 || input.rateCents > 1_000_000)) throw err('validation', 'price per hour must be between 0 and 10000.00');
-      s.rates = s.rates.filter((r) => !(r.projectId === input.projectId && parseIso(r.effectiveFrom) === from));
-      s.rates.push({ id: newId(s, 'rate'), projectId: input.projectId, effectiveFrom: toIso(from), rateCents: input.rateCents, currency: input.currency, deleted: false, stamp: stamp(s) });
+      const same = s.rates.find((r) => r.projectId === input.projectId && !r.deleted && parseIso(r.effectiveFrom) === from);
+      const version = { id: same?.id ?? newId(s, 'rate'), projectId: input.projectId, effectiveFrom: toIso(from), rateCents: input.rateCents, currency: input.currency, deleted: false, stamp: stamp(s) };
+      s.rates = same ? s.rates.map((r) => (r === same ? version : r)) : [...s.rates, version];
       s.lastCurrency = input.currency;
+      return snapshot(s);
+    }
+    case 'delete_rate_version': {
+      // machine.rs: a version that has started changes past earnings, so it needs the same confirmation as a backdated one. The tombstone stays, as sync needs it.
+      const v = s.rates.find((r) => r.id === a.id && !r.deleted);
+      if (!v) throw err('not_found', 'price version not found');
+      if (parseIso(v.effectiveFrom) < s.now && !a.confirmRetroactive) throw err('conflict', 'taking away a price that has started changes past earnings and needs confirmation');
+      v.deleted = true;
+      v.stamp = stamp(s);
+      addAudit(s, 'price', v.id, 'removed', '', { projectId: v.projectId, effectiveFrom: v.effectiveFrom, rateCents: v.rateCents, currency: v.currency }, null);
       return snapshot(s);
     }
     case 'set_rounding': {
@@ -1473,6 +2139,9 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       return snapshot(s);
     case 'remove_sync_target':
       s.targets = s.targets.filter((t) => t.root !== a.root);
+      // The lease is let go in the folder on the way out; with none left there is nothing to hold. A folder waiting for a choice is forgotten.
+      if (s.targets.length === 0 && s.lease.state === 'heldByMe') s.lease = { ...s.lease, state: 'free' };
+      if (s.joinPending?.root === a.root) s.joinPending = null;
       return snapshot(s);
     case 'pick_sync_folder':
       return '/mock/picked-folder';
@@ -1495,10 +2164,9 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
       return cmd === 'export_xlsx' ? '/mock/export.xlsx' : '/mock/export.csv';
     }
     case 'get_autostart':
-      return s.autostart;
+      return autostartIsOn(autostartView(s).state);
     case 'set_autostart':
-      s.autostart = a.enabled as boolean;
-      return s.autostart;
+      return setAutostart(s, a.enabled as boolean);
     case 'ack_hide_notice':
     case 'quit_app':
       return null;
@@ -1507,9 +2175,11 @@ export function handle(s: MockState, cmd: string, a: Record<string, unknown>): u
     case 'plugin:event|unlisten':
       return null;
     default: {
-      const out = phase2(s, cmd, a);
-      if (out === NOT_HANDLED) throw err('unknown', `mock has no command ${cmd}`);
-      return out;
+      for (const more of [phase2, leaseCommands]) {
+        const out = more(s, cmd, a);
+        if (out !== NOT_HANDLED) return out;
+      }
+      throw err('unknown', `mock has no command ${cmd}`);
     }
   }
 }

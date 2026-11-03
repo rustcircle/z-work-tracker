@@ -1,9 +1,10 @@
 // What counts as time, for the mock backend. A port of `pieces.rs`: raw segments are never altered;
 // corrections, away-time decisions and billable pauses are overlays turned into the pieces reports read.
-import { RateBook, centsFromNumerator, numeratorsOf, taskDays, type SpanLike } from '../lib/billing';
-import { dayOf, parseIso } from '../lib/tz';
+import { RateBook, centsOfNumerators, numeratorsOf, roundSeconds, taskDays, totalCents, type Bill, type SpanLike } from '../lib/billing';
+import { addDays, dayOf, parseIso, startOfDay } from '../lib/tz';
 import type {
   BillablePause,
+  BillingSummary,
   BudgetStatus,
   Currency,
   IdleGap,
@@ -75,6 +76,39 @@ export interface PieceInput {
   gaps: readonly IdleGap[];
   pauses: readonly BillablePause[];
   liveTasks: ReadonlySet<string>;
+  /** Live summaries, whose pauses keep their time first, earliest summary first. */
+  summaries?: readonly Pick<BillingSummary, 'id' | 'voided' | 'createdAt' | 'number' | 'pauseIds'>[];
+  /** The pauses a new summary will list, which come next. */
+  listedPauses?: readonly string[];
+}
+
+type Claim = { at: number; number: number; id: string };
+const compareClaims = (a: Claim, b: Claim): number => a.at - b.at || a.number - b.number || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/** The order of `pieces_for_summary`: on a live summary, then on the new one, then by start and id. */
+function pauseOrder(input: PieceInput): (x: BillablePause, y: BillablePause) => number {
+  const claims = new Map<string, Claim>();
+  for (const b of input.summaries ?? []) {
+    if (b.voided) continue;
+    const claim = { at: parseIso(b.createdAt), number: b.number, id: b.id };
+    for (const id of b.pauseIds) {
+      const first = claims.get(id);
+      if (!first || compareClaims(claim, first) < 0) claims.set(id, claim);
+    }
+  }
+  const listed = new Set(input.listedPauses ?? []);
+  return (x, y) => {
+    const a = claims.get(x.id);
+    const b = claims.get(y.id);
+    if (a && b) {
+      const by = compareClaims(a, b);
+      if (by !== 0) return by;
+    } else if (a || b) {
+      return a ? -1 : 1;
+    }
+    if (listed.has(x.id) !== listed.has(y.id)) return listed.has(x.id) ? -1 : 1;
+    return parseIso(x.start) - parseIso(y.start) || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0);
+  };
 }
 
 export function computePieces(input: PieceInput, endOf: (s: MockSegment) => number): Piece[] {
@@ -135,9 +169,7 @@ export function computePieces(input: PieceInput, endOf: (s: MockSegment) => numb
     if (cursor < end || open || n === 0) push(n, cursor, end, 'work', true);
   }
   // Sorted by a replicated key, so a span marked twice bills once, the same way on every device.
-  const livePauses = input.pauses
-    .filter((p) => !p.deleted && input.liveTasks.has(p.taskId))
-    .sort((x, y) => parseIso(x.start) - parseIso(y.start) || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+  const livePauses = input.pauses.filter((p) => !p.deleted && input.liveTasks.has(p.taskId)).sort(pauseOrder(input));
   const pausedSpans = new Map<string, Span[]>();
   for (const pause of livePauses) {
     // A pause never bills time that is already counted, or dropped, inside a segment.
@@ -197,7 +229,7 @@ export interface BillingData {
 }
 
 /** The task-day rows of the given pieces: the same figures every report and summary reads. */
-export function rowsOf(data: BillingData, pieces: readonly Piece[], zone: string) {
+export function rowsOf(data: BillingData, pieces: readonly Piece[], zone: string, bill?: Bill) {
   const project = new Map(data.tasks.map((t) => [t.id, t.projectId]));
   const spans: SpanLike[] = [];
   for (const p of pieces) {
@@ -206,11 +238,8 @@ export function rowsOf(data: BillingData, pieces: readonly Piece[], zone: string
     if (projectId !== undefined) spans.push({ taskId: p.taskId, projectId, start: p.start, end: p.end, kind: p.kind });
   }
   const book = new RateBook(data.projects, data.rates);
-  return taskDays(spans, zone, book, data.rounding);
+  return taskDays(spans, zone, book, data.rounding, bill);
 }
-
-const centsOf = (n: Partial<Record<Currency, number>>): Partial<Record<Currency, number>> =>
-  Object.fromEntries(Object.entries(n).map(([c, v]) => [c, centsFromNumerator(v as number)]));
 
 export interface SummaryInput extends BillingData {
   segments: readonly MockSegment[];
@@ -219,6 +248,103 @@ export interface SummaryInput extends BillingData {
   tasksLive: readonly { id: string; projectId: string; name: string }[];
   billedSegments: ReadonlySet<string>;
   billedPauses: ReadonlySet<string>;
+  summaries: readonly BillingSummary[];
+}
+
+function splitByDay(start: number, end: number, zone: string): [string, number, number][] {
+  const out: [string, number, number][] = [];
+  let cur = start;
+  for (;;) {
+    const day = dayOf(cur, zone);
+    const next = startOfDay(addDays(day, 1), zone);
+    if (next >= end) {
+      out.push([day, cur, end]);
+      return out;
+    }
+    out.push([day, cur, next]);
+    cur = next;
+  }
+}
+
+const inOrder = <T,>(m: ReadonlyMap<string, T>): [string, T][] => [...m].sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
+
+/** Puts one summary's rows for one task on the days their time lies on now: `hold_rows` in summary.rs. */
+function holdRows(rows: readonly SummaryRow[], lies: ReadonlyMap<string, ReadonlyMap<string, number>>, hold: (day: string, secs: number) => void): void {
+  const counted = (r: SummaryRow): number => r.exactSecs + r.pauseSecs;
+  const timeIn = (days: ReadonlyMap<string, number>): number => [...days.values()].reduce((n, v) => n + v, 0);
+  const froze = new Map(rows.map((r) => [r.day, counted(r)]));
+  const brought = new Map<string, number>();
+  for (const [theirDay, here] of inOrder(lies)) {
+    let over = timeIn(here) - (froze.get(theirDay) ?? 0);
+    for (const [day, secs] of inOrder(here)) {
+      const part = Math.min(Math.max(over, 0), secs);
+      if (part > 0) brought.set(day, (brought.get(day) ?? 0) + part);
+      over -= part;
+    }
+  }
+  // What is left goes over the time that is left, so the shares add up to the amount.
+  const shareOut = (amount: number, days: ReadonlyMap<string, number>): void => {
+    let left = amount;
+    let time = timeIn(days);
+    for (const [day, secs] of inOrder(days)) {
+      const share = Math.floor((left * secs) / time);
+      hold(day, share);
+      left -= share;
+      time -= secs;
+    }
+  };
+  const lost = (r: SummaryRow): number => {
+    const here = lies.get(r.day);
+    return Math.max(counted(r) - (here ? timeIn(here) : 0), 0);
+  };
+  const gone = rows.reduce((n, r) => n + lost(r), 0);
+  // No more can have moved than was brought. Which row it left can't be told, so each gives up its part.
+  const came = Math.min(timeIn(brought), gone);
+  let moved = 0;
+  for (const r of rows) {
+    const here = lies.get(r.day);
+    const leaves = came === 0 ? 0 : Math.floor((lost(r) * came) / gone);
+    const stays = counted(r) === 0 ? r.billableSecs : Math.floor((r.billableSecs * (counted(r) - leaves)) / counted(r));
+    moved += r.billableSecs - stays;
+    shareOut(stays, here && here.size > 0 ? here : new Map([[r.day, 1]]));
+  }
+  shareOut(moved, brought);
+}
+
+/**
+ * What live summaries already bill for each task-day of `zone`: the rows they froze, never worked out again. A row's
+ * amount goes where its time lies now: over this zone's days for a summary made in another zone, and along with its
+ * time when a correction from a device that hadn't seen the summary moved it to another day.
+ */
+function heldByTaskDay(summaries: readonly BillingSummary[], taskIds: ReadonlySet<string>, zone: string, all: readonly Piece[]): Map<string, number> {
+  const piecesOf = new Map<string, Piece[]>();
+  for (const p of all) piecesOf.set(p.sourceId, [...(piecesOf.get(p.sourceId) ?? []), p]);
+  const held = new Map<string, number>();
+  for (const b of summaries) {
+    if (b.voided) continue;
+    // Per task and day of the summary's zone, the seconds it lists now, on each day of this one. None of them is zero.
+    const lies = new Map<string, Map<string, Map<string, number>>>();
+    for (const id of new Set([...b.segmentIds, ...b.pauseIds])) {
+      for (const p of piecesOf.get(id) ?? []) {
+        const task = lies.get(p.taskId) ?? new Map<string, Map<string, number>>();
+        lies.set(p.taskId, task);
+        for (const [theirDay, s, e] of splitByDay(p.start, p.end, b.zone)) {
+          const here = task.get(theirDay) ?? new Map<string, number>();
+          task.set(theirDay, here);
+          for (const [day, from, to] of splitByDay(s, e, zone)) {
+            if (to > from) here.set(day, (here.get(day) ?? 0) + to - from);
+          }
+        }
+      }
+    }
+    for (const taskId of new Set(b.rows.map((r) => r.taskId))) {
+      if (!taskIds.has(taskId)) continue;
+      holdRows(b.rows.filter((r) => r.taskId === taskId), lies.get(taskId) ?? new Map<string, Map<string, number>>(), (day, secs) => {
+        held.set(`${taskId}|${day}`, (held.get(`${taskId}|${day}`) ?? 0) + secs);
+      });
+    }
+  }
+  return held;
 }
 
 /** Unbilled, closed time of a project in a period. Time belongs to the day its segment started. */
@@ -230,7 +356,7 @@ export function summaryPreview(data: SummaryInput, req: SummaryRequest): Summary
     const d = dayOf(t, req.zone);
     return d >= req.from && d <= req.to;
   };
-  const out: SummaryPreview = { rows: [], totals: {}, segmentIds: [], pauseIds: [], exactSecs: 0, pauseSecs: 0, billableSecs: 0, runningExcluded: false, unconfirmedSecs: 0 };
+  const out: SummaryPreview = { rows: [], totals: {}, segmentIds: [], pauseIds: [], exactSecs: 0, pauseSecs: 0, billableSecs: 0, runningExcluded: false, unconfirmedSecs: 0, partlyBilledRows: 0 };
   if (!project) return out;
   for (const s of data.segments) {
     const eff = effective(s);
@@ -253,18 +379,28 @@ export function summaryPreview(data: SummaryInput, req: SummaryRequest): Summary
   }
   // Pieces come from the whole store, so a pause never bills what an already billed segment covers,
   // and are then narrowed to what this summary lists.
-  const pieces = computePieces({ segments: data.segments, gaps: data.gaps, pauses: data.pauses, liveTasks: taskIds }, (s) => parseIso(s.end ?? s.start)).filter((p) =>
-    p.kind === 'billablePause' ? listedPauses.has(p.sourceId) : listedSegments.has(p.sourceId),
-  );
-  const rows = rowsOf({ ...data, projects: [project], tasks }, pieces, req.zone).sort((a, b) => a.taskId.localeCompare(b.taskId) || a.day.localeCompare(b.day));
+  const all = computePieces({ segments: data.segments, gaps: data.gaps, pauses: data.pauses, liveTasks: taskIds, summaries: data.summaries, listedPauses: out.pauseIds }, (s) => parseIso(s.end ?? s.start));
+  const isListed = (p: Piece): boolean => (p.kind === 'billablePause' ? listedPauses.has(p.sourceId) : listedSegments.has(p.sourceId));
+  const isHeld = (p: Piece): boolean => (p.kind === 'billablePause' ? data.billedPauses.has(p.sourceId) : data.billedSegments.has(p.sourceId));
+  const billing = { ...data, projects: [project], tasks };
+  // A task-day rounds once, as a whole: what this summary lists and what live summaries hold. A row
+  // bills what that comes to less what they already bill for it, and nothing issued goes back.
+  const whole = new Map(rowsOf(billing, all.filter((p) => isListed(p) || isHeld(p)), req.zone).map((r) => [`${r.taskId}|${r.day}`, r.billableSecs]));
+  const held = heldByTaskDay(data.summaries, taskIds, req.zone, all);
+  const bill: Bill = (taskId, day, counted) => {
+    if (counted === 0) return 0;
+    const key = `${taskId}|${day}`;
+    return Math.max(0, (whole.get(key) ?? counted) - (held.get(key) ?? 0));
+  };
+  const rows = rowsOf(billing, all.filter(isListed), req.zone, bill).sort((a, b) => a.taskId.localeCompare(b.taskId) || a.day.localeCompare(b.day));
   const names = new Map(tasks.map((t) => [t.id, t.name]));
+  out.totals = totalCents(rows);
   for (const r of rows) {
-    const cents = centsOf(numeratorsOf([r]));
-    for (const [c, v] of Object.entries(cents)) out.totals[c as Currency] = (out.totals[c as Currency] ?? 0) + (v as number);
     out.exactSecs += r.exactSecs;
     out.pauseSecs += r.pauseSecs;
     out.billableSecs += r.billableSecs;
-    out.rows.push({ taskId: r.taskId, taskName: names.get(r.taskId) ?? '', day: r.day, exactSecs: r.exactSecs, pauseSecs: r.pauseSecs, billableSecs: r.billableSecs, cents } satisfies SummaryRow);
+    if (r.billableSecs !== roundSeconds(r.exactSecs + r.pauseSecs, r.rule.incrementMinutes, r.rule.method)) out.partlyBilledRows += 1;
+    out.rows.push({ taskId: r.taskId, taskName: names.get(r.taskId) ?? '', day: r.day, exactSecs: r.exactSecs, pauseSecs: r.pauseSecs, billableSecs: r.billableSecs, cents: totalCents([r]) } satisfies SummaryRow);
   }
   return out;
 }
@@ -294,11 +430,15 @@ export function projectFigures(data: BillingData, input: PieceInput, zone: strin
       f.pauseSecs += r.pauseSecs;
       f.thinkingSecs += r.thinkingSecs;
       f.billableSecs += r.billableSecs;
-      for (const [c, v] of Object.entries(centsOf(numeratorsOf([r])))) f.timeValueCents[c as Currency] = (f.timeValueCents[c as Currency] ?? 0) + (v as number);
+      for (const [c, v] of Object.entries(numeratorsOf([r]))) {
+        const sum = (f.timeValueNumerators ??= {});
+        sum[c as Currency] = (sum[c as Currency] ?? 0) + (v as number);
+      }
     }
   }
   for (const p of data.projects) {
     const f = fig(p.id);
+    f.timeValueCents = centsOfNumerators(f.timeValueNumerators ?? {});
     const fee = p.billingType === 'fixedFee' ? (p.fixedFeeCents ?? null) : null;
     if (fee !== null && f.billableSecs > 0) f.effectiveHourlyCents = Math.floor((fee * 3600) / f.billableSecs);
     let budget: BudgetStatus | null = null;

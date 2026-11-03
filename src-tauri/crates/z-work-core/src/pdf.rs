@@ -8,7 +8,7 @@ use chrono_tz::Tz;
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref, Str};
 use serde::{Deserialize, Serialize};
 
-use crate::billing::{cents_from_numerator, money};
+use crate::billing::{ROUNDED_ROWS_NOTE, money, rows_differ_from_total, total_cents};
 use crate::error::CoreError;
 use crate::pdffont::{Fonts, Weight};
 use crate::report::{ExportSource, hms};
@@ -239,10 +239,11 @@ fn render(
     };
     crate::validate::check_date(&request.from, "the start date")?;
     crate::validate::check_date(&request.to, "the end date")?;
-    let mut totals: BTreeMap<String, i64> = BTreeMap::new();
+    let mut task_days = Vec::new();
     let mut total_secs = 0i64;
     let mut pause_secs = 0i64;
     let mut rows = Vec::new();
+    let mut amounts: Vec<BTreeMap<String, i64>> = Vec::new();
     for r in source.rows(tz) {
         let day = r.row.day.format("%Y-%m-%d").to_string();
         if day < request.from || day > request.to {
@@ -257,12 +258,8 @@ fn render(
         }
         total_secs += r.row.billable_secs;
         pause_secs += r.row.pause_secs;
-        let mut amount = Vec::new();
-        for (cur, n) in r.row.numerators() {
-            let cents = cents_from_numerator(n);
-            *totals.entry(cur.clone()).or_insert(0) += cents;
-            amount.push(money(&cur, cents));
-        }
+        let cents = total_cents([&r.row]);
+        let amount: Vec<String> = cents.iter().map(|(cur, c)| money(cur, *c)).collect();
         rows.push(Row {
             day,
             project: r.project_name,
@@ -270,7 +267,10 @@ fn render(
             hours: hms(r.row.billable_secs),
             amount: amount.join(" + "),
         });
+        amounts.push(cents);
+        task_days.push(r.row);
     }
+    let totals = total_cents(&task_days);
 
     let mut w = Writer::new()?;
     let title = if request.title.trim().is_empty() {
@@ -380,6 +380,11 @@ fn render(
             &format!("Total: {}", text.join(" + ")),
         );
         w.y -= ROW;
+        if rows_differ_from_total(&amounts, &totals) {
+            let y = w.y;
+            w.text(MARGIN, y, Weight::Regular, 8.0, ROUNDED_ROWS_NOTE);
+            w.y -= ROW;
+        }
     }
 
     // Every name has been printed by now, so this says all there is to say.
@@ -781,5 +786,195 @@ mod tests {
             ..req(true)
         };
         assert!(build(&src, &empty, None).is_err());
+    }
+
+    const NOTE: &str = "Row amounts are rounded; the total is worked out from the exact amounts.";
+
+    fn priced(s: &mut crate::model::Shared, p: &str, cents: i64, cur: &str, from: &str) {
+        s.set_rate(
+            &crate::machine::tests::ctx("2026-06-01T00:00:00Z"),
+            &crate::machine::RateInput {
+                project_id: p.to_owned(),
+                rate_cents: Some(cents),
+                currency: cur.into(),
+                effective_from: Some(from.into()),
+                confirm_retroactive: true,
+            },
+        )
+        .unwrap();
+    }
+
+    /// A row a day from 2 January, `minutes` long each.
+    fn daily(s: &mut crate::model::Shared, t: &str, first: usize, rows: usize, minutes: i64) {
+        for i in first..first + rows {
+            let start = chrono::NaiveDate::from_ymd_opt(2026, 1, 2)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap()
+                .and_utc()
+                + chrono::Duration::days(i as i64);
+            let end = start + chrono::Duration::minutes(minutes);
+            seg(
+                s,
+                t,
+                &format!("d{i}"),
+                &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                &end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            );
+        }
+    }
+
+    /// The total the Earnings sheet holds for a currency: the value saved with its formula.
+    fn excel_total(sheets: &str, cur: &str) -> f64 {
+        let sheets = sheets.replace("&quot;", "\"");
+        let cell = sheets
+            .split(&format!("\"{cur}\",D3:D"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("no {cur} total on the Earnings sheet"));
+        let value = cell.split("<v>").nth(1).unwrap().split("</v>").next();
+        value.unwrap().parse().unwrap()
+    }
+
+    /// Runs one data set through the summary, the PDF and the workbook, and holds each to `want`.
+    fn assert_pdf_summary_and_excel_say(
+        mut s: crate::model::Shared,
+        p: &str,
+        want: &[(&str, i64)],
+    ) -> String {
+        let wanted: BTreeMap<String, i64> =
+            want.iter().map(|(c, v)| ((*c).to_owned(), *v)).collect();
+        let src = source(s.clone(), "2026-12-31T00:00:00Z");
+
+        let request = PdfRequest {
+            zone: "UTC".into(),
+            ..req(true)
+        };
+        let printed = text(&src, &request);
+        let shown: Vec<String> = want.iter().map(|(c, v)| money(c, *v)).collect();
+        assert!(
+            printed.contains(&format!("Total: {}", shown.join(" + "))),
+            "PDF: {printed}"
+        );
+
+        let book = crate::xlsx::build(
+            &src,
+            &crate::report::ExportRequest {
+                day_zone: "UTC".into(),
+                my_zone: "UTC".into(),
+                client_zone: None,
+                include_earnings: true,
+                segment_shifts: BTreeMap::new(),
+                analytics: vec![],
+                selection: None,
+            },
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let sheets = crate::xlsx::tests::unzip_all(&book, dir.path());
+        for (cur, cents) in want {
+            assert_eq!(
+                excel_total(&sheets, cur),
+                *cents as f64 / 100.0,
+                "Excel {cur}"
+            );
+        }
+        assert!(sheets.contains(NOTE), "the title of the Earnings sheet");
+
+        let period = crate::summary::SummaryRequest {
+            project_id: p.to_owned(),
+            from: "2026-01-01".into(),
+            to: "2026-12-31".into(),
+            zone: "UTC".into(),
+        };
+        assert_eq!(
+            s.summary_preview(&period).unwrap().totals,
+            wanted,
+            "preview"
+        );
+        let c = crate::machine::tests::ctx("2026-12-31T00:00:00Z");
+        let id = s.create_summary(&c, &period).unwrap();
+        assert_eq!(s.summaries[&id].totals, wanted, "summary");
+        let csv = crate::summary::summary_csv(&s.summaries[&id], "P", false);
+        let total = csv.lines().find(|l| l.starts_with("Total,")).unwrap();
+        for (_, cents) in want {
+            let cell = format!(",{}.{:02}", cents / 100, cents % 100);
+            assert!(total.contains(&cell), "summary CSV: {total} has no {cell}");
+        }
+        printed
+    }
+
+    #[test]
+    fn r7_pdf_summary_and_excel_totals_agree_over_one_data_set() {
+        // 15 minutes at 33.33 an hour is 8.3325, shown as 8.33. Forty of those shown add up to 333.20; the
+        // exact amounts come to 333.30.
+        let (mut s, p, t) = fixture(None);
+        priced(&mut s, &p, 3333, "EUR", "2026-01-01T00:00:00Z");
+        daily(&mut s, &t, 0, 40, 15);
+        let printed = assert_pdf_summary_and_excel_say(s, &p, &[("EUR", 33330)]);
+        assert_eq!(printed.matches("\u{20ac}8.33").count(), 40, "{printed}");
+        assert!(printed.contains(NOTE), "{printed}");
+    }
+
+    #[test]
+    fn r7_pdf_summary_and_excel_totals_agree_with_mixed_rates() {
+        // Rows of 833.25, 833.25, 1666.5 + 834.25 and 834.25 cents: shown as 833, 833, 2501, 834, which add
+        // up to 5001. Exactly they are 5001.5, which rounds up to 5002 once.
+        let (mut s, p, t) = fixture(None);
+        priced(&mut s, &p, 3333, "EUR", "2026-01-01T00:00:00Z");
+        priced(&mut s, &p, 3337, "EUR", "2026-01-04T09:30:00Z");
+        daily(&mut s, &t, 0, 2, 15);
+        daily(&mut s, &t, 2, 1, 45);
+        daily(&mut s, &t, 3, 1, 15);
+        let printed = assert_pdf_summary_and_excel_say(s, &p, &[("EUR", 5002)]);
+        assert!(printed.contains("\u{20ac}25.01"), "{printed}");
+    }
+
+    #[test]
+    fn r7_pdf_summary_and_excel_totals_agree_across_two_currencies() {
+        // Rows of 833.25: three in euros, two in dollars, and one with 15 minutes on each side of the change,
+        // so 4 x 833.25 euro cents (shown 33.32, exactly 33.33) and 3 x 833.25 dollar cents (24.99, exactly 25.00).
+        let (mut s, p, t) = fixture(None);
+        priced(&mut s, &p, 3333, "EUR", "2026-01-01T00:00:00Z");
+        priced(&mut s, &p, 3333, "USD", "2026-01-05T09:15:00Z");
+        daily(&mut s, &t, 0, 3, 15);
+        daily(&mut s, &t, 3, 1, 30);
+        daily(&mut s, &t, 4, 2, 15);
+        let printed = assert_pdf_summary_and_excel_say(s, &p, &[("EUR", 3333), ("USD", 2500)]);
+        assert!(printed.contains("\u{20ac}8.33 + $8.33"), "{printed}");
+    }
+
+    #[test]
+    fn r7_the_totals_are_of_billable_time_when_an_increment_is_on() {
+        // 20 minutes up to 30, at 33.33 an hour: 16.665, shown 16.67. Three of those shown are 50.01; the exact
+        // amounts of the billable time come to 49.995, so 50.00. Not 33.33, which is the 20 minutes unrounded.
+        let (mut s, p, t) = fixture(None);
+        priced(&mut s, &p, 3333, "EUR", "2026-01-01T00:00:00Z");
+        daily(&mut s, &t, 0, 3, 20);
+        assert_pdf_summary_and_excel_say(s, &p, &[("EUR", 5000)]);
+    }
+
+    #[test]
+    fn r7_the_note_is_printed_only_where_rows_do_not_add_up_to_the_total() {
+        let (mut s, p, t) = fixture(None);
+        priced(&mut s, &p, 3333, "EUR", "2026-01-01T00:00:00Z");
+        daily(&mut s, &t, 0, 40, 15);
+        let src = source(s, "2026-12-31T00:00:00Z");
+        let request = PdfRequest {
+            zone: "UTC".into(),
+            ..req(true)
+        };
+        assert!(text(&src, &request).contains(NOTE));
+        // With prices off there is no amount for it to speak of, and it isn't in the file to be copied.
+        let hidden = PdfRequest {
+            include_prices: false,
+            ..request.clone()
+        };
+        assert!(!text(&src, &hidden).contains(NOTE));
+
+        let (mut s, p, t) = fixture(None);
+        priced(&mut s, &p, 6000, "EUR", "2026-01-01T00:00:00Z");
+        daily(&mut s, &t, 0, 3, 60);
+        let src = source(s, "2026-12-31T00:00:00Z");
+        assert!(!text(&src, &request).contains(NOTE), "these add up");
     }
 }

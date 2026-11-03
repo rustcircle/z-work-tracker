@@ -8,7 +8,10 @@ import type { ExportRequest } from '../../lib/types';
 import { Button, Field, Modal, Segmented, Switch } from '../../components/ui';
 import { useSelection } from '../timeline/selection';
 import { IconDownload } from '../../components/icons';
-import { buildAnalyticsSheets } from '../analysis/sheets';
+import { buildAnalyticsSheets, historyScopeText } from '../analysis/sheets';
+import { useAnalysisView } from '../analysis/view';
+import { viewScopeText } from '../analysis/viewText';
+import { chosenZone } from '../billing/parts';
 import { PdfFields, usePdfForm } from './PdfExport';
 import { segmentShiftText } from './segmentShifts';
 import { errorMessage } from '../../lib/errorMessage';
@@ -37,9 +40,8 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ path: string | null } | null>(null);
   const pdf = usePdfForm(picked);
+  const analysisView = useAnalysisView();
 
-  // The days of a selection are cut in the zone it was made in, so that zone is not a choice.
-  const zone = picked ? picked.zone : (dayZone ?? zones.active);
   const includeEarnings = earnings ?? !snapshot.prefs.hideEarnings;
   const hidden = snapshot.prefs.hideEarnings;
 
@@ -51,6 +53,9 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
   if (zones.client) add(zones.client, 'client zone');
   add('UTC', 'UTC');
   const zoneOptions = [...roles.entries()].map(([z, r]) => ({ z, text: `${zoneLabel(z, nowSec)} (${r.join(', ')})` }));
+  // The days of a selection are cut in the zone it was made in, so that zone is not a choice. A zone picked
+  // earlier that is not offered any more gives way to the active one, which is what the select then shows.
+  const zone = picked ? picked.zone : chosenZone(dayZone, zoneOptions, zones.active);
 
   const blocked = bySelection && selectedCount === 0;
 
@@ -153,7 +158,12 @@ export function ExportDialog({ open, onClose }: { open: boolean; onClose: () => 
               onChange={setEarnings}
               hint={includeEarnings ? (hidden ? 'Earnings are hidden on screen, but this file will contain them.' : 'Prices and amounts are in the file.') : 'Turn off for client-facing files: no rates, prices or amounts, and analysis sheets with money are left out.'}
             />
-            {kind === 'xlsx' && <p className="field-hint">The Excel file also holds analysis sheets for the same zone.</p>}
+            {kind === 'xlsx' && (
+              <p className="field-hint">
+                The Excel file also holds analysis sheets for the same zone.
+                {picked ? '' : analysisView ? ` They use the period and filters of the Analysis tab, which is open: ${viewScopeText(snapshot, analysisView, zone)}.` : ` They cover ${historyScopeText(snapshot, zone, nowSec)}.`}
+              </p>
+            )}
             {picked && <p className="field-hint">The days are the ones you selected, cut in {zoneLabel(picked.zone, nowSec)}.</p>}
             {result &&
               (result.path ? (
