@@ -20,6 +20,7 @@ import { TimelineTab } from '../features/timeline/TimelineTab';
 import { ActiveZoneBar } from '../features/zones';
 import { Banners } from './Banners';
 import { ClientZonePrompt } from './ClientZonePrompt';
+import { ClockBanner } from './ClockBanner';
 import { DirtyGuardProvider, useLeaveCheck } from './dirtyGuard';
 import { IconDownload, IconEye, IconEyeOff } from './icons';
 import { LeaseBanner } from './LeaseBanner';
@@ -241,6 +242,7 @@ function ShellBody() {
         </header>
         <Banners>
           <LeaseBanner />
+          <ClockBanner />
           <HeldBanner />
         </Banners>
         <div className="app-body">

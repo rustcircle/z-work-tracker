@@ -19,6 +19,7 @@ import type {
   BackupInfo,
   BillablePause,
   BillingSummary,
+  ClockBehindView,
   CopySource,
   CorrectionInput,
   DataCounts,
@@ -218,6 +219,12 @@ export interface MockState {
    * `settle_lost_segment` measures a computer's silence from `writtenAt`. One with no entry is known only by its segments.
    */
   remoteDevices?: Record<string, { name: string; writtenAt: string }>;
+  /**
+   * The newest change this computer has seen, as the backend's floor for new stamps (`Service.newest`): when it says it was saved (epoch
+   * seconds) and the other computer that saved it by name, or null when it was saved here. Null for no such change. `clockBehindOf` turns
+   * it into the banner's view, so moving `now` forward past `at - 120` makes the line go away, as correcting the clock does.
+   */
+  newestStamp: { at: number; causeDevice: string | null } | null;
 }
 
 export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
@@ -278,6 +285,7 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     autostartInfo: { packaged: false, state: 'off', canChange: true, note: null },
     versions: [],
     joinPending: null,
+    newestStamp: null,
   };
 }
 
@@ -582,6 +590,20 @@ function colorWarnings(s: MockState): string[] {
   return out;
 }
 
+/** `hlc::CLOCK_BEHIND_WARN_SECS`: a newest change this far ahead of the clock, or more, is worth a line. */
+const CLOCK_BEHIND_WARN_SECS = 120;
+
+/** `hlc::HLC_MAX_LEAD_SECS`: the furthest past this computer's clock a new change may be dated. A newest change this far ahead, or more, can't be beaten. */
+const HLC_MAX_LEAD_SECS = 86_400;
+
+/** As the backend's `clock_behind`: the view while this computer's clock is behind the newest change it has seen, else null. */
+export function clockBehindOf(s: MockState): ClockBehindView | null {
+  const n = s.newestStamp;
+  if (!n || n.at - s.now < CLOCK_BEHIND_WARN_SECS) return null;
+  const behindSecs = n.at - s.now;
+  return { behindSecs, newestAt: toIso(n.at), causeDevice: n.causeDevice, capped: behindSecs >= HLC_MAX_LEAD_SECS };
+}
+
 /** A small seeded generator (mulberry32), so a mock run picks the same replacement colours every time. */
 function seeded(seed: number): () => number {
   let a = seed;
@@ -694,6 +716,7 @@ function snapshot(s: MockState, read = false): Snapshot {
     },
     notices: s.notices,
     warnings: [...s.warnings, ...colorWarnings(s), ...referenceWarnings(s), ...(s.packaged && s.targets.length === 0 ? [PACKAGED_NO_FOLDER_WARNING] : [])],
+    clockBehind: clockBehindOf(s),
     sync: { targets: s.targets, detected: s.detected, promptPending: !s.syncPromptDone && s.targets.length === 0, pendingCopy: s.pendingCopy, joinPending: s.joinPending },
     lease: leaseView(s),
     platform: { packaged: s.packaged },

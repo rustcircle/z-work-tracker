@@ -873,10 +873,7 @@ mod tests {
     const LAPTOP: &str = "device-laptop";
 
     fn on_laptop(iso: &str) -> Ctx<'static> {
-        Ctx {
-            now: ts(iso),
-            device: LAPTOP,
-        }
+        Ctx::at(ts(iso), LAPTOP)
     }
 
     /// A store holding one timer another device started at 09:00, and the segment's id.
@@ -1272,10 +1269,7 @@ mod tests {
     #[test]
     fn a_task_still_running_on_a_third_device_stays_running() {
         let (mut s, t, id) = left_running();
-        let third = Ctx {
-            now: ts("2026-01-02T09:30:00Z"),
-            device: "device-third",
-        };
+        let third = Ctx::at(ts("2026-01-02T09:30:00Z"), "device-third");
         s.open_segment(&third, &t);
         settle(&mut s, &id, "2026-01-02T10:00:00Z", "2026-01-03T12:00:00Z").unwrap();
         assert_eq!(s.tasks[&t].state, TaskState::Running);
@@ -1295,10 +1289,7 @@ mod tests {
             )
             .unwrap();
         s.open_segment(&on_laptop("2026-01-02T09:10:00Z"), &other_task);
-        let third = Ctx {
-            now: ts("2026-01-02T09:30:00Z"),
-            device: "device-third",
-        };
+        let third = Ctx::at(ts("2026-01-02T09:30:00Z"), "device-third");
         s.open_segment(&third, &t);
         let c = ctx("2026-01-03T12:00:00Z");
         let ends = |seg: &Segment| seg.start.later(600);
@@ -1615,10 +1606,7 @@ mod tests {
         ) {
             let start = ts("2026-01-02T09:00:00Z");
             let at = |skew: i64, step: i64| ts("2026-02-01T12:00:00Z").later(skew + step * 60);
-            let on = |skew: i64, step: i64, device: &'static str| Ctx {
-                now: at(skew, step),
-                device,
-            };
+            let on = |skew: i64, step: i64, device: &'static str| Ctx::at(at(skew, step), device);
             let desktop = crate::machine::tests::DEV;
             let (base, _, id) = left_running();
             let mut here = base.clone();

@@ -6,7 +6,7 @@ A desktop app for Windows 10 and 11 that accounts for labor hours by project and
 
 It runs locally. It makes no network calls and sends no telemetry. Data leaves the machine only if you choose a OneDrive or Google Drive folder for sync.
 
-Status: version 1.3.1. It has been run and tested on macOS, and the Windows installer and the Microsoft Store package have been built, but the only things to run on Windows so far are the CI test gates and the GitHub build, which signed the installer and checked the signatures on the runner: **the app itself has never run on real Windows**, as either build. See [Known limitations](#known-limitations).
+Status: version 1.3.2. This version keeps its data in a SQLite database on this computer instead of a JSON file; coming from 1.3.1, see [Upgrading to 1.3.2](#upgrading-to-132) before you install. It has been run and tested on macOS, and the Windows installer and the Microsoft Store package have been built, but the only things to run on Windows so far are the CI test gates and the GitHub build, which signed the installer and checked the signatures on the runner: **the app itself has never run on real Windows**, as either build. See [Known limitations](#known-limitations).
 
 ![Timeline](docs/images/timeline-light.png)
 
@@ -32,7 +32,7 @@ Status: version 1.3.1. It has been run and tested on macOS, and the Windows inst
 
 ## Install and uninstall
 
-**Install.** Run `zWorkTracker_1.3.1_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
+**Install.** Run `zWorkTracker_1.3.2_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data folder. From 1.3.1, sync and quit first: the data comes back from your sync folder (see [Upgrading to 1.3.2](#upgrading-to-132)).
 
 An unsigned installer can make Windows SmartScreen say "Windows protected your PC". To continue, choose **More info**, then **Run anyway**. This project's builds are meant for your own PCs, signed with [a self-signed certificate](#trusting-your-own-builds-with-a-self-signed-certificate); SmartScreen may still warn about a downloaded file even then.
 
@@ -52,7 +52,7 @@ The uninstaller asks **Also delete my time data**, unticked by default, so your 
 
 There is also a Microsoft Store (MSIX) build of the same program. It knows it is the Store build when Windows gives it a package identity, and it then behaves differently in four ways. None of this has been seen on Windows yet; see [Known limitations](#known-limitations).
 
-- **Your data is private to the package, and uninstalling deletes it.** Windows keeps the files a Store app creates under AppData in a private folder of its own, and removes that folder when the app is uninstalled, with no question like the installer's. Your hours, the dated backups and the safety copies all live there. [Where the Store version keeps its data](#4-where-the-store-version-keeps-its-data) says where that is likely to be. **So a cloud folder is the permanent copy:** connect OneDrive or Google Drive, or both, in **Settings > Sync between devices**. Versions saved there stay when the app is uninstalled.
+- **Your data is private to the package, and uninstalling deletes it.** Windows keeps the files a Store app creates under AppData in a private folder of its own, and removes that folder when the app is uninstalled, with no question like the installer's. Your hours, in the database `z-work-data.db`, the dated backups and the safety copies all live there. [Where the Store version keeps its data](#4-where-the-store-version-keeps-its-data) says where that is likely to be. **So a cloud folder is the permanent copy:** connect OneDrive or Google Drive, or both, in **Settings > Sync between devices**. Versions saved there stay when the app is uninstalled.
 - **It asks firmly for a cloud folder.** The setup's **Sync between computers** step opens with "Choose a cloud folder." and says Windows removes the app's files when it is uninstalled. Skipping it, or **Finish with defaults** before it, asks **Continue without a folder?** first. Until a folder is connected, a warning stays at the top of the app: "This copy of zWorkTracker keeps its data in a private Windows folder. Uninstalling the app deletes that folder and your hours with it. Connect a OneDrive or Google Drive folder in Settings > Sync between devices." Removing the last folder warns about this too, and **Settings > Backups** says its backups are removed on uninstall.
 - **Start with Windows goes through Windows.** The switch turns the package's startup task, `zWorkTrackerStartup`, on and off, as a Store app's Run entry in the registry would never start anything. Windows has the last word: if you turned it off in Task Manager or **Settings > Apps > Startup**, the switch is greyed and says "You turned this off in Windows, so only Windows can turn it back on: Settings > Apps > Startup.", with an **Open Startup settings** button. A policy can also hold it off or on, and the switch says so.
 - **Notifications are Windows toasts under the package's own name.** Reminders, budget alerts and time-away questions use the package's identity, so Windows shows and lists them as zWorkTracker's. If that fails, the app falls back to the route the installer build uses.
@@ -61,7 +61,7 @@ To uninstall the Store build, use **Settings > Apps > Installed apps**. Connect 
 
 ## Migration guide
 
-For moving to 1.3.1: upgrading the installer version, moving from the installer version to the Microsoft Store version, and restoring or moving to a new PC. None of these steps has been run on Windows yet. Back up first, whichever you do.
+For moving to 1.3.2: upgrading the installer version, moving from the installer version to the Microsoft Store version, and restoring or moving to a new PC. None of these steps has been run on Windows yet. Back up first, whichever you do.
 
 ### 1. Back up first
 
@@ -77,10 +77,27 @@ That copies the installer version's data folder, with its `backups` folder insid
 
 ### 2. Upgrading the installer version in place
 
-1. Back up, as above.
-2. Run `zWorkTracker_1.3.1_x64-setup.exe` over the version you have. **Don't uninstall the old one first.** The installer is meant to be run over an older one: it asks a running copy to quit through its normal exit path, so an open work segment closes cleanly, replaces the program files in `%LOCALAPPDATA%\zWorkTracker`, and keeps your data folder, `%APPDATA%\com.rustcircle.zworktracker\`, as it is. Uninstalling first would also remove the Start with Windows entry, and would delete your data if **Also delete my time data** were ticked.
-3. Open the app and check **Settings > About**: App version should say 1.3.1. Your projects, hours and billing summaries should all be there. The data file's format hasn't changed in this release, so nothing is converted.
+1. Back up, as above. Coming from 1.3.1, also sync and quit first, as in [Upgrading to 1.3.2](#upgrading-to-132) below.
+2. Run `zWorkTracker_1.3.2_x64-setup.exe` over the version you have. **Don't uninstall the old one first.** The installer is meant to be run over an older one: it asks a running copy to quit through its normal exit path, so an open work segment closes cleanly, replaces the program files in `%LOCALAPPDATA%\zWorkTracker`, and keeps your data folder, `%APPDATA%\com.rustcircle.zworktracker\`, as it is. Uninstalling first would also remove the Start with Windows entry, and would delete your data if **Also delete my time data** were ticked.
+3. Open the app and check **Settings > About**: App version should say 1.3.2. Your projects, hours and billing summaries should all be there. Coming from 1.3.1, they appear after the first sync.
 4. Update every PC that syncs with yours before you work on them side by side. An older version doesn't know about [one computer at a time](#one-computer-at-a-time), and after a [restore from a version](#versions-and-restoring) its changes are skipped until it is updated.
+
+#### Upgrading to 1.3.2
+
+1.3.2 keeps your data in a database on this computer, `z-work-data.db`, instead of the file `z-work-data.json`. The old file isn't converted. At the first start, 1.3.2 reads only a few settings from it: this computer's device id and name, its sync folders, how far setup got, and how many daily backups to keep. Your projects, hours and the rest come back from your sync folder. The old file is never changed or deleted.
+
+1. **Sync.** In 1.3.1, open **Settings > Sync between devices**, press **Sync now** and wait until each folder says "Written to OneDrive folder" (or Google Drive folder) with a recent time. Check that OneDrive or Google Drive shows the folder as up to date.
+2. **Quit** from the tray's **Quit**. Work done after the last sync stays only in the old file, so sync first. The installer also asks a running copy to quit, and that quit syncs once too.
+3. **Install 1.3.2 and open it.** A notice says your data is being brought back from your folders. It appears after the first sync. Until data has arrived from a folder, the app writes nothing to the folders, and makes no version and no daily backup. If a folder can't be read, a warning says so and asks you to check that it is synced to this computer.
+4. **Check the figures:** projects, this month's hours, and the billing summaries.
+
+**Without a sync folder,** 1.3.2 starts empty and says so. Your data is still on this computer. The old file and every 1.3.1 backup stay where they were, and the app never removes a 1.3.1 backup. At the first start it also copies the old file, once, to `backups/z-work-data-legacy-1.3.1.json`. To bring your data back, restore that copy in **Settings > Backups**.
+
+**What carries over.** The device id and name, the sync folders, whether setup was done, and how many daily backups to keep. Everything else of this computer's own goes back to its default: theme, Mica, Hide earnings and the last currency used.
+
+**The Store build** updates through the Microsoft Store. Sync and quit it before the update, as above; its data comes back from the folder in the same way.
+
+**Going back to 1.3.1.** Reinstall 1.3.1. It opens its old file, which 1.3.2 left as it was, and merges your sync folder, so nothing that was synced is lost. Changes made in 1.3.2 that never reached a folder stay only in `z-work-data.db`.
 
 **Signing.** Windows judges the new installer as it judged the old one. A build signed with [your self-signed certificate](#trusting-your-own-builds-with-a-self-signed-certificate) is trusted only on PCs set up for it, and SmartScreen may still say "Windows protected your PC" about a downloaded file: choose **More info**, then **Run anyway**. If Smart App Control is on, it may refuse a self-signed build altogether, as Microsoft says it runs only apps its own service recognises or that a certificate authority in its Trusted Root Program signed. The Store version doesn't depend on your certificate: Microsoft signs it after certification.
 
@@ -102,32 +119,34 @@ The Store version keeps its data in a private folder that Windows deletes on uni
 
 ### 4. Where the Store version keeps its data
 
-Windows keeps the files a Store app creates under AppData in a private folder per user and per package, and removes it when the app is uninstalled ([Microsoft](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)). Microsoft's page doesn't name that folder. It is likely to be:
+Windows keeps the files a Store app creates under AppData in a private folder per user and per package, and removes it when the app is uninstalled ([Microsoft](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)). Microsoft's page doesn't name that folder. For the Store version it is likely to be:
 
 ```
-%LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache\Roaming\com.rustcircle.zworktracker\
+%LOCALAPPDATA%\Packages\PedroMiguelRodriguesJorge.zWorkTracker_54k2cbaqgvhqp\LocalCache\Roaming\com.rustcircle.zworktracker\
 ```
 
-**This path hasn't been confirmed by a real install.** The app asks Windows for its usual AppData folder and doesn't choose the private one itself. To find the package family name, in PowerShell:
+**This path hasn't been confirmed by a real install.** The app asks Windows for its usual AppData folder and doesn't choose the private one itself. The folder is named after the package family name, which is the identity's name, an underscore, and 13 characters Windows works out from the identity's publisher. This one is worked out from the identity Partner Center issued for the app. To see what Windows reports on a PC, in PowerShell:
 
 ```powershell
 (Get-AppxPackage *zWorkTracker*).PackageFamilyName
 ```
 
-The folder holds the same files as the installer version's (see [Data and privacy](#data-and-privacy)), backups included. **Uninstalling the Store version deletes it, so the cloud folder is the permanent copy.** To back it up by hand, use the `Copy-Item` command from step 1 with this folder as the source.
+That lists every installed package with zWorkTracker in its name. A test package made by `pnpm package:msix` (see [Microsoft Store package from macOS](#microsoft-store-package-from-macos)) is listed too, with its own family name, `rustcircle.zWorkTracker.Test_ym7m1j5c19s9r`, so it has a folder of its own and the two never share data.
+
+The folder holds the same files as the installer version's (see [Data and privacy](#data-and-privacy)): the database `z-work-data.db`, with `z-work-data.db-wal` beside it while the app runs, and the backups. **Uninstalling the Store version deletes it, so the cloud folder is the permanent copy.** To back it up by hand, use the `Copy-Item` command from step 1 with this folder as the source.
 
 ### 5. Restoring, and moving to a new PC
 
 **From a version in your cloud folder.** This rolls back every computer that syncs with the folder.
 
-1. Update every computer to 1.3.1 first: an older version's changes are skipped after a restore until it is updated.
+1. Update every computer to 1.3.2 first. A version older than 1.3.1 has its changes skipped after a restore until it is updated.
 2. Open **Settings > Versions** on a computer that isn't read-only. A read-only one has to take over first, and restoring makes this one the computer that is making changes.
 3. Find the version, open **What changed** to read its record, and press **Restore…**. The first step compares the version's counts with this computer's. **Continue**, then **Restore this version**.
 4. Before anything changes, a copy of today's data is saved on this computer and as a version in your folders, so restoring that copy undoes the restore. A running task is paused. Each other computer follows the restored data at its next sync, and keeps a copy of what it had as a version too.
 
-**From a backup on this computer.** In **Settings > Backups**, press **Restore** next to a dated backup, then **Restore this backup**. A safety copy is made first. This rolls back this computer only: with sync on, newer records in your sync folders merge back in at the next sync, so turn sync off first to go back for good. A backup from before a restored version is refused while folders are connected, because it would undo that restore everywhere. To restore the folder you copied in step 1, quit the app fully, put that folder back in place of `%APPDATA%\com.rustcircle.zworktracker\`, and open the app again.
+**From a backup on this computer.** In **Settings > Backups**, press **Restore** next to a dated backup, then **Restore this backup**. A safety copy is made first. This rolls back this computer only: with sync on, newer records in your sync folders merge back in at the next sync, so turn sync off first to go back for good. A backup from before a restored version is refused while folders are connected, because it would undo that restore everywhere. 1.3.1 backups stay in the list and can be restored the same way, and so can `z-work-data-legacy-1.3.1.json`, the copy of the 1.3.1 data file made at the first 1.3.2 start. To restore the folder you copied in step 1, quit the app fully, put that folder back in place of `%APPDATA%\com.rustcircle.zworktracker\`, and open the app again. A folder copied under 1.3.1 holds no database, so it counts as a first start of 1.3.2: see [Upgrading to 1.3.2](#upgrading-to-132).
 
-**Moving to a new PC.** With sync on, install zWorkTracker on the new PC, sign in to the same OneDrive or Google Drive there, and let it download the folder. If the setup finds the folder, its first step is **Connect your other computer**, where **Connect and bring it in** merges the folder's data, and the setup skips what that data already answers. Check the figures, and quit the old PC from the tray before you work on the new one. Without sync, copy the data folder over instead: quit the app on both, copy the folder from step 1 into `%APPDATA%\com.rustcircle.zworktracker\` on the new PC, then open the app. The new PC then carries on as the same device, so don't go on using the old one too. For a Store version on the new PC, go through a cloud folder, as in step 3, since its private folder's place isn't confirmed.
+**Moving to a new PC.** With sync on, install zWorkTracker on the new PC, sign in to the same OneDrive or Google Drive there, and let it download the folder. If the setup finds the folder, its first step is **Connect your other computer**, where **Connect and bring it in** merges the folder's data, and the setup skips what that data already answers. Check the figures, and quit the old PC from the tray before you work on the new one. Without sync, copy the data folder over instead: quit the app on both, copy the folder from step 1 into `%APPDATA%\com.rustcircle.zworktracker\` on the new PC, then open the app. Copy the whole folder: `z-work-data.db`, and `z-work-data.db-wal` if there is one, belong together. The new PC then carries on as the same device, so don't go on using the old one too. A folder copied from a PC still on 1.3.1 gives the new PC only that PC's identity, its sync folders and its setup: the data then comes from the sync folder, or, with none, from `z-work-data-legacy-1.3.1.json` in **Settings > Backups**. For a Store version on the new PC, go through a cloud folder, as in step 3, since its private folder's place isn't confirmed.
 
 ## User guide
 
@@ -356,6 +375,8 @@ Enter a job's name and tags to get an estimate from comparable past stopped task
 
 The app writes a dated copy of its data once a day into a `backups` folder beside it, keeping the newest 30 by default; choose 1 to 365. These stay on this computer and are separate from sync. **Restore** in Settings first saves the current data as a safety copy, then rolls back your data and shared settings to the backup. The newest 5 safety copies are kept, apart from the daily ones. A running task pauses first, and the next start counts as cold. A task the backup held running is paused at the last moment that backup knows about. Restoring the safety copy undoes a restore. What belongs to this device stays: its preferences and sync folders, its reference prefix, the reference numbers already used, so none is ever reused, and the audit trail, which records the restore. With sync on, newer records in your sync folders merge back in at the next sync, so to go back in time for good, turn sync off first. To roll back every computer, use [Versions](#versions-and-restoring) instead. While folders are connected, a backup from before a restored version is refused, because restoring it would undo that restore on every computer. In the Store build, backups live in its private folder and are removed with the app.
 
+Backups are still JSON files, as in 1.3.1, though the data itself is now in a database. The backups 1.3.1 made stay listed and can be restored, and the app never removes them, whatever the number to keep says. The same goes for `z-work-data-legacy-1.3.1.json`, a copy of the 1.3.1 data file made once at the first 1.3.2 start. Until data has arrived from your sync folder after that first start, no daily backup is made.
+
 ### Earnings and Hide earnings
 
 Earnings are derived from segments, rates and rounding, and stored nowhere as truth. They use billable time when an increment is on. Amounts keep an exact value (rate in cents times seconds). A row shows its own amount rounded half up to cents. A total adds up the exact values of its rows and rounds them once, the same way, so the PDF, summaries, Excel and Analysis come to the same figure for the same time, and visible rows can differ from their total by a cent or so. The PDF, a summary's CSV and copied text and the Billing tab say so when they do, and Excel's Earnings sheet says so in its title. If a rate changes within a task-day, the rounding difference goes to the last rate in force that day.
@@ -405,7 +426,7 @@ Each PC writes only its own file, `<folder>/zWorkTracker/devices/<device-uuid>.j
 
 **Merge rules, in plain language.**
 
-- Projects merge per group of fields: identity, billing, budget and archive. In each group the latest edit wins, ties settled by device id, so a rename on one PC and a fixed fee set on another both survive.
+- Projects merge per group of fields: identity, billing, budget and archive. In each group the latest edit wins, ties settled by device id, so a rename on one PC and a fixed fee set on another both survive. "Latest" goes by each edit's stamp: see [Clocks and the latest edit](#clocks-and-the-latest-edit).
 - Settings, shifts, rates and increments: the latest edit wins per record, ties settled by device id.
 - Tasks merge per field. A name edited on one PC and a description edited on another both survive.
 - A task editor won't save over a newer value of a field if that value has reached this PC since the editor last showed or saved the field. It can only know what has synced here: if two PCs save the same field before either has synced, the later save wins and the other text is gone, with no notice (see [Known limitations](#known-limitations)). The backend compares the two in the same step as the write, by value, so edits to other fields and the running clock don't count, and the same text arriving from elsewhere isn't a conflict. A field you haven't changed shows the newer value. A field you have changed keeps your words and sends nothing: a notice says so, in the editor or, when the editor is closed, in a banner that stays until you open it. **Done** after that notice saves your words over the newer ones, which you can't read first, as the editor shows one value per field. A press of **Done** in the notice's first second chooses nothing, as focus may well be on **Done** already. **Discard my words** keeps the newer ones. To see both, copy your words, press **Discard my words**, and paste them back. Going on typing does nothing to either.
@@ -466,6 +487,20 @@ You can connect two folders, typically one in OneDrive and one in Google Drive, 
 
 Each folder shows its own status, and one failing never stops the other. If a folder hasn't been written for 30 minutes, a warning at the top of the app names it and the error, and says whether the other folder is fine. If one folder's copy of another computer's data is more than an hour behind the other folder's, the folder says so, as its cloud app may be paused. **Remove** stops using a folder and leaves its files where they are.
 
+#### Clocks and the latest edit
+
+Each edit carries a stamp, and the merge rules above keep the edit with the later stamp. From 1.3.2, a stamp follows the newest change this computer has seen, its own or another computer's: an edit is stamped at least one second after that change, even when this computer's clock is behind. So an edit made after another edit has reached this computer wins over it, whatever the clocks say. A stamp is never more than one day past this computer's own clock, because other computers refuse records dated more than two days ahead of theirs. The stamps go in the same files as before, so 1.3.1 reads them. Work times are not stamps: the start and end of every segment still come from this computer's clock, as do heartbeats and the dates of versions.
+
+When this computer's clock is 2 minutes or more behind the newest change it has seen, a warning stays at the top of the app until the clock is right. It can't be dismissed. It reads, for a change from another computer:
+
+> This computer's clock is *gap* behind a change saved on *name* at *time*. New changes here are still dated after it, so they count as the newest. Check the date and time on both computers: one of them is wrong.
+
+and for a change made on this computer:
+
+> This computer's clock is *gap* behind a change saved here at *time*, so it seems to have been set back. New changes are still dated after that one, so they count as the newest. Check this computer's date and time.
+
+*gap* reads like "5 min", "1 h 30 min" or "3 days". From a gap of one day, a new edit can no longer be stamped after that change, and everything after the first sentence becomes: "Changes made here can't be dated after it until the clock is fixed, so they may lose to it. Check the date and time on both computers." When the change was saved on this computer, the last sentence is "Check this computer's date and time." The warning goes away by itself once the clock has caught up.
+
 #### Versions and restoring
 
 **Settings > Versions** lists saved copies of your data, kept in the sync folders, so any computer can restore from them, and uninstalling the app doesn't touch them.
@@ -511,19 +546,18 @@ Definitions worth knowing:
 | | |
 |---|---|
 | **Windows** | `%APPDATA%\com.rustcircle.zworktracker\` |
-| **Windows, Store build** | A private folder of the package, removed on uninstall; likely `%LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache\Roaming\com.rustcircle.zworktracker\`, unconfirmed. See [Where the Store version keeps its data](#4-where-the-store-version-keeps-its-data) |
+| **Windows, Store build** | A private folder of the package, removed on uninstall; likely `%LOCALAPPDATA%\Packages\PedroMiguelRodriguesJorge.zWorkTracker_54k2cbaqgvhqp\LocalCache\Roaming\com.rustcircle.zworktracker\`, unconfirmed. See [Where the Store version keeps its data](#4-where-the-store-version-keeps-its-data) |
 | **macOS** | `~/Library/Application Support/com.rustcircle.zworktracker/` |
-| **Main file** | `z-work-data.json`: versioned JSON with timestamps in UTC (`2026-03-08T07:00:00Z`) |
-| **Backup** | `z-work-data.json.bak`: the previous good version |
+| **Main file** | `z-work-data.db`: a SQLite database. Each record is kept as the same JSON a sync file holds, with timestamps in UTC (`2026-03-08T07:00:00Z`). While the app runs, `z-work-data.db-wal` sits beside it and holds the latest changes; there is no `-shm` file. The app holds the database for itself while it runs, so no other program can read it then |
 | **Drafts** | `z-work-drafts.json`: descriptions being typed, local only, read at the next launch and then gone: put back, or moved to kept words. If this file is damaged, a notice says so and it is kept as `z-work-drafts.corrupt-<time>.json`. If it can't be read, a notice says that too, and it stays as it is for the launch after that |
 | **Kept words** | `z-work-kept-words.json`: words the store wouldn't take, local only, shown in a notice at each launch until it is dismissed. If this file is damaged, a notice says so and it is kept as `z-work-kept-words.corrupt-<time>.json`. If it can't be read or written, a notice says that too |
-| **Heartbeat** | `z-work-heartbeat.json`: while a task runs, the last moment the app was alive. It holds one time |
-| **Dated backups** | `backups/`: one copy a day, plus safety copies made before a restore |
-| **Before a migration** | `z-work-data.v1.json`: the store as it was before an upgrade |
+| **Dated backups** | `backups/`: one JSON copy a day, plus safety copies made before a restore. The 1.3.1 backups stay there, with `z-work-data-legacy-1.3.1.json`, and are never removed by the app |
+| **Before a migration** | `z-work-data.v<n>.db`: the database as it was before a later version changed its schema from version *n* |
 | **Last version taken** | `versions-base.json.gz`: the data as of the last version this computer saved, which the next version's record of changes is compared with |
-| **Damaged files** | Kept as `z-work-data.corrupt-<time>.json` |
+| **Damaged files** | Kept as `z-work-data.corrupt-<time>.db`, with its `-wal` file if there was one |
+| **Left from 1.3.1, never changed** | `z-work-data.json`, `z-work-data.json.bak`, `z-work-heartbeat.json`, `z-work-data.v1.json`. 1.3.2 only reads `z-work-data.json` (or its `.bak`) once, at its first start, and reads `z-work-heartbeat.json` then and when you restore the kept 1.3.1 copy; it never changes any of them. Once your data is back and you won't go back to 1.3.1, you can delete them yourself |
 
-Saves are atomic: a temporary file, then a rename. If the main file is damaged the app restores from the backup and tells you. If both are damaged it keeps both copies, starts empty and says so. A file from a newer app version is refused and left untouched. None of this wipes your data silently.
+Every change is one database transaction: it is either saved whole or not at all, and it is on the disk before the app goes on. The heartbeat of a running task is saved in the database too. If the database is damaged, the app sets it aside under the name above and tells you. With a sync folder, the data comes back from the folder. Without one, it restores the newest dated backup that can be read, and the notice names it. A database from a newer app version is refused and left untouched. None of this wipes your data silently.
 
 **What leaves the machine:** nothing, except through your own sync folder. There the app writes `zWorkTracker/devices/` (each computer's data), `zWorkTracker/lease/` (which computer is making changes) and `zWorkTracker/versions/` (saved versions, gzip, with their records of changes). Those files hold your full labor data, including prices, unencrypted. There's no telemetry, and the build contains no HTTP or TLS library; a test enforces this.
 
@@ -533,7 +567,7 @@ Saves are atomic: a temporary file, then a rename. If the main file is damaged t
 
 - Node 26 (`.nvmrc` and `engines` in `package.json`; CI reads the same file) and pnpm 12.16.1, the version `packageManager` pins
 - rustup. The toolchain is pinned in `rust-toolchain.toml` (stable, with the `x86_64-pc-windows-gnu` target) and installs itself on first use. You don't need a global default. The code needs Rust 1.99 or later (`rust-version` in `src-tauri/Cargo.toml`).
-- On macOS, Xcode command line tools. To build for Windows: `brew install mingw-w64 nsis`
+- On macOS, Xcode command line tools. To build for Windows: `brew install mingw-w64 nsis`. MinGW's gcc also compiles SQLite, which is C, for the Windows target, so the Windows `cargo check` and `cargo clippy` below need it too
 
 ### Install and run
 
@@ -571,7 +605,7 @@ ZWT_SAMPLE_XLSX=/tmp/sample.xlsx cargo test -p z-work-core builds_with_earnings
 cd .. && uv run --no-project --with openpyxl scripts/verify_xlsx.py /tmp/sample.xlsx
 ```
 
-Continuous integration: `.github/workflows/ci.yml` runs these gates on `windows-latest` on each push to `main` and each pull request into `main`, and can be started by hand. Playwright there runs against the IPC mock, so it doesn't drive the real backend, and a green run says nothing about the installer or the app on a real desktop. A small macOS job runs the core's lint and tests, for its Unix-only file handling. It uses no secrets and signs nothing. Packaging runs only in `windows-build.yml`, by hand or on a tag. The timing test is too noisy for a shared runner, so run it locally.
+Continuous integration: `.github/workflows/ci.yml` runs these gates on `windows-latest` on each push to `main` and each pull request into `main`, and can be started by hand. Playwright there runs against the IPC mock, so it doesn't drive the real backend, and a green run says nothing about the installer or the app on a real desktop. Before the MinGW check it installs MSYS2's MinGW gcc on the runner, because that check compiles the bundled SQLite. A small macOS job runs the core's lint and tests, for its Unix-only file handling. It uses no secrets and signs nothing. Packaging runs only in `windows-build.yml`, by hand or on a tag. The timing test is too noisy for a shared runner, so run it locally.
 
 `pnpm gen:tz` regenerates `src/generated/tzdata.json` from Rust's time zone database. Run it after updating `chrono-tz`.
 
@@ -584,7 +618,9 @@ src-tauri/
   crates/z-work-core/src/   Pure core
     machine.rs             Task state machine, projects, shifts, rates
     model.rs               Persisted and synced data model
-    persist.rs             Atomic save, backup, recovery, migrations
+    store.rs               The SQLite store: open, save, heartbeat, damage, schema migrations
+    hlc.rs                 Stamps that follow the newest change seen
+    persist.rs             Atomic file writes for backups and side files, the 1.3.1 file format
     merge.rs               Deterministic merge between devices
     sync.rs, detect.rs     Folder sync, sync folder detection
     lease.rs, lease_io.rs  One computer at a time: the pure rules, then reading and writing the records
@@ -617,7 +653,9 @@ Billing and time zone rules exist in both Rust (for exports and the tray) and TS
 
 ### Data model and schema migration
 
-Two versions exist: `version` in the local file and `schemaVersion` in device files, both 2. Opening a version 1 store keeps a copy as `z-work-data.v1.json`, then upgrades it; a test reads a real phase 1 file. To change the schema, raise `SCHEMA_VERSION` and add a step to `migrate()` in `persist.rs`. Optional fields need no step, because every synced record defaults missing ones. An old build skips a newer device file, warns "Update this device" and never overwrites it. Task lists from version 1 get subtask ids derived from the task id and position, so every device derives the same ones without a new edit stamp.
+The local store is a SQLite database, compiled into the app by `rusqlite` with its `bundled` feature (SQLite 3.54.1), so every system runs the same SQLite. It has three tables: `schema_version`, `meta` (this device's identity, preferences and sync state in the key `local`, and the heartbeat in `beat`), and `records(kind, id, json)`, which holds every synced record as the exact JSON it has in a device file. So the merge, stamps and deletion markers see the same values as before, and optional fields need no migration. A save writes only the records that changed, in one transaction. The connection uses WAL with `synchronous = FULL` and an exclusive lock, and `PRAGMA quick_check` runs at every open.
+
+Three versions exist. `DB_SCHEMA_VERSION` in `store.rs`, 1, is the database's schema. `version` in the local data and `schemaVersion` in device files are both still 2, so sync files are as they were. To change the database's schema, add a step to `MIGRATIONS` in `store.rs` and raise `DB_SCHEMA_VERSION`. Steps only go forward, each in its own transaction, and a copy is kept as `z-work-data.v<n>.db` first. A database from a newer version is refused and left untouched. To change the data's shape, raise `SCHEMA_VERSION` and add a step to `migrate()` in `persist.rs`, which still upgrades version 1 data, such as an old backup; a test reads a real phase 1 file. Optional fields need no step, because every synced record defaults missing ones. An old build skips a newer device file, warns "Update this device" and never overwrites it. Task lists from version 1 get subtask ids derived from the task id and position, so every device derives the same ones without a new edit stamp.
 
 The synced state is a set of records with stable ids, merged by taking the maximum under a total order. Property tests check that the merge is idempotent, commutative and associative, for time away, billable pauses, tags, templates, summaries, prefixes and the audit log too. Corrections, time away and billable pauses are overlays on raw segments, and `pieces.rs` turns them into the pieces every report reads. A synced file is untrusted: `validate.rs` refuses out-of-range times, amounts and references before a merge.
 
@@ -627,7 +665,8 @@ The synced state is a set of records with stable ids, merged by taking the maxim
 - Minimal capabilities: the window can only listen for backend events. No shell or filesystem plugin. The save and folder dialogs run from Rust.
 - Every command input is validated in Rust. Descriptions are allow-listed to known nodes and rendered only through the editor; ESLint rejects raw HTML injection.
 - Files from sync folders are untrusted: they are limited in size and count, schema-checked and checked for plausible times, durations and settings, and rejected files are skipped. A record that can be read but fails its checks is skipped and named in a warning, and the rest of that file is read. Each folder runs on its own worker with a time limit. Validation doesn't authenticate the writer; see [Folder sync](#folder-sync-on-onedrive-and-google-drive).
-- A save re-reads what it is about to write and refuses it if it wouldn't load, so a bad value can't replace a good store.
+- A save checks the data it is about to write, as a load would, and reads back each record it writes from the JSON it is about to store. If either fails, it writes nothing, so a bad value can't replace a good store. A save that fails makes the next one rewrite every record, so what is in memory and what is on disk can't drift apart.
+- The database is opened with an exclusive lock: only one copy of the app can write it, and a second one waits rather than writing beside it. It must be a zWorkTracker database, by its application id, and pass SQLite's `quick_check` at every open.
 - `unsafe` is forbidden in this project's crates apart from `z-work-session`, which holds the few audited Windows calls, and clippy warns on `unwrap`, `expect`, `panic` and indexing.
 - The test-only `smoke` feature (data folder override, extra commands) is never enabled in shipped builds. The demo seed and IPC mock are absent from the production bundle.
 
@@ -638,6 +677,21 @@ Work happens on feature branches in small commits that end with the co-author li
 ## Performance
 
 Measured on an Apple M3 Ultra on AC power, with a synthetic store of 12 projects, 400 tasks and three years. 50,000 segments is about 13 years at 10 segments a day, so it's a stress size; 5,000 is the more likely one. **All numbers are macOS.** A typical Windows laptop will be several times slower. WebView2, NTFS and antivirus are the most likely to change the picture, above all cold start, the cost of a disk flush, and what a hidden webview does. Nothing here was measured on Windows.
+
+**The SQLite store in 1.3.2**, against 1.3.1's JSON file, measured by `store_bench` on the same machine:
+
+Median milliseconds, in a release build, at 1,000, 10,000 and 50,000 segments (1k, 10k and 50k). A sync cycle reads another device's file of N segments, half of them new to this store, merges it, saves, and writes this device's own file.
+
+| Operation | 1k 1.3.1 | 1k 1.3.2 | 10k 1.3.1 | 10k 1.3.2 | 50k 1.3.1 | 50k 1.3.2 |
+|---|---|---|---|---|---|---|
+| open | 4.36 | 3.92 | 15.18 | 12.52 | 62.49 | 58.53 |
+| save after one action | 31.89 | 9.48 | 47.83 | 10.52 | 113.01 | 20.29 |
+| sync cycle, N/2 new segments | 86.35 | 45.37 | 155.94 | 86.22 | 448.37 | 301.68 |
+| merge in memory (code unchanged) | 0.94 | 0.96 | 3.33 | 3.38 | 16.23 | 14.27 |
+
+The 1.3.1 numbers were taken under a higher machine load (a load average of about 5, against 2.4 for 1.3.2), so open's small gain is within noise. A save is 3.4 to 5.6 times faster and a sync cycle 1.5 to 1.9 times, and both runs keep full fsync durability. At 50,000 segments the data folder holds one 20.9 MB database, against 31.6 MB in two JSON files.
+
+**The performance pass of 1.3.1,** when the store was still a JSON file:
 
 | | 5,000 segments, before → after | 50,000 segments, before → after |
 |---|---|---|
@@ -659,11 +713,12 @@ Left alone because measuring showed no case for a change:
 - **Exports.** At 50,000 segments Excel takes 0.95 s and PDF 0.15 s, on a request and off the UI thread.
 - **`opt-level = 3`.** About 10% faster for most of the backend, for a 23% bigger binary.
 - **`panic = "abort"`.** 23% smaller, but a panic in a helper thread would take the app down, where today it survives.
-- **The whole store as JSON.** A save still serialises everything, 16 MB at 50,000 segments, and every action still sends the page a 30 MB snapshot. The cost is linear and acceptable at any likely size. Memory follows the same line, with the webview near 800 MB at 50,000 segments and near 180 MB at 5,000. Changing this means a different storage format and IPC shape.
+- **The whole snapshot as JSON.** Every action still sends the page a 30 MB snapshot at 50,000 segments. The cost is linear and acceptable at any likely size. Memory follows the same line, with the webview near 800 MB at 50,000 segments and near 180 MB at 5,000. Changing this means a different IPC shape.
 
 To repeat the measurements:
 
 ```sh
+(cd src-tauri && cargo run --release -p z-work-core --example store_bench -- out.json)     # opening, saving and syncing the store at 1,000, 10,000 and 50,000 segments
 cd src-tauri && cargo run --release -p z-work-core --example perf_bench -- 50000 out.json   # also prints digests of every output
 pnpm build:e2e && node scripts/perf-frontend.mjs --out out.json                             # headless Chromium against the mock
 CARGO_TARGET_DIR=<dir> pnpm tauri build --no-bundle --features smoke
@@ -680,36 +735,42 @@ node scripts/perf-native.mjs --exe <dir>/release/zWorkTracker --store <store> --
 pnpm package:windows
 ```
 
-This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_1.3.1_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the installer and the files inside it are signed (reading those needs `brew install sevenzip`). `WebView2Loader.dll` ships inside the installer next to the exe.
+This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_1.3.2_x64-setup.exe`. MinGW's gcc, `x86_64-w64-mingw32-gcc`, compiles the bundled SQLite into the exe as well as linking it. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the installer and the files inside it are signed (reading those needs `brew install sevenzip`). `WebView2Loader.dll` ships inside the installer next to the exe.
 
 ### Microsoft Store package from macOS
 
 ```sh
-export ZWT_STORE_IDENTITY_NAME="<Package/Identity/Name>"
-export ZWT_STORE_PUBLISHER="<Package/Identity/Publisher>"
-export ZWT_STORE_PUBLISHER_DISPLAY_NAME="<Package/Properties/PublisherDisplayName>"
-pnpm package:msix
+pnpm package:msix                    # the Store package, from the build that package:windows left
+pnpm package:msix --build            # builds the Windows app first, then the Store package
+pnpm package:msix --identity both    # the Store and the test package (--identity test for only the test package)
 ```
 
-This packs the Windows build that `pnpm package:windows` left in `src-tauri/target/x86_64-pc-windows-gnu/release` as `bundle/msix/zWorkTracker_1.3.1.0_x64.msix` in that folder, to upload in Partner Center. It builds nothing itself: `pnpm package:msix --build` runs the same `tauri build` as `package:windows` first, and without it an exe whose version isn't the app's is refused. A package from an earlier run is removed first, and a run that fails leaves none. At the end it checks that what was packed is in the package, and prints its path, size and SHA-256, the identity read back from the manifest in it, and the version, build time and SHA-256 of the exe that went in.
+A run with `--identity both` packs the Windows build that `pnpm package:windows` left in `src-tauri/target/x86_64-pc-windows-gnu/release` as two packages, made from the same exe and differing only in the identity in their manifests. They are written to `bundle/msix` in that folder:
 
-**It isn't signed, and doesn't need to be.** The Store re-signs MSIX packages with a Microsoft certificate after certification ([Microsoft](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements)), so the signing variables don't apply, and the file can't be installed on a PC as it is.
+| File | Identity | For |
+|---|---|---|
+| `zWorkTracker_1.3.2.0_x64_store.msix` | Name `PedroMiguelRodriguesJorge.zWorkTracker`, Publisher `CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9`, publisher display name "Pedro Miguel Rodrigues Jorge" | Uploading in Partner Center |
+| `zWorkTracker_1.3.2.0_x64_test-unsigned.msix` | Name `rustcircle.zWorkTracker.Test`, Publisher `CN=zWorkTracker Test Signing`, publisher display name "zWorkTracker (test)" | Trying the app on a PC, once you have signed it |
 
-**The identity is Partner Center's to give,** so it has no defaults. The three values are on the app's **Product management > Product identity** page, and have to be copied exactly: the Store compares them with the package. A missing one stops the script, which names it. The other variables are optional:
+It builds nothing itself: `--build` runs the same `tauri build` as `package:windows` first, and without it an exe whose version isn't the app's is refused. `--identity` takes `store`, which is the default, `test` or `both`, and comes in any order with `--build`. A package of the same kind from an earlier run is removed first, and a run that fails leaves none of its own. At the end it checks that what was packed is in each package and that the manifest inside carries the identity the package was made for, and prints for each its path, size and SHA-256 and the identity and package family name read back from that manifest, then the version, build time and SHA-256 of the exe that went in.
+
+**Neither is signed.** The Store re-signs MSIX packages with a Microsoft certificate after certification ([Microsoft](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements)), so the Store package needs no signature, and can't be installed on a PC as it is. The test package can't be installed until it is signed, which is left to you: sign it with a certificate whose subject is its publisher, `CN=zWorkTracker Test Signing`, and trust that certificate on the PC. The script never signs and holds no key.
+
+**The identities are in `scripts/msix-manifest.mjs`,** not in the environment. The Store one is what Partner Center issued under **Product management > Product identity**, and the Store compares it with the package. It is public, so it is kept in the script and needs no setting. The package family name is the identity's name, an underscore and 13 characters worked out from its publisher, and it names the folder the package keeps its data in. The Store package's is `PedroMiguelRodriguesJorge.zWorkTracker_54k2cbaqgvhqp` and the test package's is `rustcircle.zWorkTracker.Test_ym7m1j5c19s9r`, so the test package has a data folder of its own. `scripts/msix-manifest.test.ts` works both out from the identities. The variables `ZWT_STORE_IDENTITY_NAME`, `ZWT_STORE_PUBLISHER` and `ZWT_STORE_PUBLISHER_DISPLAY_NAME`, which named the identity before Partner Center issued it, are no longer read. The script says so if one is set, so a value left in a shell can't change a package's identity. The other variables are optional:
 
 - `ZWT_MAKEMSIX`: the `makemsix` binary from Microsoft's [MSIX Packaging SDK](https://github.com/microsoft/msix-packaging). The default is `~/msix-packaging/.vs/bin/makemsix`, where `./makemac.sh --pack` builds it; packing is off in that script unless `--pack` is given.
-- `ZWT_MSIX_OUT_DIR`: a folder for the package, instead of `bundle/msix`.
+- `ZWT_MSIX_OUT_DIR`: a folder for the packages, instead of `bundle/msix`.
 - `CARGO_TARGET_DIR`: as for `package:windows`. A relative path is read from `src-tauri`, as Cargo does.
 
 It also needs `sips` and `unzip`, which macOS has. `--build` needs `brew install mingw-w64 nsis`, as `package:windows` does. Unlike `package:windows`, it doesn't check which DLLs the exe imports, so run that after changing dependencies.
 
-**The version** is the app's with a 0 added, so 1.3.1 is package version 1.3.1.0. The Store keeps the last part for itself and wants 0 there, the other parts are whole numbers up to 65535, and the first can't be 0 ([Microsoft](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements#package-version-numbering)). A version that breaks this stops the script, rather than making a package the Store would turn away. The manifest makes it a full-trust x64 app. Its minimum is Windows 10 version 2004 (`MinVersion="10.0.19041.0"`), so it covers the Windows 10 and 11 the rest of this README is written for. It declares a startup task, `zWorkTrackerStartup`, which stays off until it is turned on, and the app's **Start with Windows** switch now turns it on and off.
+**The version** is the app's with a 0 added, so 1.3.2 is package version 1.3.2.0. The Store keeps the last part for itself and wants 0 there, the other parts are whole numbers up to 65535, and the first can't be 0 ([Microsoft](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements#package-version-numbering)). A version that breaks this stops the script, rather than making a package the Store would turn away. The manifest makes it a full-trust x64 app. Its minimum is Windows 10 version 2004 (`MinVersion="10.0.19041.0"`), so it covers the Windows 10 and 11 the rest of this README is written for. It declares a startup task, `zWorkTrackerStartup`, which stays off until it is turned on, and the app's **Start with Windows** switch now turns it on and off.
 
 **What has been tested.** With made-up identity values: `makemsix` accepted the manifest, the startup task included. It checks a manifest against Microsoft's schemas and nothing more, so it also accepts one that names files that aren't there or a version the Store refuses; the script checks those itself. The package unpacks to files identical to the ones packed, and its block map uses SHA-256, as the Store requires. **Not tested:** Partner Center accepting the upload, certification, the Windows App Certification Kit (it runs only on Windows, and Microsoft advises running it before submitting), and installing or running the package on Windows, including everything in the list below. The [checklist](#manual-windows-test-checklist) covers it.
 
 **How the app handles being packaged, not yet seen on Windows.** Microsoft documents that a packaged app's writes under HKCU, and the new files it creates under AppData, go to a private copy that only that app sees and that is removed on uninstall ([Microsoft](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)). The app now plans for that rather than avoiding it:
 
-- **No restricted capability.** The manifest declares `runFullTrust` and nothing else, and in particular not `unvirtualizedResources`, which turning that redirection off would take. `scripts/msix-manifest.test.ts` holds it to that.
+- **One restricted capability.** The manifest declares `runFullTrust` (a restricted capability, which needs a short justification in Partner Center) and nothing else, and in particular not `unvirtualizedResources`, which turning that redirection off would take. `scripts/msix-manifest.test.ts` holds it to that.
 - **Local data is private and removed on uninstall, so the cloud folder is the permanent copy.** The app asks Windows for its package identity at launch and, when it has one, urges a cloud folder in the setup, keeps a warning up while none is connected, and says so on removing the last folder and under Backups. See [Microsoft Store build: where your data lives](#microsoft-store-build-where-your-data-lives).
 - **Start with Windows uses the startup task `zWorkTrackerStartup`,** through Windows' `StartupTask` API, instead of the HKCU `Run` key, which would never start anything from a package. The installer build keeps the `Run` key.
 - **Notifications** are sent as toasts under the package's AppUserModelID, which the notification plugin doesn't pass.
@@ -728,7 +789,7 @@ Smart App Control, on a PC where it is switched on, is a further check. Microsof
 **1. Create the certificate, once, on one PC.** It can sign code and nothing else, and lasts 5 years. In PowerShell:
 
 ```powershell
-$cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Pedro Jorge (zWorkTracker)" `
+$cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Pedro Miguel Rodrigues Jorge (zWorkTracker)" `
   -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy Exportable -KeyUsage DigitalSignature `
   -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(5)
 $cert.EnhancedKeyUsageList   # should list Code Signing only
@@ -779,8 +840,8 @@ The artifact's name then ends in `-self-signed`. With no secrets the workflow st
 **5. Check it,** on a PC set up as in step 3. `signtool` comes with the Windows SDK, isn't on the PATH, and is found as in step 4. `Get-AuthenticodeSignature` is part of Windows, so it's enough on a PC without the SDK:
 
 ```powershell
-& $env:SIGNTOOL_PATH verify /pa /v .\zWorkTracker_1.3.1_x64-setup.exe
-Get-AuthenticodeSignature .\zWorkTracker_1.3.1_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+& $env:SIGNTOOL_PATH verify /pa /v .\zWorkTracker_1.3.2_x64-setup.exe
+Get-AuthenticodeSignature .\zWorkTracker_1.3.2_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
 ```
 
 `signtool` should end with `Successfully verified`, and `Status` should read `Valid`, with a `TimeStamperCertificate`. After installing, run the same two commands on `$env:LOCALAPPDATA\zWorkTracker\zWorkTracker.exe` and `uninstall.exe` beside it. Check the installer and the installed files: the exe left in `src-tauri\target` by the build is the unsigned original.
@@ -846,7 +907,7 @@ Never commit real values. `.env` is ignored by git, and so are certificate and k
 
 ### Manual Windows test checklist
 
-None of this has been run yet. Please check on real Windows 10 and Windows 11 PCs, and note for each item the Windows edition and build (`winver`), the build type, pass or fail, and a screenshot of every dialog. The installer build is `zWorkTracker_1.3.1_x64-setup.exe` from `pnpm package:windows`; the Store build is `zWorkTracker_1.3.1.0_x64.msix` from `pnpm package:msix --build`, installed test-signed with `Add-AppxPackage` or through Partner Center flighting.
+None of this has been run yet. Please check on real Windows 10 and Windows 11 PCs, and note for each item the Windows edition and build (`winver`), the build type, pass or fail, and a screenshot of every dialog. The installer build is `zWorkTracker_1.3.2_x64-setup.exe` from `pnpm package:windows`; the Store build is `zWorkTracker_1.3.2.0_x64.msix` from `pnpm package:msix --build`, installed test-signed with `Add-AppxPackage` or through Partner Center flighting.
 
 **Both builds, and the installer build:**
 
@@ -869,6 +930,14 @@ None of this has been run yet. Please check on real Windows 10 and Windows 11 PC
 - [ ] Start with Windows works
 - [ ] Upgrade keeps data, and closes a running app cleanly
 - [ ] Uninstall removes files, shortcuts and the autostart entry; unticked keeps data, ticked deletes it; sync folders are untouched
+
+**Both builds, 1.3.2 store** (on Windows 11 at least):
+
+- [ ] After a few actions, the data folder holds `z-work-data.db` and `z-work-data.db-wal`, and no `z-work-data.db-shm`. For the Store build that is the package's folder under `%LOCALAPPDATA%\Packages\PedroMiguelRodriguesJorge.zWorkTracker_54k2cbaqgvhqp\LocalCache\` (for the test package, `rustcircle.zWorkTracker.Test_ym7m1j5c19s9r` in place of that folder name); record its full path. For the installer build it is `%APPDATA%\com.rustcircle.zworktracker\`
+- [ ] An action (rename a task, or Start), then at once End task on zWorkTracker in Task Manager, then relaunch: the change is still there
+- [ ] On a PC that synced under 1.3.1 and quit, installing 1.3.2 over it: the first start shows the notice that the data is being brought back from the folder, and after the first sync every project, task, hour and billing summary is back; the device keeps its name in **Settings > Sync between devices**, and `z-work-data.json` is unchanged (size and date)
+- [ ] On a PC that used 1.3.1 without a folder: 1.3.2 starts empty with its notice, **Settings > Backups** lists the 1.3.1 backups and `z-work-data-legacy-1.3.1.json`, and restoring that copy brings the data back
+- [ ] With the clock set 10 minutes back after a change synced from another PC, the warning "This computer's clock is ... behind a change saved on *name* ..." appears, has no close button, and goes once the clock is set right
 
 **WebView2 missing** (a Windows 10 22H2 VM, build 19045, with no "Microsoft Edge WebView2 Runtime" in Installed apps; Windows 11 can't remove it):
 
@@ -928,7 +997,9 @@ None of this has been run yet. Please check on real Windows 10 and Windows 11 PC
 | A sync folder shows an error | Check the desktop client is running and the drive is connected. Local data and other folders are unaffected. |
 | "Written to folder" but another PC has no data | The desktop client may still be uploading. |
 | "newer version" warning | Update the app on this device. |
-| A restored-data notice | The previous file was damaged. The damaged copy is kept in the data folder. |
+| "The data file was damaged" | The database couldn't be read, so the app set it aside as `z-work-data.corrupt-<time>.db` in the data folder, and the notice gives its path. With a sync folder, your data comes back from it after the first sync. Without one, the app restored the newest dated backup that could be read, and the notice names it: changes made after that backup are missing. Another backup can be restored in **Settings > Backups**. |
+| "This computer's clock is ... behind a change saved ..." | This computer's date or time is wrong, or the other computer's is. Correct the clock that is wrong, for example with **Sync now** under **Settings > Time & language > Date & time** in Windows. The warning goes once the clock has caught up. See [Clocks and the latest edit](#clocks-and-the-latest-edit). |
+| Empty after upgrading to 1.3.2 | With a sync folder, the data appears after the first sync; if a warning says it hasn't arrived, check that the folder is synced to this computer and press **Sync now**. Without a folder, restore `z-work-data-legacy-1.3.1.json` in **Settings > Backups**. See [Upgrading to 1.3.2](#upgrading-to-132). |
 | Focus ratio looks low | It counts same-day gaps between sessions of each task, added across tasks. See [Metrics reference](#metrics-reference). |
 | Earnings show "No rate set" | Set a price per hour on the project. |
 
@@ -938,6 +1009,12 @@ None of this has been run yet. Please check on real Windows 10 and Windows 11 PC
 
 **After a restore, older app versions are left behind.** A PC on an app version from before 1.3.1 doesn't know a version was restored. It merges the restored data with its own and writes on as before, and every newer PC skips its file, with a warning naming it, until it is updated. Once it is updated, it follows the restore: the time it logged since the restore was made is carried into the restored data, and everything else it held is kept in a safety copy and as a version, not merged.
 
+**Upgrading from 1.3.1 goes through the sync folder.** 1.3.2 takes only this computer's identity, folders and a few settings from the 1.3.1 data file. Changes made in 1.3.1 that weren't synced before the upgrade stay only in that old file and in `z-work-data-legacy-1.3.1.json`: restoring that copy in **Settings > Backups** brings them back, along with the rest of this computer's data as it was then.
+
+**Stamps need clocks within a day.** An edit is stamped at most one day past this computer's clock. If another computer's change is dated further ahead, an edit made here can't be stamped after it and may lose to it, and the [warning](#clocks-and-the-latest-edit) says so. A computer whose clock is more than two days behind skips the other computers' files as dated ahead, never sees their changes, and so can't show the warning either.
+
+**The database is the app's alone while it runs.** It is opened with an exclusive lock, so no other program, such as a SQLite browser or a backup tool that reads open files, can read `z-work-data.db` until the app quits. Copy the data folder after a tray **Quit**.
+
 **Clocks that are far out.** The app guards against a clock that jumps, but three cases are known and not fixed:
 
 - **Versions thinned too early.** A computer whose clock is far ahead, and that has never saved a version in a folder, judges the other computers' versions there by its own clock the first time it thins that folder out, so it can remove versions that are still young.
@@ -946,7 +1023,7 @@ None of this has been run yet. Please check on real Windows 10 and Windows 11 PC
 
 **Built for one PC at a time.** Use the app on one PC at a time. Sync carries your work from one PC to the next, but it doesn't make two PCs safe to edit side by side. If you switch PCs before sync has finished, for example because PC A goes offline before its folder has uploaded, and you edit the same field on both, the later save wins and the other text disappears from both PCs with no notice. Neither PC can warn you, because neither has seen the other's text when it saves. So let sync finish before you switch. The app can only say it wrote to the sync folder, so check that OneDrive or Google Drive has finished uploading. Two PCs that each bill their own part of one task-day before their files cross each round it alone, so those summaries can hold more than the report shows, with no warning. They stay as issued, and later rows on that day bill only what the day's rounded time has grown past them.
 
-**Not verified on real Windows.** What has run on Windows is the CI test gates and the GitHub build, on `windows-latest`. A green gates run covers the type check, lint, unit tests, and the Rust format, lint and tests, which run on Windows itself. It also covers the Playwright tests, which run against the IPC mock and so don't drive the real backend. It says nothing about the installer or the app on a real desktop. The build made the installer, signed it with the self-signed certificate and checked the signatures with `signtool` on the runner. The app itself has never run on a real desktop. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, a PC trusting the certificate and accepting the signatures, Segoe UI rendering and shutdown handling. **Nothing added in 1.3.1 has run on Windows either:** the WebView2 message and its download button, the installer's new warning, the Store build as a whole, its package detection, private data folder, startup task and toasts, one computer at a time, two folders and versions on real OneDrive and Google Drive folders, and moving from the installer build to the Store build. They were checked from macOS by compiling for Windows and by tests of the logic behind them, with fake cloud folders that delay and hold files. Where the Store build's data really lives, and whether on the same PC it opens the installer build's data, are unknown until it is installed. See the [checklist](#manual-windows-test-checklist).
+**Not verified on real Windows.** What has run on Windows is the CI test gates and the GitHub build, on `windows-latest`. A green gates run covers the type check, lint, unit tests, and the Rust format, lint and tests, which run on Windows itself. It also covers the Playwright tests, which run against the IPC mock and so don't drive the real backend. It says nothing about the installer or the app on a real desktop. The build made the installer, signed it with the self-signed certificate and checked the signatures with `signtool` on the runner. The app itself has never run on a real desktop. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, a PC trusting the certificate and accepting the signatures, Segoe UI rendering and shutdown handling. **Nothing added in 1.3.1 has run on Windows either:** the WebView2 message and its download button, the installer's new warning, the Store build as a whole, its package detection, private data folder, startup task and toasts, one computer at a time, two folders and versions on real OneDrive and Google Drive folders, and moving from the installer build to the Store build. They were checked from macOS by compiling for Windows and by tests of the logic behind them, with fake cloud folders that delay and hold files. **Nothing added in 1.3.2 has run on Windows either:** the SQLite database and its WAL file on NTFS, in the installer build's folder and in the Store build's private one, a kill right after a change, the first start after 1.3.1, and the clock warning. The [checklist](#manual-windows-test-checklist) has rows for them, under **Both builds, 1.3.2 store**. Where the Store build's data really lives, and whether on the same PC it opens the installer build's data, are unknown until it is installed. See the [checklist](#manual-windows-test-checklist).
 
 **Verified only on macOS or against a mock.**
 

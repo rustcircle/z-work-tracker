@@ -2,9 +2,9 @@
   "name": "z-work-tracker",
   "private": true,
   "license": "MIT",
-  "author": "Pedro Jorge <pmrj@rustcircle.com>",
+  "author": "Pedro Miguel Rodrigues Jorge <pmrj@rustcircle.com>",
   "repository": "https://github.com/rustcircle/z-work-tracker",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "type": "module",
   "packageManager": "pnpm@12.16.1",
   "engines": {
@@ -25,11 +25,6 @@
     "package:windows": "node scripts/package-windows.mjs",
     "package:msix": "node scripts/package-msix.mjs",
     "check:readme": "node scripts/check-readme-toc.mjs"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   },
   "dependencies": {
     "@photostructure/tz-lookup": "^11.7.0",

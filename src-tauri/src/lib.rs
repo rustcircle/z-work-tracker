@@ -1605,18 +1605,16 @@ mod smoke {
         app.emit("state-changed", ()).map_err(|e| e.to_string())
     }
 
-    /// Makes saves of the store fail for real, or lets them through again, by a folder in the way of the
-    /// file a save writes first. A read-only attribute wouldn't stop them on Windows.
+    /// Makes saves of the store fail for real, or lets them through again: a blocked save fails inside its
+    /// transaction, through the same path as a full disk, and the first save after writes every row.
     #[tauri::command(async)]
-    pub fn smoke_block_saves(blocked: bool) -> Result<(), String> {
-        let dir = std::env::var("ZWT_SMOKE_DATA_DIR").map_err(|e| e.to_string())?;
-        let in_the_way = std::path::Path::new(&dir).join("z-work-data.json.tmp");
-        if blocked {
-            std::fs::create_dir(in_the_way)
-        } else {
-            std::fs::remove_dir(in_the_way)
-        }
-        .map_err(|e| e.to_string())
+    pub fn smoke_block_saves(app: AppHandle, blocked: bool) -> Result<(), String> {
+        let core = app
+            .try_state::<std::sync::Arc<super::Core>>()
+            .ok_or("the app hasn't started")?;
+        let svc = core.service.as_ref().map_err(Clone::clone)?;
+        super::guard(svc).set_saves_blocked(blocked);
+        Ok(())
     }
 }
 

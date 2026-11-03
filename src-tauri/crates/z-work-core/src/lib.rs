@@ -22,6 +22,7 @@ pub mod drafts;
 pub mod epoch;
 pub mod error;
 pub mod gz;
+pub mod hlc;
 pub mod idle;
 pub mod lease;
 pub mod lease_io;
@@ -35,6 +36,7 @@ pub mod pieces;
 pub mod reminder;
 pub mod report;
 pub mod service;
+pub mod store;
 pub mod subtasks;
 pub mod summary;
 pub mod sync;
@@ -47,7 +49,13 @@ pub mod webview;
 pub mod xlsx;
 
 #[cfg(test)]
+mod cloud_roundtrip_tests;
+#[cfg(test)]
+mod scenario_bootstrap_tests;
+#[cfg(test)]
 mod scenario_folders_tests;
+#[cfg(test)]
+mod scenario_hlc_tests;
 #[cfg(test)]
 mod scenario_tests;
 #[cfg(test)]
@@ -66,7 +74,7 @@ mod licence {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../LICENSE");
         let text = std::fs::read_to_string(path).unwrap();
         assert!(text.starts_with("MIT License"));
-        assert!(text.contains("Copyright (c) 2026 Pedro Jorge"));
+        assert!(text.contains("Copyright (c) 2026 Pedro Miguel Rodrigues Jorge"));
         assert!(text.contains("THE SOFTWARE IS PROVIDED \"AS IS\""));
     }
 }

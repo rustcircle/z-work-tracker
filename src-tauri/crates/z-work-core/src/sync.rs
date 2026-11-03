@@ -1009,8 +1009,20 @@ pub fn run_cycle_within<I: SyncIo + Clone + 'static>(
 
     let changed = {
         let mut s = lock();
+        let was_awaiting = s.awaiting_cloud();
+        // A first start's own files are its data, before any restore is planned against it.
+        let taken = s.take_own_files(&reads);
         // In the lock, so a restore that landed during the reads counts.
         let followed = s.follow_restores(&mut reads);
+        // What a first start waits for: data from a folder, read whole and taken at this device's key. Counted after
+        // the restores are followed, as a folder left alone for one gives nothing.
+        let arrived = reads.iter().any(|(_, r)| {
+            r.error.is_none() && !r.own_unread && (r.own.is_some() || !r.files.is_empty())
+        });
+        let own_beat = reads
+            .iter()
+            .filter_map(|(_, r)| r.own.as_ref().and_then(|f| f.last_heartbeat))
+            .max();
         let mut incoming = Shared::default();
         let mut seen: BTreeMap<String, RemoteDevice> = BTreeMap::new();
         let mut own_files = Vec::new();
@@ -1033,7 +1045,16 @@ pub fn run_cycle_within<I: SyncIo + Clone + 'static>(
             }
         }
         let absorbed = s.absorb_remote(&incoming, seen, own_files);
-        followed || absorbed
+        // Only once what arrived is saved here: a merge that couldn't be saved would leave nothing to write but an
+        // empty store.
+        let merged = arrived && s.local_error().is_none();
+        let finished = s.finish_awaiting(merged, own_beat);
+        // A restore followed while waiting ended the wait with its data (`install_restored`): the drafts that waited for
+        // the data go back now, as `finish_awaiting` puts them back.
+        if was_awaiting && !finished && !s.awaiting_cloud() {
+            s.put_back_drafts();
+        }
+        taken || followed || absorbed || finished
     };
 
     // Checked as a reader will check it before anything is written, and the status says what that found.
@@ -1054,16 +1075,22 @@ pub fn run_cycle_within<I: SyncIo + Clone + 'static>(
         }
     };
 
+    // While a first start waits for its data, nothing is written: an empty folder that isn't synced yet must not get an
+    // empty file of this device. A skipped write is not a folder failure, so the last write and error stand. A folder
+    // that couldn't be read still says so.
+    let awaiting = lock().awaiting_cloud();
     for (target, read) in reads {
         let written = if let Some(e) = read.error.clone() {
-            Err(e)
+            Some(Err(e))
+        } else if awaiting {
+            None
         } else if read.own_unread {
-            Err("This device's file could not be read right now, so it was not overwritten. Will retry.".to_owned())
+            Some(Err("This device's file could not be read right now, so it was not overwritten. Will retry.".to_owned()))
         } else if read.own_newer {
-            Err(
+            Some(Err(
                 "This device's file was written by a newer app version; it was not overwritten."
                     .to_owned(),
-            )
+            ))
         } else {
             let (io, root, id, data) = (
                 io_impl.clone(),
@@ -1071,10 +1098,12 @@ pub fn run_cycle_within<I: SyncIo + Clone + 'static>(
                 own_id.clone(),
                 Arc::clone(&bytes),
             );
-            bounded(&hung, &target.root, limit, move || {
-                write_target(&io, Path::new(&root), &id, &data)
-            })
-            .and_then(|r| r)
+            Some(
+                bounded(&hung, &target.root, limit, move || {
+                    write_target(&io, Path::new(&root), &id, &data)
+                })
+                .and_then(|r| r),
+            )
         };
         let mut s = lock();
         let now = s.now();
@@ -1088,6 +1117,9 @@ pub fn run_cycle_within<I: SyncIo + Clone + 'static>(
             status.last_read_at = Some(now);
             status.lag_secs = lag.get(&target.root).copied();
         }
+        let Some(written) = written else {
+            continue;
+        };
         match written {
             Ok(()) => {
                 status.last_written_at = Some(now);
@@ -3471,14 +3503,13 @@ mod tests {
         b.cycle();
         b.s().request_remote_pause(&t).unwrap();
         b.cycle();
-        // A directory where the temporary file goes makes every save fail, and not for long.
-        let tmp = a.s().data_dir().join(format!("{}.tmp", persist::MAIN_FILE));
-        std::fs::create_dir(&tmp).unwrap();
+        // Every save fails inside its transaction, as on a full disk, and not for long.
+        a.s().set_saves_blocked(true);
         a.cycle();
         assert!(a.s().local_error().is_some());
         assert_eq!(a.data().own_open_segments(&a.id()).len(), 1);
         assert!(a.data().gaps.is_empty());
-        std::fs::remove_dir(&tmp).unwrap();
+        a.s().set_saves_blocked(false);
         a.cycle();
         assert_eq!(a.s().local_error(), None);
         assert_eq!(a.data().own_open_segments(&a.id()).len(), 0);
@@ -4513,8 +4544,7 @@ mod tests {
             a.cycle();
             let before = b.data();
             let on_disk = std::fs::read(own_file(&b, root.path())).unwrap();
-            let blocker = b._dir.path().join("z-work-data.json.tmp");
-            std::fs::create_dir_all(&blocker).unwrap();
+            b.s().set_saves_blocked(true);
             assert!(!b.cycle());
             assert_eq!(b.data(), before, "the timer runs on");
             assert!(b.s().local_error().is_some());
@@ -4530,7 +4560,7 @@ mod tests {
                 on_disk,
                 "nothing written there"
             );
-            std::fs::remove_dir_all(&blocker).unwrap();
+            b.s().set_saves_blocked(false);
             assert!(b.cycle());
             assert_eq!(b.s().file().prefs.epoch.as_ref().map(|e| e.epoch), Some(1));
             assert!(b.data().own_open_segments(&b.id()).is_empty());

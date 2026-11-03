@@ -268,6 +268,8 @@ pub struct Snapshot {
     pub notices: Vec<Notice>,
     /// Always shown while they apply, such as a task running on two devices at once.
     pub warnings: Vec<String>,
+    /// Shown while this computer's clock is behind the newest change it has seen. See `ClockBehindView`.
+    pub clock_behind: Option<ClockBehindView>,
     pub sync: SyncView,
     pub launch: LaunchView,
     pub raw_segments: Vec<RawSegmentView>,
@@ -284,6 +286,24 @@ pub struct Snapshot {
     pub has_pdf_logo: bool,
     pub lease: LeaseView,
     pub platform: PlatformView,
+}
+
+/// This computer's clock is behind another computer's, or behind a change saved here, by `hlc::CLOCK_BEHIND_WARN_SECS`
+/// or more (`Service::clock_behind`). `src/lib/types.ts` has the same shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClockBehindView {
+    /// Seconds from `Snapshot.now` to `newest_at`: at least 120.
+    pub behind_secs: i64,
+    /// The other computer's clock when it last wrote its file, or this one's when it last saved a change.
+    pub newest_at: Ts,
+    /// The other computer whose clock is ahead of this one, by name. None when it was a change saved here, so this clock
+    /// seems to have been set back. Always sent, as null when there is none.
+    pub cause_device: Option<String>,
+    /// Changes made here are dated a day or more past this clock (`hlc::HLC_MAX_LEAD_SECS`), the furthest they may go,
+    /// to come after what this computer has seen, so they can't be dated after it until the clock is fixed, and may
+    /// lose to it.
+    pub capped: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

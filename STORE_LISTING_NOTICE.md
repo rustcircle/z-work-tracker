@@ -12,6 +12,21 @@ Text to paste into Partner Center for zWorkTracker, and what to check first. It 
 
 zWorkTracker
 
+## Store identity
+
+| Value | |
+|---|---|
+| Store ID | 9P9RM9G0QBRC |
+| Store page | https://apps.microsoft.com/detail/9P9RM9G0QBRC |
+| Store protocol link | `ms-windows-store://pdp/?productid=9P9RM9G0QBRC` |
+| Package/Identity/Name | PedroMiguelRodriguesJorge.zWorkTracker |
+| Package/Identity/Publisher | CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9 |
+| PublisherDisplayName | Pedro Miguel Rodrigues Jorge |
+| Package Family Name | PedroMiguelRodriguesJorge.zWorkTracker_54k2cbaqgvhqp |
+| MSA app ID | 561b212b-0a7a-4a47-a49d-94c7b6d51893 (not used: the app signs in to no Microsoft account) |
+
+The Store page and links only work once the app passes certification and is published. The website already links to the Store page, so push the site change around launch day.
+
 ## Category
 
 Productivity. Use Business only if Partner Center's choice of subcategories suits it better.
@@ -100,8 +115,8 @@ Put the first four in the description or in the Additional information section. 
 | Supported systems | Windows 10 version 2004 or later, and Windows 11 (x64) |
 | Age rating | Complete the questionnaire. It has no user-generated content shared with others, no ads and no purchases |
 | Price | Free, with no in-app purchases |
-| Copyright | Copyright (c) 2026 Pedro Jorge |
-| Developed by | Pedro Jorge |
+| Copyright | Copyright (c) 2026 Pedro Miguel Rodrigues Jorge |
+| Developed by | Pedro Miguel Rodrigues Jorge |
 | Website | The project page, if you want it public |
 | Support contact | pmrj@rustcircle.com |
 | Privacy policy URL | **You need to provide this:** a public page with the text below |

@@ -26,9 +26,42 @@ All boundary lookups go through one file, `src/features/zones/geo.ts`, and the m
 | `nsis_tauri_utils` plugin | MIT OR Apache-2.0 | Installer only |
 | GCC runtime and winpthreads | GPL with the GCC Runtime Library Exception, and MIT/BSD | Statically linked into the MinGW build only |
 
+## Compiled into the app
+
+| Component | Licence | Used for | Note |
+|---|---|---|---|
+| [SQLite](https://sqlite.org/) 3.54.1, the `sqlite3.c` amalgamation in `libsqlite3-sys` 0.39.1 | Public domain ([sqlite.org/copyright.html](https://sqlite.org/copyright.html)) | The local store, `z-work-data.db` | Compiled from C into the app on every build, the same version on every system. The app doesn't use the operating system's SQLite |
+| `rusqlite` 0.41.1 and `libsqlite3-sys` 0.39.1, © 2014 The rusqlite developers | MIT | Rust's access to SQLite | Licence text below |
+
+### rusqlite and libsqlite3-sys licence
+
+Both crates carry this text:
+
+```
+Copyright (c) 2014 The rusqlite developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
 ## Libraries
 
-**Rust (shipped):** Tauri and its plugins, chrono, chrono-tz, rust_xlsxwriter, pdf-writer, subsetter, ttf-parser, png, miniz_oxide, user-idle, winreg, serde and their dependencies, under MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, Unlicense, MPL-2.0 and Unicode-3.0, each as declared by the crate.
+**Rust (shipped):** Tauri and its plugins, rusqlite, chrono, chrono-tz, rust_xlsxwriter, pdf-writer, subsetter, ttf-parser, png, miniz_oxide, user-idle, winreg, serde and their dependencies, under MIT, Apache-2.0, BSD-3-Clause, ISC, Zlib, Unlicense, MPL-2.0 and Unicode-3.0, each as declared by the crate.
 
 **JavaScript (shipped):** React, TipTap, ProseMirror, `@tauri-apps/api`, `topojson-client` and their dependencies, under MIT, ISC, Apache-2.0 OR MIT and CC0-1.0.
 

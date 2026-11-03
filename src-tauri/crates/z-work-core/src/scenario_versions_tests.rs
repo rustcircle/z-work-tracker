@@ -725,8 +725,7 @@ fn restore_refused_when_no_folder_can_take_the_pre_restore_copy() {
     cloud.advance(60);
     rename(&a, &p, "Renamed since");
     a.s().start_task(&t).unwrap();
-    let store = a.s().data_dir().join("z-work-data.json");
-    let before = std::fs::read(&store).unwrap();
+    let before = a.s().stored();
     for root in [MAIN, SECOND] {
         a.view.set_full(root, true);
     }
@@ -736,7 +735,7 @@ fn restore_refused_when_no_folder_can_take_the_pre_restore_copy() {
         refused.to_string(),
         "Couldn't save a copy of today's data to any folder first, so nothing was changed."
     );
-    assert_eq!(std::fs::read(&store).unwrap(), before, "nothing saved here");
+    assert_eq!(a.s().stored(), before, "nothing saved here");
     assert_eq!(project_name(&a, &p), "Renamed since");
     assert!(a.s().file().prefs.epoch.is_none());
     a.running();
@@ -1193,12 +1192,11 @@ fn crash_between_restore_steps_cannot_leave_data_at_the_old_key() {
     cloud.advance(60);
     rename(&a, &p, "Renamed since");
     // The save that installs the restore fails, as a crash at that step would leave it: nothing changes.
-    let blocker = a.s().data_dir().join("z-work-data.json.tmp");
-    std::fs::create_dir_all(&blocker).unwrap();
+    a.s().set_saves_blocked(true);
     assert!(versions::restore(&a.svc, &a.view, MAIN, &version, LIMIT).is_err());
     assert_eq!(project_name(&a, &p), "Renamed since");
     assert!(a.s().file().prefs.epoch.is_none());
-    std::fs::remove_dir_all(&blocker).unwrap();
+    a.s().set_saves_blocked(false);
     let a = a.relaunch();
     assert_eq!(project_name(&a, &p), "Renamed since");
     assert!(a.s().file().prefs.epoch.is_none());

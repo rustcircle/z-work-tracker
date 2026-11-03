@@ -435,10 +435,7 @@ mod tests {
         let (mut f, t) = file();
         f.data
             .start(
-                &crate::machine::Ctx {
-                    now: Ts::parse("2026-01-01T09:00:00Z").unwrap(),
-                    device: "other",
-                },
+                &crate::machine::Ctx::at(Ts::parse("2026-01-01T09:00:00Z").unwrap(), "other"),
                 &t,
             )
             .unwrap();

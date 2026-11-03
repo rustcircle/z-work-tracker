@@ -666,6 +666,21 @@ export interface Settings {
   remindPastShift?: boolean;
 }
 
+/** This computer's clock is behind the newest change it has seen (design D1 §6). */
+export interface ClockBehindView {
+  /** Seconds this clock was behind `newestAt` when the snapshot was built: at least 120. */
+  behindSecs: number;
+  /** When the newest change seen says it was saved, `YYYY-MM-DDTHH:MM:SSZ`. */
+  newestAt: string;
+  /** The other computer whose change is ahead of this clock, by name; null when the changes ahead were saved here. Always sent, never left out. */
+  causeDevice: string | null;
+  /**
+   * The gap is a day or more (`behindSecs >= 86400`), the furthest a new change may be dated past this clock. New changes can't be
+   * dated after `newestAt` until the clock is fixed, so they may lose to it. Always sent.
+   */
+  capped: boolean;
+}
+
 export interface Snapshot {
   /** The backend's count of committed changes when this was built. A lower count than one already adopted is an older reply. */
   revision: number;
@@ -693,6 +708,8 @@ export interface Snapshot {
   };
   notices: Notice[];
   warnings: string[];
+  /** Optional only so that fixtures built by hand can leave it out (missing means null). The backend always sends it. */
+  clockBehind?: ClockBehindView | null;
   sync: {
     targets: SyncTargetView[];
     detected: Detected[];

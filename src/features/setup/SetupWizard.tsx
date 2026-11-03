@@ -16,6 +16,7 @@ import { normalizeHex, suggestColor } from '../../lib/color';
 import { errorMessage } from '../../lib/errorMessage';
 import { dayOf, zoneLabel } from '../../lib/tz';
 import type { Currency, FolderPreview, RoundMethod } from '../../lib/types';
+import { ClockBanner } from '../../components/ClockBanner';
 import { ColorPicker } from '../../components/ColorPicker';
 import { useColorNotices } from '../../components/colorNotice';
 import { plural } from '../../components/format';
@@ -264,6 +265,7 @@ export function SetupWizard({ onFinished, rerun = false }: Props) {
     <main className="firstrun wizard" aria-labelledby="wizard-title" data-testid="setup-wizard" data-step={current}>
       <div className="firstrun-card wizard-card">
         <LeaseBanner />
+        <ClockBanner />
         <p className="wizard-progress" data-testid="wizard-progress">
           Step {position + 1} of {steps.length}
           {note ? ` (${note})` : ''}

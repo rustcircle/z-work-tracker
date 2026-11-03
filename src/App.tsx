@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { AppProvider, useAppState } from './app/store';
 import { Banners } from './components/Banners';
+import { ClockBanner } from './components/ClockBanner';
 import { ColorNoticeProvider } from './components/colorNotice';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { HideNoticeDialog } from './components/HideNoticeDialog';
@@ -42,7 +43,9 @@ function Root() {
     <>
       {snapshot.sync.promptPending ? (
         <>
-          <Banners />
+          <Banners>
+            <ClockBanner />
+          </Banners>
           <SyncPrompt />
         </>
       ) : (

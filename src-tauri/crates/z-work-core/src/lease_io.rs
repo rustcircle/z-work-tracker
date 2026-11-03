@@ -228,6 +228,8 @@ pub(crate) struct LeasePlan {
     writable: Vec<String>,
     hung: HungTargets,
     writers: Arc<Writers>,
+    /// A first start waiting for its data from the folders: records are read, and none is written.
+    awaiting: bool,
 }
 
 /// Why a record is written.
@@ -393,6 +395,15 @@ pub(crate) fn write_all<I: SyncIo + Clone + 'static>(
     limit: Duration,
     key: &str,
 ) -> Vec<(String, FolderWrite)> {
+    // Not written, as with a release that came after a write was planned: nothing goes to a folder, not even `lease/`,
+    // until this device's data has come from one.
+    if plan.awaiting {
+        return planned
+            .roots
+            .iter()
+            .map(|r| (r.clone(), Ok(false)))
+            .collect();
+    }
     let bytes = match serde_json::to_vec(&planned.record) {
         Ok(b) => Arc::new(b),
         Err(e) => {
@@ -509,6 +520,7 @@ impl Service {
             writable,
             hung: self.hung_targets(),
             writers: Arc::clone(&self.lease_io.writers),
+            awaiting: self.awaiting_cloud(),
         })
     }
 

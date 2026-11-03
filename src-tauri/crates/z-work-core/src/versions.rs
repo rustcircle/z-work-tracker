@@ -74,6 +74,11 @@ const RETRY_ATTEMPTS: u32 = 5;
 /// The most records a restore preview names one by one.
 const WARNINGS_NAMED: usize = 20;
 
+/// "Save a version now" while a first start waits for its data.
+const AWAITING_CLOUD: &str = "This computer's data hasn't arrived from your sync folder yet, so no version can be saved there yet.";
+/// A restore while a first start waits for its data. Its own file in the folders, all there is of its data, would fall
+/// below the restore and be written over, with no copy of today's data saved first.
+const AWAITING_RESTORE: &str = "This computer's data hasn't arrived from your sync folder yet, so no version can be restored yet. Nothing was changed. Check that the folder is synced to this computer, then press Sync now in Settings > Sync between devices.";
 const FOLDER_NOT_FOUND: &str =
     "Folder not found. Is the drive connected and the desktop client running?";
 const NO_FOLDER: &str = "Versions are saved in your sync folders, and none is connected.";
@@ -979,7 +984,15 @@ fn run<I: SyncIo + Clone + 'static>(
     limit: Duration,
     ask: Ask,
 ) -> Ran {
-    let Some(plan) = lock(svc).plan_versions(ask) else {
+    let plan = {
+        let mut s = lock(svc);
+        // A first start waiting for its data has nothing of its own to keep in the folders yet.
+        if s.awaiting_cloud() {
+            return Ran::default();
+        }
+        s.plan_versions(ask)
+    };
+    let Some(plan) = plan else {
         return Ran::default();
     };
     let done = carry_out(io, &plan, limit);
@@ -1010,6 +1023,9 @@ pub fn save_now<I: SyncIo + Clone + 'static>(
     let pending = {
         let mut s = lock(svc);
         s.lease_gate()?;
+        if s.awaiting_cloud() {
+            return Err(CoreError::Conflict(AWAITING_CLOUD.to_owned()));
+        }
         if s.version_targets().is_empty() {
             let why = if s.all_folders_waiting() {
                 WAITING_FOR_CHOICE
@@ -1386,6 +1402,11 @@ pub fn restore<I: SyncIo + Clone + 'static>(
     let (targets, hung, now, own_id) = {
         let s = lock(svc);
         s.lease_gate()?;
+        // A first start has no data of its own here yet, so none is copied first (`run`), and what it has is in the
+        // folders, below the restore it would make: it waits for its data first.
+        if s.awaiting_cloud() {
+            return Err(CoreError::Conflict(AWAITING_RESTORE.to_owned()));
+        }
         // The copy of today's data that comes first could go nowhere.
         if s.all_folders_waiting() {
             return Err(CoreError::Conflict(format!(

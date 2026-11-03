@@ -331,16 +331,16 @@ pub fn merge(a: &Shared, b: &Shared) -> Shared {
     }
 }
 
+/// Strategies for replicated data, for the merge laws here and the hybrid logical clock's properties (`hlc`).
 #[cfg(test)]
-mod tests {
+pub(crate) mod strategies {
     use super::*;
-    use crate::model::{BillingType, PauseReason, TaskState};
+    use crate::model::{PauseReason, TaskState};
     use crate::time::Ts;
     use proptest::prelude::*;
-    use serde::Deserialize;
     use serde_json::{Value, json};
 
-    fn stamp() -> impl Strategy<Value = Stamp> {
+    pub(crate) fn stamp() -> impl Strategy<Value = Stamp> {
         (0i64..4, prop::sample::select(vec!["a", "b", "c"])).prop_map(|(t, d)| Stamp {
             at: Ts(t),
             by: d.to_owned(),
@@ -348,7 +348,7 @@ mod tests {
     }
 
     /// With any mix of group clocks, as copies from older and newer builds meet in one folder.
-    fn project() -> impl Strategy<Value = Project> {
+    pub(crate) fn project() -> impl Strategy<Value = Project> {
         (
             (0u8..3, any::<bool>(), any::<bool>(), 0u8..3, stamp()),
             (0u8..2, prop::option::of(0u8..3), 0i64..2),
@@ -662,7 +662,7 @@ mod tests {
         })
     }
 
-    fn shared() -> impl Strategy<Value = Shared> {
+    pub(crate) fn shared() -> impl Strategy<Value = Shared> {
         (
             prop::collection::vec(project(), 0..4),
             prop::collection::vec(task(), 0..4),
@@ -693,6 +693,17 @@ mod tests {
                 },
             )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strategies::{project, shared};
+    use super::*;
+    use crate::model::{BillingType, TaskState};
+    use crate::time::Ts;
+    use proptest::prelude::*;
+    use serde::Deserialize;
+    use serde_json::{Value, json};
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(600))]
