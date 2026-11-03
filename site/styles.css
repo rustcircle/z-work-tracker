@@ -27,7 +27,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0b1a2b;
-    --liquid: #0e2536;
+    --liquid: #0d2132;
     --surface: rgb(18 36 56 / .86);
     --surface-solid: #122438;
     --line: #234463;
@@ -151,8 +151,8 @@ a.shot:hover { border-color: var(--accent); }
 .row-copy p { margin-top: 12px; color: var(--ink-2); }
 
 .also-label { margin-top: 64px; }
-.also { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin-top: 24px; padding: 8px 0; }
-.also > div { padding: 16px 32px; }
+.also { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin-top: 32px; padding: 8px 0; }
+.also > div { padding: 16px 24px; }
 .also > div + div { border-left: 1px solid var(--line); }
 .also h4 { margin: 0; font-size: 1.0625rem; line-height: 1.25; font-weight: 600; }
 .also .i { color: var(--accent); margin-bottom: 12px; }
@@ -235,6 +235,7 @@ body > main { flex: 1 0 auto; width: 100%; }
 @media (prefers-color-scheme: dark) {
   /* The app screenshots are light-theme captures: take the glare off on a dark page. */
   .shot img, .ring-img { filter: brightness(.86); }
+  .stage img { -webkit-mask-image: linear-gradient(#000 calc(100% - 32px), transparent); mask-image: linear-gradient(#000 calc(100% - 32px), transparent); }
   .row .shot { background: #dbdbdb; }
   .row .tiles { background: #d1d2d4; }
 }
