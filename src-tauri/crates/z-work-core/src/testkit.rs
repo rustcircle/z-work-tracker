@@ -617,6 +617,19 @@ impl Device {
     }
 }
 
+/// What a crash would leave of a data folder: its files as they are on disk now, the database and its WAL with them,
+/// copied while the `Service` that owns them is still alive. Reopening the copy is the next launch after a kill.
+pub(crate) fn crash_image(dir: &Path) -> tempfile::TempDir {
+    let image = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            std::fs::copy(entry.path(), image.path().join(entry.file_name())).unwrap();
+        }
+    }
+    image
+}
+
 /// Both devices read and write each other's files once, in turn.
 pub(crate) fn sync_all(devices: &[&Device]) {
     for _ in 0..2 {

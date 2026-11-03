@@ -271,7 +271,7 @@ fn check_task(t: &Task) -> Result<(), CoreError> {
 
 /// The oldest date a synced record may carry, and how far ahead of this clock it may be.
 const EARLIEST: Ts = Ts::EARLIEST;
-const MAX_SKEW_SECS: i64 = 2 * 86_400;
+pub(crate) const MAX_SKEW_SECS: i64 = 2 * 86_400;
 const FAR_FUTURE: Ts = Ts(4_102_444_800); // 2100-01-01, for chosen effective dates
 /// The latest any clock can be believed to read, so what fails even then is bad whatever the date.
 const LAST_CLOCK: Ts = FAR_FUTURE;
@@ -359,7 +359,7 @@ fn check_file_as_a_whole(f: &DeviceFile, now: Ts) -> Result<(), CoreError> {
 }
 
 /// It decides which files every device goes on reading, so one that can't be right is no use to anyone.
-fn check_epoch(e: &EpochInfo, now: Ts) -> Result<(), CoreError> {
+pub(crate) fn check_epoch(e: &EpochInfo, now: Ts) -> Result<(), CoreError> {
     if e.epoch > MAX_EPOCH {
         return Err(bad("a restored version's number is out of range"));
     }

@@ -856,10 +856,7 @@ mod tests {
     const NOW: &str = "2026-03-20T12:00:00Z";
 
     fn at(device: &str) -> Ctx<'_> {
-        Ctx {
-            now: Ts::parse("2026-03-20T12:00:00Z").unwrap(),
-            device,
-        }
+        Ctx::at(Ts::parse("2026-03-20T12:00:00Z").unwrap(), device)
     }
     fn rate_for(s: &mut Shared, project: &str) {
         s.set_rate(
@@ -1013,14 +1010,8 @@ mod tests {
     #[test]
     fn two_devices_get_different_prefixes_and_a_forced_clash_is_reported() {
         let mut s = Shared::default();
-        let a = Ctx {
-            now: ts(NOW),
-            device: "pc-a",
-        };
-        let b = Ctx {
-            now: ts(NOW),
-            device: "pc-b",
-        };
+        let a = Ctx::at(ts(NOW), "pc-a");
+        let b = Ctx::at(ts(NOW), "pc-b");
         s.set_device_prefix(&a, &s.prefix_of("pc-a")).unwrap();
         assert_eq!(s.prefix_of("pc-b"), "B");
         s.set_device_prefix(&b, "A").unwrap();

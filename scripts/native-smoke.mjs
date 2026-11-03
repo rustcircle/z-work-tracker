@@ -4,9 +4,10 @@
 // test commands. Part 2 launches the unmodified release binary with HOME pointed at a temporary folder.
 // Not covered here: clicking the real tray icon, and anything on real Windows.
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -67,7 +68,71 @@ async function waitFile(path, ms = 40000) {
 }
 
 const withTimeout = (p, ms) => Promise.race([p, sleep(ms).then(() => 'timeout')]);
-const readStore = () => JSON.parse(readFileSync(join(dataDir, 'z-work-data.json'), 'utf8'));
+
+// The store: one SQLite database (src-tauri/crates/z-work-core/src/store.rs). Each record is its JSON in `records`, the
+// rest of the device's file is one JSON row, `meta.local`, and the heartbeat of a running timer is `meta.beat`.
+const DB = 'z-work-data.db';
+const KINDS = ['projects', 'tasks', 'segments', 'settings', 'shifts', 'rates', 'rounding', 'gaps', 'pauses', 'tags', 'templates', 'summaries', 'prefixes', 'auditLog', 'pauseRequests'];
+const UPSERT_META = 'INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value';
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// The store in `dir` as the 1.3.1 file looked: `meta.local` with `data` rebuilt from the records, every kind an object
+// by id. Read from a copy of the database and its WAL: while the app runs it holds the file for itself alone (EXCLUSIVE
+// locking), and a copy can't disturb it. Opening the copy replays its WAL. A copy is only kept when the database didn't
+// change while it was taken, as a checkpoint in between would pair the file with a WAL that no longer belongs to it.
+function readStoreAt(dir) {
+  const path = join(dir, DB);
+  if (!existsSync(path)) throw new Error(`no ${DB} in ${dir}`);
+  for (let attempt = 1; ; attempt++) {
+    const copy = mkdtempSync(join(work, 'db-copy-'));
+    try {
+      const before = statSync(path);
+      for (const suffix of ['', '-wal']) {
+        if (existsSync(path + suffix)) copyFileSync(path + suffix, join(copy, DB + suffix));
+      }
+      const after = statSync(path);
+      if (before.mtimeMs !== after.mtimeMs || before.size !== after.size) throw new Error(`${DB} changed while it was copied`);
+      const db = new DatabaseSync(join(copy, DB));
+      try {
+        const data = Object.fromEntries(KINDS.map((kind) => [kind, {}]));
+        for (const { kind, id, json } of db.prepare('SELECT kind, id, json FROM records').all()) (data[kind] ??= {})[id] = JSON.parse(json);
+        return { ...JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'local'").get().value), data };
+      } finally {
+        db.close();
+      }
+    } catch (e) {
+      if (attempt === 5) throw e;
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
+    sleepSync(200);
+  }
+}
+const readStore = () => readStoreAt(dataDir);
+
+// Changes the store in `dir` in one transaction, through `put(kind, record)`, `head(change)` on `meta.local` and
+// `beat(at)`. Only while the app is closed: a running app holds the file, and the wait for it here would run out.
+function changeStoreAt(dir, f) {
+  const db = new DatabaseSync(join(dir, DB), { timeout: 5000 });
+  const put = (kind, record) =>
+    db.prepare('INSERT INTO records(kind, id, json) VALUES (?, ?, ?) ON CONFLICT(kind, id) DO UPDATE SET json = excluded.json').run(kind, record.id, JSON.stringify(record));
+  const head = (change) => {
+    const local = JSON.parse(db.prepare("SELECT value FROM meta WHERE key = 'local'").get().value);
+    change(local);
+    db.prepare(UPSERT_META).run('local', JSON.stringify(local));
+  };
+  const beat = (at) => db.prepare(UPSERT_META).run('beat', JSON.stringify(at));
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    f({ put, head, beat });
+    db.exec('COMMIT');
+  } catch (e) {
+    if (db.isTransaction) db.exec('ROLLBACK');
+    throw e;
+  } finally {
+    db.close();
+  }
+}
 
 const LIST = { type: 'doc', content: [{ type: 'orderedList', attrs: { start: 1 }, content: ['First step', 'Second step'].map((text) => ({ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] })) }] };
 
@@ -339,18 +404,21 @@ run(async () => {
   check('--quit (the installer path) exits the running app cleanly', quitter.status === 0 && exit3 !== 'timeout' && exit3.code === 0, JSON.stringify(exit3));
   store = readStore();
   check('--quit closed the running segment', Object.values(store.data.segments).every((s) => s.end) && Object.values(store.data.tasks).find((t) => t.name === 'Smoke after crash')?.pauseReason?.kind === 'appQuit');
-  check('one backup file exists', existsSync(join(dataDir, 'z-work-data.json.bak')));
+  check('the store is the one database, with no JSON file, .bak or half-built database beside it', existsSync(join(dataDir, DB)) && !['z-work-data.json', 'z-work-data.json.bak', `${DB}.new`].some((f) => existsSync(join(dataDir, f))));
 
   // Run 4: words that met newer text, on the real backend. First a draft left over a description another device
   // has changed since, stamped older than the draft, which the launch must not put over it. The old rule would have.
   store = readStore();
   const heldTask = Object.values(store.data.tasks).find((t) => t.name === 'Smoke task');
   const para = (text) => ({ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
-  const iso = (ago) => new Date(Date.now() - ago * 1000).toISOString().slice(0, 19) + 'Z';
+  // Seconds before now, or after this device's own stamp on the description when that is later: saves in a burst stamp
+  // ahead of the clock (the hybrid logical clock), and the order below must hold all the same.
+  const since = Math.max(Date.now(), Date.parse(heldTask.descriptionStamp.at) + 3000);
+  const iso = (ago) => new Date(since - ago * 1000).toISOString().slice(0, 19) + 'Z';
   heldTask.description = para('Text from another device');
   // Later than this device's own synced copy of the task, or the first sync would merge that back over it.
   heldTask.descriptionStamp = { at: iso(2), by: 'another-device' };
-  writeFileSync(join(dataDir, 'z-work-data.json'), JSON.stringify(store));
+  changeStoreAt(dataDir, ({ put }) => put('tasks', heldTask));
   writeFileSync(join(dataDir, 'z-work-drafts.json'), JSON.stringify({ [heldTask.id]: { description: para('Words before the restart'), at: iso(1), base: LIST } }));
   out = join(work, 'r4.json');
   app = launch(exe, `
@@ -663,23 +731,28 @@ async function part2() {
   let exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })));
   await sleep(5000);
   check('release build starts and stays up', child.exitCode === null);
-  check('release build creates its store in the app data folder', existsSync(join(dir, 'z-work-data.json')));
-  const device = JSON.parse(readFileSync(join(dir, 'z-work-data.json'), 'utf8')).deviceId;
+  check('release build creates its store in the app data folder', existsSync(join(dir, DB)));
+  const device = readStoreAt(dir).deviceId;
   child.kill('SIGTERM');
   await withTimeout(exited, 8000);
 
   // Seed an open segment and a heartbeat: the release build must recover them on its own.
-  const seeded = JSON.parse(readFileSync(join(dir, 'z-work-data.json'), 'utf8'));
   const stamp = { at: '2026-01-01T00:00:00Z', by: device };
-  seeded.data.projects.p = { id: 'p', name: 'Seed', color: '#2563eb', createdAt: '2026-01-01T00:00:00Z', stamp };
-  seeded.data.tasks.t = { id: 't', name: 'Seeded', projectId: 'p', description: null, createdAt: '2026-01-01T00:00:00Z', nameStamp: stamp, projectStamp: stamp, descriptionStamp: stamp, deletedStamp: stamp, state: 'running', stateStamp: stamp };
-  seeded.data.segments.s = { id: 's', taskId: 't', deviceId: device, start: '2026-01-01T09:00:00Z', end: null };
-  seeded.lastHeartbeat = '2026-01-01T09:30:00Z';
-  writeFileSync(join(dir, 'z-work-data.json'), JSON.stringify(seeded));
+  const heartbeat = '2026-01-01T09:30:00Z';
+  changeStoreAt(dir, ({ put, head, beat }) => {
+    put('projects', { id: 'p', name: 'Seed', color: '#2563eb', createdAt: '2026-01-01T00:00:00Z', stamp });
+    put('tasks', { id: 't', name: 'Seeded', projectId: 'p', description: null, createdAt: '2026-01-01T00:00:00Z', nameStamp: stamp, projectStamp: stamp, descriptionStamp: stamp, deletedStamp: stamp, state: 'running', stateStamp: stamp });
+    put('segments', { id: 's', taskId: 't', deviceId: device, start: '2026-01-01T09:00:00Z', end: null });
+    head((local) => {
+      local.lastHeartbeat = heartbeat;
+    });
+    // As a run that crashed leaves it: the launch takes the later of the two.
+    beat(heartbeat);
+  });
   child = spawn(exe, [], { stdio: 'ignore', env: { ...process.env, HOME: home } });
   exited = new Promise((r) => child.on('exit', (code, signal) => r({ code, signal })));
   await sleep(5000);
-  const after = JSON.parse(readFileSync(join(dir, 'z-work-data.json'), 'utf8'));
+  const after = readStoreAt(dir);
   check('release build recovers a crash at launch', after.data.segments.s.end === '2026-01-01T09:30:00Z' && after.data.tasks.t.state === 'paused');
   check('release build kept the seeded data across relaunch', after.data.projects.p?.name === 'Seed');
   const q = spawnSync(exe, ['--quit'], { env: { ...process.env, HOME: home }, timeout: 15000 });

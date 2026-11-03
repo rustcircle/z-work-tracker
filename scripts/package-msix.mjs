@@ -1,15 +1,29 @@
 #!/usr/bin/env node
-// Packs the Windows x64 build as an MSIX for upload to the Microsoft Store, from macOS, with makemsix from Microsoft's MSIX
-// Packaging SDK. It packs the exe and WebView2Loader.dll that `pnpm package:windows` left in the release folder, and builds
-// nothing unless --build is passed. The package is not signed: the Store signs what it publishes. The Store identity is
-// Partner Center's to give, so it has no defaults. The README section on the Microsoft Store package has the setup.
+// Packs the Windows x64 build as MSIX packages, from macOS, with makemsix from Microsoft's MSIX Packaging SDK. It packs the exe and
+// WebView2Loader.dll that `pnpm package:windows` left in the release folder, and builds nothing unless --build is passed.
+// One run makes two packages from those same files, which differ only in AppxManifest.xml: the Store package, with the identity
+// Partner Center issued for the app, to upload there, and a test package, with an identity of our own, to sign by hand and try on
+// a PC. --identity store or --identity test makes just one of them. Neither is signed here: the Store signs what it publishes.
+// The identities are in msix-manifest.mjs. The README section on the Microsoft Store package has the setup.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
-import { ASSETS, EXECUTABLE, buildManifest, embeddedVersion, msixVersion, readIdentity, resourceCopies } from './msix-manifest.mjs';
+import {
+  ASSETS,
+  EXECUTABLE,
+  embeddedVersion,
+  identityOf,
+  manifestFor,
+  msixFileName,
+  msixVersion,
+  packageFamilyName,
+  parseArguments,
+  resourceCopies,
+  retiredVariables,
+} from './msix-manifest.mjs';
 
 const TARGET = 'x86_64-pc-windows-gnu';
 const LOADER = 'WebView2Loader.dll';
@@ -19,12 +33,29 @@ const UNZIP = '/usr/bin/unzip';
 const root = resolve(import.meta.dirname, '..');
 const tauriDir = join(root, 'src-tauri');
 
-// The package while it is being made, under a name that is not a package's. A run that fails takes it away, and it is
-// renamed only once it has passed every check, so nothing else is ever left under the real name.
+// What each package is for, and what is left to do to it.
+const PURPOSE = {
+  store: 'the Microsoft Store: upload this one in Partner Center',
+  test: 'trying on a PC: sign it with a certificate whose subject is its Publisher, then install it',
+};
+const UNSIGNED = {
+  store: 'Unsigned: the Store signs it',
+  test: 'Unsigned: sign it yourself before installing it',
+};
+const SIGNED = {
+  store: 'Signed: it carries a signature, which the Store replaces',
+  test: 'Signed: it carries a signature',
+};
+
+// The package while it is being made, under a name that is not a package's, and the packages this run has finished. A run that
+// fails takes them all away, and a package is renamed only once it has passed every check, so nothing else is ever left under
+// the real names.
 let partial = null;
+const made = [];
 
 function fail(message) {
   if (partial) rmSync(partial, { force: true });
+  for (const file of made) rmSync(file, { force: true });
   console.error(message);
   process.exit(1);
 }
@@ -35,9 +66,20 @@ function unescapeXml(text) {
   return text.replace(/&(lt|gt|quot|apos|amp);/g, (_, name) => characters[name]);
 }
 
-const unknown = process.argv.slice(2).filter((arg) => arg !== '--build');
-if (unknown.length > 0) fail(`Unknown argument: ${unknown.join(' ')}. The only option is --build, which builds the Windows app first.`);
-const rebuild = process.argv.includes('--build');
+let options;
+try {
+  options = parseArguments(process.argv.slice(2));
+} catch (error) {
+  fail(error.message);
+}
+const { build: rebuild, kinds } = options;
+
+// The Store identity used to come from these. A value left in a shell must not pass for an override, so say it is ignored.
+const retired = retiredVariables(process.env);
+if (retired.length > 0) {
+  const [one, it] = retired.length === 1 ? ['is', 'it'] : ['are', 'them'];
+  console.warn(`${retired.join(', ')} ${one} set, and no longer read: the identities are in scripts/msix-manifest.mjs. Unset ${it} to stop this message.`);
+}
 
 const conf = JSON.parse(readFileSync(join(tauriDir, 'tauri.conf.json'), 'utf8'));
 const productName = conf.productName;
@@ -48,16 +90,18 @@ if (unnamed.length > 0) fail(`src-tauri/tauri.conf.json needs ${unnamed.map(([ke
 // Everything that can be wrong with the settings is reported together, before any work starts.
 const problems = [];
 let version;
-let identity;
+const identities = {};
 try {
   version = msixVersion(conf.version);
 } catch (error) {
   problems.push(`The version in src-tauri/tauri.conf.json: ${error.message}`);
 }
-try {
-  identity = readIdentity(process.env);
-} catch (error) {
-  problems.push(error.message);
+for (const kind of kinds) {
+  try {
+    identities[kind] = identityOf(kind);
+  } catch (error) {
+    problems.push(`The ${kind} identity in scripts/msix-manifest.mjs: ${error.message}`);
+  }
 }
 if (problems.length > 0) fail(problems.join('\n'));
 
@@ -66,12 +110,13 @@ const targetRoot = process.env.CARGO_TARGET_DIR ? resolve(tauriDir, process.env.
 const release = join(targetRoot, TARGET, 'release');
 const exe = join(release, EXECUTABLE);
 
-// A package from an earlier run goes first, so a run that fails leaves nothing that could be taken for this one.
+// Packages from an earlier run go first, so a run that fails leaves nothing that could be taken for this one's.
 const outDir = process.env.ZWT_MSIX_OUT_DIR ? resolve(process.env.ZWT_MSIX_OUT_DIR) : join(release, 'bundle', 'msix');
-const msix = join(outDir, `${productName}_${version}_x64.msix`);
-partial = `${msix}.partial`;
-rmSync(msix, { force: true });
-rmSync(partial, { force: true });
+const packages = kinds.map((kind) => ({ kind, file: join(outDir, msixFileName(productName, version, kind)) }));
+for (const { file } of packages) {
+  rmSync(file, { force: true });
+  rmSync(`${file}.partial`, { force: true });
+}
 
 const makemsix = resolve(process.env.ZWT_MAKEMSIX || join(homedir(), 'msix-packaging', '.vs', 'bin', 'makemsix'));
 if (!existsSync(makemsix)) {
@@ -110,7 +155,8 @@ if (built !== conf.version) {
   );
 }
 
-// The staging folder holds exactly what goes into the package, and is wiped each time.
+// The staging folder holds exactly what goes into the packages, and is wiped each time. Every package is packed from it: only
+// AppxManifest.xml, which each package gets in turn, differs.
 const stage = join(release, 'msix-stage');
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(join(stage, 'Assets'), { recursive: true });
@@ -147,54 +193,78 @@ for (const [image, size] of Object.entries(ASSETS)) {
   staged.push(`Assets/${image}.png`);
 }
 
-writeFileSync(join(stage, 'AppxManifest.xml'), buildManifest({ ...identity, displayName: productName, description, version }));
-staged.push('AppxManifest.xml');
-
 mkdirSync(outDir, { recursive: true });
 
-console.log(`Packing ${productName} ${conf.version} from ${release} as package version ${version}`);
+console.log(`Packing ${productName} ${conf.version} from ${release} as package version ${version}: ${kinds.join(' and ')}`);
 // makemsix finds libmsix.dylib through an absolute path written into it when it was built. If that folder has since moved,
 // the copy in ../lib beside makemsix's own folder is the fallback.
 const lib = resolve(dirname(makemsix), '..', 'lib');
 const packEnv = { ...process.env, DYLD_FALLBACK_LIBRARY_PATH: [lib, process.env.DYLD_FALLBACK_LIBRARY_PATH].filter(Boolean).join(':') };
-const pack = spawnSync(makemsix, ['pack', '-d', stage, '-p', partial], { encoding: 'utf8', env: packEnv, maxBuffer: 1 << 26 });
-const said = `${pack.stdout ?? ''}${pack.stderr ?? ''}`.trim();
-if (pack.error) fail(`Could not run ${makemsix}: ${pack.error.message}`);
-if (pack.status !== 0) fail(`makemsix failed (exit ${pack.status}):\n${said}`);
-if (!existsSync(partial)) fail(`makemsix finished, but wrote no package at ${partial}.\n${said}`.trim());
-if (said) console.log(said);
 
-// Look inside what was made, rather than trusting that makemsix exiting 0 means the package is whole. makemsix checks the
-// manifest against Microsoft's schemas, and nothing more: not that the files it names are there, nor the Store's own rules.
-const listing = spawnSync(UNZIP, ['-Z1', partial], { encoding: 'utf8', maxBuffer: 1 << 26 });
-if (listing.status !== 0) fail(`${partial} can't be read as a zip file:\n${listing.stderr}`);
-const entries = listing.stdout.split('\n').filter(Boolean);
-const lacking = ['AppxBlockMap.xml', '[Content_Types].xml', ...staged].filter((name) => !entries.includes(name));
-if (lacking.length > 0) fail(`The package lacks: ${lacking.join(', ')}`);
+/** Makes one package from the staged files and returns what was read back from it. It fails the whole run if anything is wrong. */
+function pack({ kind, file }) {
+  const identity = identities[kind];
+  writeFileSync(join(stage, 'AppxManifest.xml'), manifestFor(kind, { displayName: productName, description, version }));
 
-const manifest = spawnSync(UNZIP, ['-p', partial, 'AppxManifest.xml'], { encoding: 'utf8', maxBuffer: 1 << 24 }).stdout ?? '';
-const identityTag = /<Identity\s[^>]*>/.exec(manifest)?.[0] ?? '';
-const attribute = (name) => new RegExp(`\\s${name}="([^"]*)"`).exec(identityTag)?.[1];
-const shown = /<PublisherDisplayName>([^<]*)</.exec(manifest)?.[1];
-if (!attribute('Name') || !attribute('Publisher') || !attribute('Version') || !shown) fail('The manifest inside the package has no complete identity.');
+  partial = `${file}.partial`;
+  const run = spawnSync(makemsix, ['pack', '-d', stage, '-p', partial], { encoding: 'utf8', env: packEnv, maxBuffer: 1 << 26 });
+  const said = `${run.stdout ?? ''}${run.stderr ?? ''}`.trim();
+  if (run.error) fail(`Could not run ${makemsix}: ${run.error.message}`);
+  if (run.status !== 0) fail(`makemsix failed on the ${kind} package (exit ${run.status}):\n${said}`);
+  if (!existsSync(partial)) fail(`makemsix finished, but wrote no package at ${partial}.\n${said}`.trim());
+  if (said) console.log(said);
 
-// Only now is it a package: one that passed every check.
-renameSync(partial, msix);
-partial = null;
+  // Look inside what was made, rather than trusting that makemsix exiting 0 means the package is whole. makemsix checks the
+  // manifest against Microsoft's schemas, and nothing more: not that the files it names are there, nor the Store's own rules.
+  const listing = spawnSync(UNZIP, ['-Z1', partial], { encoding: 'utf8', maxBuffer: 1 << 26 });
+  if (listing.status !== 0) fail(`${partial} can't be read as a zip file:\n${listing.stderr}`);
+  const entries = listing.stdout.split('\n').filter(Boolean);
+  const lacking = ['AppxBlockMap.xml', '[Content_Types].xml', 'AppxManifest.xml', ...staged].filter((name) => !entries.includes(name));
+  if (lacking.length > 0) fail(`The ${kind} package lacks: ${lacking.join(', ')}`);
+
+  const manifest = spawnSync(UNZIP, ['-p', partial, 'AppxManifest.xml'], { encoding: 'utf8', maxBuffer: 1 << 24 }).stdout ?? '';
+  const identityTag = /<Identity\s[^>]*>/.exec(manifest)?.[0] ?? '';
+  const attribute = (name) => new RegExp(`\\s${name}="([^"]*)"`).exec(identityTag)?.[1];
+  const shown = /<PublisherDisplayName>([^<]*)</.exec(manifest)?.[1];
+  if (!attribute('Name') || !attribute('Publisher') || !attribute('Version') || !shown) fail(`The manifest inside the ${kind} package has no complete identity.`);
+  const read = { name: unescapeXml(attribute('Name')), publisher: unescapeXml(attribute('Publisher')), publisherDisplayName: unescapeXml(shown), version: attribute('Version') };
+  const wrong = [
+    ['Name', read.name, identity.name],
+    ['Publisher', read.publisher, identity.publisher],
+    ['Publisher display name', read.publisherDisplayName, identity.publisherDisplayName],
+    ['Version', read.version, version],
+  ].filter(([, got, wanted]) => got !== wanted);
+  if (wrong.length > 0) {
+    fail(`The manifest inside the ${kind} package is not the one it was made from:\n${wrong.map(([what, got, wanted]) => `  ${what}: ${got} (wanted ${wanted})`).join('\n')}`);
+  }
+
+  // Only now is it a package: one that passed every check.
+  renameSync(partial, file);
+  partial = null;
+  made.push(file);
+  return { kind, file, entries, read, family: packageFamilyName(read.name, read.publisher) };
+}
+
+const results = packages.map(pack);
 
 console.log(
   [
+    ...results.flatMap(({ kind, file, entries, read, family }) => [
+      '',
+      `Package: ${file}`,
+      `For: ${PURPOSE[kind]}`,
+      `Size: ${statSync(file).size} bytes`,
+      `SHA-256: ${createHash('sha256').update(readFileSync(file)).digest('hex')}`,
+      `Files in the package: ${entries.length}`,
+      'Identity in the manifest inside it:',
+      `  Name: ${read.name}`,
+      `  Publisher: ${read.publisher}`,
+      `  Publisher display name: ${read.publisherDisplayName}`,
+      `  Version: ${read.version}`,
+      `  Package family name: ${family}`,
+      entries.includes('AppxSignature.p7x') ? SIGNED[kind] : UNSIGNED[kind],
+    ]),
     '',
-    `Package: ${msix}`,
-    `Size: ${statSync(msix).size} bytes`,
-    `SHA-256: ${createHash('sha256').update(readFileSync(msix)).digest('hex')}`,
-    `Files in the package: ${entries.length}`,
-    `App exe: version ${built}, built ${statSync(exe).mtime.toISOString()}, SHA-256 ${createHash('sha256').update(exeBytes).digest('hex')}`,
-    'Identity in the manifest inside it:',
-    `  Name: ${unescapeXml(attribute('Name'))}`,
-    `  Publisher: ${unescapeXml(attribute('Publisher'))}`,
-    `  Publisher display name: ${unescapeXml(shown)}`,
-    `  Version: ${attribute('Version')}`,
-    entries.includes('AppxSignature.p7x') ? 'Signed: it carries a signature, which the Store replaces' : 'Unsigned: the Store signs it',
+    `App exe in ${results.length === 1 ? 'it' : 'both'}: version ${built}, built ${statSync(exe).mtime.toISOString()}, SHA-256 ${createHash('sha256').update(exeBytes).digest('hex')}`,
   ].join('\n'),
 );

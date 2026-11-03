@@ -271,6 +271,61 @@ impl Service {
         }
     }
 
+    /// While a first start waits for its data (`awaiting_cloud`), before the restores are planned: this device's own
+    /// files in the folders are the data its old store held, so they join the data here first, as that store held them.
+    /// Planned against them, a restore the old store would have followed is followed as it would have been, keeping what
+    /// this device timed since (`carry_forward`), where an empty store would have dropped them below its key. A newer own
+    /// file shows this device already follows a later restore than its old store says, so the key goes up to the
+    /// highest one they carry, before anything at it is merged. Own files from before that key stay out, as the fence
+    /// keeps them out of any merge. Returns true when this device's data changed.
+    pub(crate) fn take_own_files(&mut self, reads: &[(SyncTarget, TargetRead)]) -> bool {
+        if !self.awaiting_cloud() {
+            return false;
+        }
+        let own: Vec<&DeviceFile> = reads
+            .iter()
+            .filter(|(_, r)| r.error.is_none())
+            .filter_map(|(_, r)| r.own.as_ref())
+            .collect();
+        let Some(top) = own
+            .iter()
+            .map(|f| f.epoch_info.as_ref())
+            .max_by(|a, b| EpochInfo::key(*a).cmp(&EpochInfo::key(*b)))
+        else {
+            return false;
+        };
+        let raised = top
+            .filter(|_| EpochInfo::key(top) > EpochInfo::key(self.file.prefs.epoch.as_ref()))
+            .cloned();
+        let key = EpochInfo::key(raised.as_ref().or(self.file.prefs.epoch.as_ref()));
+        let at_key: Vec<DeviceFile> = own
+            .into_iter()
+            .filter(|f| key_of(f) == key)
+            .cloned()
+            .collect();
+        let now = self.now();
+        let beat = at_key
+            .iter()
+            .filter_map(|f| f.last_heartbeat)
+            .max()
+            .map(|b| b.min(now));
+        if raised.is_some() || beat > self.file.last_heartbeat {
+            // As `finish_awaiting` takes it: a run its own file knows of is not forgotten, even if a restore follows.
+            let saved = self.mutate_system(|f, _| {
+                if raised.is_some() {
+                    f.prefs.epoch = raised;
+                }
+                f.last_heartbeat = f.last_heartbeat.max(beat);
+                Ok(())
+            });
+            if let Err(e) = saved {
+                self.local_error = Some(format!("Could not save data from the sync folder: {e}"));
+                return false;
+            }
+        }
+        self.absorb_remote(&Shared::default(), BTreeMap::new(), at_key)
+    }
+
     /// What a cycle does about restores before it merges, inside the lock. Afterwards `reads` holds only what may be
     /// merged at this device's key, and a folder left alone reads as one with an error, so it gets no write and its
     /// last known figures stand. Returns true when this device's data was replaced.
@@ -439,10 +494,7 @@ impl Service {
         self.settle_away()?;
         let now = self.now();
         let device = self.file.device_id.clone();
-        let ctx = Ctx {
-            now,
-            device: &device,
-        };
+        let ctx = Ctx::hlc(now, &device, self.newest_seen());
         let mut here = self.file.clone();
         let stopped = here
             .data

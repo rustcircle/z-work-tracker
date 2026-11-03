@@ -16,6 +16,11 @@ pub const DEFAULT_KEEP: u32 = 30;
 const SAFETY_KEEP: usize = 5;
 const DAILY_PREFIX: &str = "z-work-data-";
 const SAFETY_PREFIX: &str = "pre-restore-";
+/// A copy of an older version's store, taken at the first start of this one. Listed and restorable like any backup,
+/// and never removed by retention.
+const LEGACY_PREFIX: &str = "z-work-data-legacy-";
+/// The 1.3.1 store (`z-work-data.json`, else its `.bak`), byte for byte as the first 1.3.2 start found it.
+pub const LEGACY_COPY: &str = "z-work-data-legacy-1.3.1.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +40,12 @@ fn is_backup_name(name: &str) -> bool {
     let Some(stem) = name.strip_suffix(".json") else {
         return false;
     };
+    if let Some(version) = stem.strip_prefix(LEGACY_PREFIX) {
+        return !version.is_empty()
+            && version
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    }
     let tail = stem
         .strip_prefix(DAILY_PREFIX)
         .or_else(|| stem.strip_prefix(SAFETY_PREFIX));
@@ -69,8 +80,12 @@ pub fn list(paths: &Paths) -> io::Result<Vec<BackupInfo>> {
             name,
         })
         .collect();
-    // Newest first by the date in the name, whichever kind of backup it is.
+    // Newest first by the date in the name, whichever kind of backup it is. The copy of the old store holds the
+    // oldest data of all, so it comes last.
     let dated = |b: &BackupInfo| {
+        if is_legacy_copy(&b.name) {
+            return String::new();
+        }
         b.name
             .strip_prefix(DAILY_PREFIX)
             .or_else(|| b.name.strip_prefix(SAFETY_PREFIX))
@@ -90,10 +105,37 @@ fn write(paths: &Paths, name: &str, file: &LocalFile) -> Result<(), CoreError> {
     Ok(())
 }
 
+/// The copy of an older version's store.
+pub(crate) fn is_legacy_copy(name: &str) -> bool {
+    name.starts_with(LEGACY_PREFIX)
+}
+
+/// The day a backup's name is dated, `YYYY-MM-DD`. `None` for the copy of an older store and for a name not dated.
+fn dated_day(name: &str) -> Option<&str> {
+    if is_legacy_copy(name) {
+        return None;
+    }
+    let stem = name.strip_suffix(".json")?;
+    let tail = stem
+        .strip_prefix(DAILY_PREFIX)
+        .or_else(|| stem.strip_prefix(SAFETY_PREFIX))?;
+    let day = tail.get(..10)?;
+    chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    Some(day)
+}
+
+/// Removes the oldest copies past `keep`. Only those this version wrote: a copy dated on or before the day the database
+/// was made may have been written by 1.3.1, which wrote its copy of that day before the upgrade, and stays for good, as
+/// does the copy of the 1.3.1 store. A name can't tell which version wrote a copy dated that day, so this version's
+/// copies of that day stay too.
 fn prune(paths: &Paths, prefix: &str, keep: usize) -> io::Result<()> {
+    let from = paths
+        .backups_from
+        .map(|t| t.datetime().format("%Y-%m-%d").to_string());
     let mut mine: Vec<String> = names(paths)?
         .into_iter()
         .filter(|n| n.starts_with(prefix))
+        .filter(|n| dated_day(n).is_some_and(|day| from.as_deref().is_none_or(|f| day > f)))
         .collect();
     let excess = mine.len().saturating_sub(keep);
     for name in mine.drain(..excess) {
@@ -137,6 +179,19 @@ pub fn safety_copy(paths: &Paths, file: &LocalFile, now: Ts) -> Result<String, C
     write(paths, &name, file)?;
     prune(paths, SAFETY_PREFIX, SAFETY_KEEP)?;
     Ok(name)
+}
+
+/// Keeps the store of an older version as `LEGACY_COPY`, once. The source is only read, by the caller.
+pub(crate) fn keep_legacy(paths: &Paths, bytes: &[u8]) -> Result<(), CoreError> {
+    let d = dir(paths);
+    let dest = d.join(LEGACY_COPY);
+    if fs::symlink_metadata(&dest).is_ok() {
+        return Ok(());
+    }
+    fs::create_dir_all(&d)?;
+    let tmp = d.join(format!(".{LEGACY_COPY}.tmp"));
+    persist::with_local_retry(|| persist::write_atomic(&dest, &tmp, bytes))?;
+    Ok(())
 }
 
 #[must_use]

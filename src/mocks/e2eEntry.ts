@@ -2,13 +2,16 @@
 // Single-device lease: `?lease=live|stale|unknown|mine` (another computer holds it, looks inactive, no folder can be read, this computer holds it), or `free`,
 // `checking`, `unknown-writable`; each connects a folder when none is. `?versions=1` (two folders and seven saved versions), `?packaged=1` (a Microsoft Store build),
 // `?autostart=offByUser|offByPolicy|onByPolicy|unavailable|on|off` (Start with Windows as Windows reports it) and `?join=1` (a folder waiting for a choice).
+// Clock behind: `?clockBehind=<secs>` (the newest change seen was saved that many seconds after this computer's clock says it is now, so the line shows from 120
+// and says that changes made here can't be dated after it from 86400, such as 172800) with `&clockBy=<name>` for the computer that saved it (LAPTOP by default)
+// or `&clockBy=here` for one saved on this computer, as when its clock was set back.
 import { emit } from '@tauri-apps/api/event';
 
 import { toIso } from '../lib/tz';
 import type { LeaseHolderView, Theme } from '../lib/types';
 import { demoP2State, demoState } from './demoSeed';
 import { fullProject } from './factories';
-import { DEVICE_ID, crashRelaunch, emptyState, installMock, isAutostartState, isLeaseSeed, loseLease, relaunch, seedJoinPending, seedLease, seedVersions, type MockState } from './ipcMock';
+import { DEVICE_ID, OTHER_DEVICE_NAME, crashRelaunch, emptyState, installMock, isAutostartState, isLeaseSeed, loseLease, relaunch, seedJoinPending, seedLease, seedVersions, type MockState } from './ipcMock';
 
 declare global {
   interface Window {
@@ -92,6 +95,13 @@ export function installE2eBackend(): void {
   if (autostart !== null) {
     if (!isAutostartState(autostart)) throw new Error(`?autostart= must be on, off, offByUser, offByPolicy, onByPolicy or unavailable; got "${autostart}"`);
     state.autostartInfo = { ...state.autostartInfo, state: autostart };
+  }
+  const clockBehind = q.get('clockBehind');
+  if (clockBehind !== null) {
+    if (!/^-?\d+$/.test(clockBehind)) throw new Error(`?clockBehind= must be a whole number of seconds; got "${clockBehind}"`);
+    const by = q.get('clockBy');
+    if (by === '') throw new Error('?clockBy= must be the name of a computer, or here');
+    state.newestStamp = { at: state.now + Number(clockBehind), causeDevice: by === 'here' ? null : (by ?? OTHER_DEVICE_NAME) };
   }
   if (q.get('launch') === 'cold') relaunch(state);
   window.__mock = state;

@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "zWorkTracker",
   "mainBinaryName": "zWorkTracker",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "identifier": "com.rustcircle.zworktracker",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -57,8 +57,8 @@
       "nsis",
       "app"
     ],
-    "publisher": "Pedro Jorge",
-    "copyright": "Copyright (c) 2026 Pedro Jorge",
+    "publisher": "Pedro Miguel Rodrigues Jorge",
+    "copyright": "Copyright (c) 2026 Pedro Miguel Rodrigues Jorge",
     "category": "Productivity",
     "shortDescription": "Labor hours tracker",
     "longDescription": "Local-first tracker of labor hours by project and task, with timeline, analysis and spreadsheet exports.",

@@ -619,6 +619,12 @@ pub struct LocalPrefs {
     /// A folder waiting for the user to choose between its restored data and this device's.
     #[serde(default)]
     pub join_pending: Option<JoinPending>,
+    /// Set at a first start or after a damaged store, when the data is to come from the sync folders: nothing is
+    /// written to them until data from one of them has arrived, so an empty folder that isn't synced yet can't get
+    /// an empty file of this device. Cleared by the first read that finds device files, by a restore, or by the user
+    /// changing the folders.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaiting_cloud: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -725,6 +731,14 @@ pub struct LocalFile {
     pub prefs: LocalPrefs,
     #[serde(default)]
     pub remote_devices: BTreeMap<String, RemoteDevice>,
+    /// The newest stamp this device has seen, its own or another's. New stamps follow it (see `hlc`). Local only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_stamp: Option<Stamp>,
+    /// The latest time, by this computer's clock, at which a change to the data was saved here. Never goes down. The
+    /// clock-behind warning compares the clock with it, and never with this device's own stamps, which the hybrid
+    /// logical clock may have put ahead of the clock (see `hlc`). Local only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_change_here: Option<Ts>,
     #[serde(default)]
     pub data: Shared,
 }

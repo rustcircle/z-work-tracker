@@ -19,9 +19,10 @@ use z_work_core::machine::{TaskExpected, TaskPatch};
 use z_work_core::merge::merge;
 use z_work_core::model::{LocalFile, Segment, Shared, SyncProvider, SyncTarget, TaskState};
 use z_work_core::pdf::{self, PdfRequest};
-use z_work_core::persist::{self, Paths};
+use z_work_core::persist;
 use z_work_core::report::ExportRequest;
 use z_work_core::service::Service;
+use z_work_core::store::{self, Store};
 use z_work_core::sync::{RealIo, run_cycle};
 use z_work_core::time::{ManualClock, Ts};
 use z_work_core::tray::tray_state;
@@ -195,11 +196,17 @@ fn time<T>(n: usize, mut f: impl FnMut() -> T) -> Sample {
     }
 }
 
+/// Writes the store into `dir` as the app saves a complete one, replacing a store already there.
 fn write_store(dir: &Path, segments: usize, running: bool) -> Res<()> {
     std::fs::create_dir_all(dir)?;
-    let paths = Paths::new(dir);
+    for suffix in ["", "-wal", "-shm"] {
+        let old = dir.join(format!("{}{suffix}", store::DB_FILE));
+        if old.exists() {
+            std::fs::remove_file(old)?;
+        }
+    }
     let file = local_file(segments, running)?;
-    persist::save(&paths, &file, Ts::parse(NOW).unwrap_or_default())?;
+    store::seed_store(dir, &file, Ts::parse(NOW).unwrap_or_default())?;
     Ok(())
 }
 
@@ -242,9 +249,13 @@ fn main() -> Res<()> {
     let now = Ts::parse(NOW).unwrap_or_default();
     let dir = work.join("store");
     write_store(&dir, segments, false)?;
-    let paths = Paths::new(&dir);
-    let main_bytes = std::fs::read(paths.main())?;
-    println!("store: {segments} segments, {} bytes", main_bytes.len());
+    let store_bytes = std::fs::metadata(dir.join(store::DB_FILE))?.len();
+    // The same store as JSON, as a backup holds it.
+    let main_bytes = serde_json::to_vec(&local_file(segments, false)?)?;
+    println!(
+        "store: {segments} segments, {store_bytes} bytes ({} as JSON)",
+        main_bytes.len()
+    );
 
     record(
         "open (load, normalize, save)",
@@ -280,20 +291,36 @@ fn main() -> Res<()> {
         "parse + check store",
         time(20, || persist::parse_checked(&main_bytes).unwrap()),
     );
-    // Each save differs from the last one, as real ones do: an unchanged store is not written at all.
-    let mut changing = file.clone();
+    // A store of its own, as the service holds this one's lock. Each save changes one segment, as a real one does:
+    // an unchanged store is not written at all.
+    let saved_dir = work.join("saved");
+    write_store(&saved_dir, segments, false)?;
+    let mut saved = Store::open(&saved_dir, "bench", now)?;
+    let mut last = saved.file;
+    let one = last
+        .data
+        .segments
+        .keys()
+        .next()
+        .cloned()
+        .ok_or("no segment")?;
     let mut beat = 0i64;
     record(
-        "persist::save",
+        "store::save",
         time(20, || {
             beat += 1;
-            changing.last_heartbeat = Some(now.later(beat));
-            persist::save(&paths, &changing, now).unwrap();
+            let mut next = last.clone();
+            if let Some(s) = next.data.segments.get_mut(&one) {
+                s.end = s.end.map(|e| e.later(1));
+            }
+            next.last_heartbeat = Some(now.later(beat));
+            saved.store.save(&last, &next).unwrap();
+            last = next;
         }),
     );
     record(
-        "persist::save, unchanged",
-        time(20, || persist::save(&paths, &changing, now).unwrap()),
+        "store::save, unchanged",
+        time(20, || saved.store.save(&last, &last).unwrap()),
     );
     record(
         "heartbeat (running)",
@@ -322,7 +349,7 @@ fn main() -> Res<()> {
         .insert("snapshotBytes".into(), json!(snap_json.len()));
     results
         .borrow_mut()
-        .insert("storeBytes".into(), json!(main_bytes.len()));
+        .insert("storeBytes".into(), json!(store_bytes));
     record(
         "snapshot serialize",
         time(20, || serde_json::to_vec(&snap).unwrap()),

@@ -21,23 +21,44 @@ use crate::validate::{
 /// The moment and the device an operation happens on.
 #[derive(Clone, Copy, Debug)]
 pub struct Ctx<'a> {
+    /// The wall clock: segment starts and ends, creation times, audit times, asks and requests.
     pub now: Ts,
+    /// The `at` of every stamp this operation writes. Equal to `now` outside a commit; see `hlc::commit_stamp_at`.
+    pub stamp_at: Ts,
     pub device: &'a str,
 }
 
-impl Ctx<'_> {
+impl<'a> Ctx<'a> {
+    /// Stamps at the wall clock: tests, and code that has no floor.
+    #[must_use]
+    pub fn at(now: Ts, device: &'a str) -> Self {
+        Self {
+            now,
+            stamp_at: now,
+            device,
+        }
+    }
+    /// Stamps after `newest`, the newest stamp this device has seen (the hybrid logical clock, see `hlc`).
+    #[must_use]
+    pub fn hlc(now: Ts, device: &'a str, newest: Option<&Stamp>) -> Self {
+        Self {
+            now,
+            stamp_at: crate::hlc::commit_stamp_at(now, newest),
+            device,
+        }
+    }
     #[must_use]
     pub fn stamp(&self) -> Stamp {
         Stamp {
-            at: self.now,
+            at: self.stamp_at,
             by: self.device.to_owned(),
         }
     }
-    /// A new edit must beat the version it is based on, even when the clock went backwards.
+    /// A new edit must beat the version it is based on, even when the clock went backwards or past the lead cap.
     #[must_use]
     pub fn next(&self, prev: &Stamp) -> Stamp {
         Stamp {
-            at: self.now.max(prev.at.later(1)),
+            at: self.stamp_at.max(prev.at.later(1)),
             by: self.device.to_owned(),
         }
     }
@@ -1426,10 +1447,7 @@ pub(crate) mod tests {
     pub const DEV: &str = "device-a";
 
     pub fn ctx(iso: &str) -> Ctx<'static> {
-        Ctx {
-            now: Ts::parse(iso).unwrap(),
-            device: DEV,
-        }
+        Ctx::at(Ts::parse(iso).unwrap(), DEV)
     }
 
     pub fn project_input(name: &str) -> ProjectInput {
@@ -2071,10 +2089,7 @@ pub(crate) mod tests {
     fn remote_segment_is_not_altered() {
         let (mut s, _, t) = base();
         s.start(
-            &Ctx {
-                now: Ts::parse("2026-01-01T09:00:00Z").unwrap(),
-                device: "device-b",
-            },
+            &Ctx::at(Ts::parse("2026-01-01T09:00:00Z").unwrap(), "device-b"),
             &t,
         )
         .unwrap();
@@ -2196,10 +2211,7 @@ pub(crate) mod tests {
         fee.fee_currency = Some("EUR".into());
         there
             .update_project(
-                &Ctx {
-                    now: Ts::parse("2026-01-01T10:00:00Z").unwrap(),
-                    device: "device-b",
-                },
+                &Ctx::at(Ts::parse("2026-01-01T10:00:00Z").unwrap(), "device-b"),
                 &p,
                 &fee,
             )
@@ -2240,10 +2252,7 @@ pub(crate) mod tests {
     #[test]
     fn a_clock_ahead_on_another_device_does_not_swallow_work_here() {
         let (mut s, _, t) = base();
-        let b = |iso: &str| Ctx {
-            now: Ts::parse(iso).unwrap(),
-            device: "device-b",
-        };
+        let b = |iso: &str| Ctx::at(Ts::parse(iso).unwrap(), "device-b");
         s.start(&b("2026-01-01T09:00:00Z"), &t).unwrap();
         s.pause(&b("2026-01-01T09:10:00Z"), &t).unwrap();
         s.resume(&ctx("2026-01-01T09:01:00Z"), &t).unwrap();

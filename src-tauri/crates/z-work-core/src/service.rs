@@ -13,6 +13,7 @@ use crate::colors;
 use crate::detect::Detected;
 use crate::drafts::{Draft, Kept, KeptBecause};
 use crate::error::CoreError;
+use crate::hlc::{self, CLOCK_BEHIND_WARN_SECS, HLC_MAX_LEAD_SECS};
 use crate::idle::{ClockStep, IdleTracker, NewGap};
 use crate::lease::{LOST_DEVICE_SILENCE_SECS, LeaseState, LeaseStateName};
 use crate::machine::{
@@ -22,23 +23,25 @@ use crate::machine::{
 use crate::merge::merge;
 use crate::model::{
     AuditEntry, DeviceFile, EpochInfo, GapDecision, GapKind, LocalFile, PauseReason, PendingCopy,
-    RemoteDevice, SCHEMA_VERSION, Segment, Shared, SyncProvider, SyncTarget, Task, TaskState,
-    Theme, VersionReason,
+    RemoteDevice, SCHEMA_VERSION, Segment, Shared, Stamp, SyncProvider, SyncTarget, Task,
+    TaskState, Theme, VersionReason,
 };
-use crate::persist::{self, Paths};
+use crate::persist::Paths;
 use crate::pieces;
 use crate::reminder::{self, Reminder};
 use crate::report::ExportSource;
+use crate::store::{Opened, SaveStats, Store, take_legacy_beat};
 use crate::subtasks;
 use crate::summary::{
     ProjectFigures, SummaryPreview, SummaryRequest, project_figures, task_totals,
 };
 use crate::sync::{APP_FOLDER, HungTargets, TargetStatus};
 use crate::time::{Clock, Ts};
+use crate::validate::MAX_SKEW_SECS;
 use crate::view::{
-    BillingView, CopySource, JoinPendingView, LaunchView, LeaseHolderView, LeaseView, Notice,
-    PlatformView, PrefsView, ProjectView, RawSegmentView, ReminderSettings, SegmentView, SetupView,
-    Snapshot, SubtaskView, SyncView, TargetView, TaskView,
+    BillingView, ClockBehindView, CopySource, JoinPendingView, LaunchView, LeaseHolderView,
+    LeaseView, Notice, PlatformView, PrefsView, ProjectView, RawSegmentView, ReminderSettings,
+    SegmentView, SetupView, Snapshot, SubtaskView, SyncView, TargetView, TaskView,
 };
 
 /// How long after a launch an edit stamped by another device may still have been made without the words put back
@@ -54,6 +57,10 @@ const VIEW_SETTINGS: [&str; 2] = ["activeZone", "showBoth"];
 
 pub struct Service {
     pub(crate) paths: Paths,
+    /// The database `file` was loaded from, and is saved to by every change.
+    store: Store,
+    /// The heartbeat the store held at this launch, not cut to now: for a run that began after now.
+    opened_beat: Option<Ts>,
     pub(crate) file: LocalFile,
     clock: Arc<dyn Clock>,
     notices: Vec<Notice>,
@@ -114,6 +121,13 @@ pub struct Service {
     version_due: Option<VersionReason>,
     /// The data each restored version followed here replaced, oldest first, until a version of it is written.
     pre_adopt: VecDeque<DeviceFile>,
+    /// The newest stamp this device has seen, its own or another's: every stamp a commit writes is later, up to the
+    /// lead cap (see `hlc`). Never goes down in a run, not even after a restore. Saved as `LocalFile::newest_stamp`.
+    newest: Option<Stamp>,
+    /// When each other device wrote its file, by its own clock, as last read here: what the clock-behind warning holds
+    /// this clock against. Replaced at every read, never kept at the highest, so a clock that was put right is believed
+    /// from its next write. Not kept across launches.
+    others_written: BTreeMap<String, Ts>,
 }
 
 /// What a restore installs along with the data, and in the same save, so a crash can't leave half of it.
@@ -157,6 +171,16 @@ pub(crate) fn span_text(secs: i64) -> String {
     }
 }
 
+/// The folders, as the user calls them: "OneDrive", "OneDrive and Google Drive", "A, B and C".
+pub(crate) fn folder_list(targets: &[SyncTarget]) -> String {
+    let labels: Vec<String> = targets.iter().map(folder_label).collect();
+    match labels.as_slice() {
+        [] => "your sync folder".to_owned(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// What the user calls a folder.
 pub(crate) fn folder_label(target: &SyncTarget) -> String {
     match target.provider {
@@ -178,6 +202,42 @@ fn minutes_setting(data: &Shared, key: &str, default: i64) -> i64 {
 
 const DEFAULT_IDLE_MINUTES: i64 = 10;
 pub const PDF_LOGO_FILE: &str = "pdf-logo.png";
+
+/// Saves `next` over `prev`, which must be what the store holds, with the floor of the hybrid logical clock raised and
+/// stored in the same transaction: `floor` and `next.newest_stamp` go up to the newest stamp among the records this save
+/// writes. Records it doesn't write hold nothing newer than the store already did, so this equals a walk of every stamp,
+/// at the cost of the diff the save does anyway (addendum P11, `hlc` tests), as far as a reader takes a stamp
+/// (`seen_in`). `floor` goes up even if the save fails, as the caller may keep what it has in memory. When records are
+/// written, `next.latest_change_here` goes up to `now`.
+fn save_with_floor(
+    store: &mut Store,
+    floor: &mut Option<Stamp>,
+    prev: &LocalFile,
+    next: &mut LocalFile,
+    restored: bool,
+    now: Ts,
+) -> Result<SaveStats, CoreError> {
+    let planned = store.plan(&prev.data, &next.data)?;
+    // The newest stamp the save writes is nearly always one a reader takes. When it isn't, such as one a restore brought
+    // back, the walk of `seen_in` finds the newest that is.
+    let newest = match planned.newest() {
+        Some(s) if s.at > now.later(MAX_SKEW_SECS) => seen_in(&next.data, now),
+        other => other.cloned(),
+    };
+    *floor = hlc::later(floor.take(), newest);
+    next.newest_stamp = hlc::later(next.newest_stamp.take(), floor.clone());
+    if planned.writes_records() {
+        next.latest_change_here = next.latest_change_here.max(Some(now));
+    }
+    store.save_planned(planned, next, restored)
+}
+
+/// The newest stamp in `data` that the floor follows: none dated further past `now` than a reader takes a record
+/// (`validate::MAX_SKEW_SECS`). Data brought back by a restore can hold one dated far ahead, and a floor following it
+/// would hold every stamp made here at the lead cap, ahead of every other device's edits, until the clock got there.
+fn seen_in(data: &Shared, now: Ts) -> Option<Stamp> {
+    data.newest_stamp_until(now.later(MAX_SKEW_SECS)).cloned()
+}
 
 /// Tries `op` again while something holds the store, with a `wait` before each try.
 fn retry_while_held<T>(
@@ -209,12 +269,21 @@ impl Service {
 
     /// Opens the store. An open segment left by a crash is closed at the last heartbeat here.
     pub fn open(dir: &Path, clock: Arc<dyn Clock>, device_name: &str) -> Result<Self, CoreError> {
-        let paths = Paths::new(dir);
         let now = clock.now();
-        let (file, outcome) = persist::load(&paths, device_name, now)?;
+        let Opened {
+            store,
+            file,
+            raw_beat,
+            origin: _,
+            notices,
+        } = Store::open(dir, device_name, now)?;
+        let paths = Paths::new(dir).with_backups_from(store.created_at());
+        let loaded = file.clone();
         let lease = LeaseState::new(!file.prefs.sync_targets.is_empty());
         let mut svc = Self {
             paths,
+            store,
+            opened_beat: raw_beat,
             file,
             clock,
             notices: Vec::new(),
@@ -250,33 +319,58 @@ impl Service {
             lease_io: crate::lease_io::LeaseIo::default(),
             version_due: None,
             pre_adopt: VecDeque::new(),
+            newest: None,
+            others_written: BTreeMap::new(),
         };
         svc.keep_folder_lists();
         svc.file.data.seed_tags();
         svc.file.data.normalize();
+        // What this device had seen, before anything here writes a stamp: the stored floor, which outlives data a
+        // restore took away, and every stamp in the data as far as a reader would take it (`seen_in`).
+        let seen = seen_in(&svc.file.data, now);
+        svc.newest = hlc::later(svc.file.newest_stamp.clone(), seen);
         svc.load_kept();
-        let kept_drafts = svc.replay_drafts();
+        // Drafts are words for tasks that a first start hasn't got yet: they wait, on disk, for the data to arrive.
+        let waiting = svc.awaiting_cloud();
+        let kept_drafts = if waiting {
+            BTreeMap::new()
+        } else {
+            svc.replay_drafts()
+        };
         svc.file
             .data
             .raise_reference_marks(&mut svc.file.prefs.reference_marks);
-        for n in outcome.notices {
-            svc.notify("warning", n);
+        for (level, n) in notices {
+            svc.notify(level, n);
         }
         svc.recover_crash()?;
-        // Writes the store on first launch too, so the data folder always holds a valid file.
-        persist::save(&svc.paths, &svc.file, now)?;
-        // Only now are recovered drafts safe in the store, and words it won't take safe in their own
-        // file. Either failing keeps them as drafts for next time.
-        let stay = if svc.save_kept().is_ok() {
+        // Whatever opening changed, such as recovered drafts or a segment closed after a crash.
+        save_with_floor(
+            &mut svc.store,
+            &mut svc.newest,
+            &loaded,
+            &mut svc.file,
+            false,
+            now,
+        )?;
+        if !waiting {
+            svc.settle_drafts(kept_drafts);
+        }
+        Ok(svc)
+    }
+
+    /// Only once the store has saved recovered drafts are they safe in it, and words it won't take safe in their own
+    /// file. Either failing keeps them as drafts for next time.
+    fn settle_drafts(&mut self, kept_drafts: BTreeMap<String, Draft>) {
+        let stay = if self.save_kept().is_ok() {
             BTreeMap::new()
         } else {
             kept_drafts
         };
-        if !svc.drafts_file_stuck {
-            let _ = crate::drafts::write(&svc.paths.dir, &stay);
+        if !self.drafts_file_stuck {
+            let _ = crate::drafts::write(&self.paths.dir, &stay);
         }
-        svc.drafts_left = stay;
-        Ok(svc)
+        self.drafts_left = stay;
     }
 
     /// What is known of each folder's restores goes with the folder. A store from before these lists follows the
@@ -305,10 +399,7 @@ impl Service {
             return Ok(());
         };
         let now = self.now();
-        let ctx = Ctx {
-            now,
-            device: &device,
-        };
+        let ctx = Ctx::hlc(now, &device, self.newest.as_ref());
         // The last heartbeat is the last moment the app is known to have been alive. Loading cuts it to now,
         // but a run that began after now was timed on a clock put back while the app was off. Its beat is on
         // that same clock, and cutting it would lose the whole run.
@@ -319,9 +410,7 @@ impl Service {
             .get(&segment)
             .is_some_and(|s| s.start > now);
         let last_seen = if began_ahead {
-            self.file
-                .last_heartbeat
-                .max(persist::read_heartbeat(&self.paths, &device))
+            self.file.last_heartbeat.max(self.opened_beat)
         } else {
             self.file.last_heartbeat
         };
@@ -443,17 +532,21 @@ impl Service {
     ) -> Result<R, CoreError> {
         let now = self.now();
         let device = self.file.device_id.clone();
-        let ctx = Ctx {
-            now,
-            device: &device,
-        };
+        let ctx = Ctx::hlc(now, &device, self.newest.as_ref());
         let mut next = self.file.clone();
         let out = f(&mut next, &ctx)?;
         let shared_change = gated && self.lease.active() && next.data != self.file.data;
         if shared_change {
             self.lease_gate()?;
         }
-        persist::save(&self.paths, &next, now)?;
+        save_with_floor(
+            &mut self.store,
+            &mut self.newest,
+            &self.file,
+            &mut next,
+            false,
+            now,
+        )?;
         self.file = next;
         self.revision += 1;
         self.local_error = None;
@@ -955,10 +1048,7 @@ impl Service {
                         // With its ids it may be more than the store can hold, and a store that can't
                         // be saved would stop every launch from here on.
                         if crate::validate::check_description(&description).is_ok() {
-                            let ctx = Ctx {
-                                now: draft.at,
-                                device: &device,
-                            };
+                            let ctx = Ctx::hlc(draft.at, &device, self.newest.as_ref());
                             task.description = description;
                             task.description_stamp = ctx.next(&task.description_stamp);
                             crate::machine::clear_missing_active(task, &ctx);
@@ -1366,11 +1456,11 @@ impl Service {
         }
         let gaps = self.unsaved_gaps.clone();
         let steps = self.unsaved_steps.clone();
-        // After a crash the later of the store's beat and the beat file's is believed, and a beat on the old
-        // clock would run the new stretch on to it. The file goes first: a crash between the two writes then
+        // After a crash the later of the store's own heartbeat and its beat is believed, and a beat on the old
+        // clock would run the new stretch on to it. The beat goes back first: a crash between the two writes then
         // ends the old stretch early, which the notice says, rather than the new one too late.
         if !steps.is_empty() {
-            let _ = persist::save_heartbeat(&self.paths, &self.file.device_id, self.now());
+            let _ = self.store.rewind_heartbeat(self.now());
         }
         let restarted = self.mutate_system(|f, c| {
             for (segment, g) in &gaps {
@@ -1378,9 +1468,11 @@ impl Service {
             }
             let mut restarted = Vec::new();
             for step in &steps {
-                // From when the clock was found changed, even if the save that says so comes later.
+                // From when the clock was found changed, even if the save that says so comes later. Its stamps are
+                // this commit's.
                 let at = Ctx {
                     now: step.now,
+                    stamp_at: c.stamp_at,
                     device: c.device,
                 };
                 restarted.push((*step, f.data.restart_after_clock_step(&at, step.last)));
@@ -1555,8 +1647,11 @@ impl Service {
         out
     }
 
-    /// Writes today's dated copy if it's missing.
+    /// Writes today's dated copy if it's missing. None while a first start waits for its data from the folders.
     pub fn run_daily_backup(&self) -> Result<bool, CoreError> {
+        if self.awaiting_cloud() {
+            return Ok(false);
+        }
         backup::daily(&self.paths, &self.file, self.now(), self.backup_keep())
     }
 
@@ -1582,10 +1677,16 @@ impl Service {
 
     /// Rolls replicated data and settings back to a backup, keeping a safety copy of the current
     /// store first. What belongs to this device stays: its preferences and sync folders, the reference
-    /// prefixes and marks, so no number is reused, and the audit trail, which only grows.
+    /// prefixes it has (one only the backup knows comes back) and the marks, so no number is reused, and
+    /// the audit trail, which only grows.
     pub fn restore_backup(&mut self, name: &str) -> Result<String, CoreError> {
         self.lease_gate()?;
-        let restored = backup::read(&self.paths, name)?;
+        let mut restored = backup::read(&self.paths, name)?;
+        if backup::is_legacy_copy(name) {
+            // 1.3.1 kept its latest heartbeat in a file beside its store and read the two together, so a run it timed
+            // up to then isn't cut back to the store's last save. That file is only read.
+            take_legacy_beat(&self.paths.dir, &mut restored, self.now());
+        }
         self.refuse_backup_from_before_a_restore(&restored)?;
         self.on_exit()?;
         let safety = backup::safety_copy(&self.paths, &self.file, self.now())?;
@@ -1646,8 +1747,8 @@ impl Service {
     }
 
     /// Replaces the replicated data, in one save, keeping what belongs to this device: its preferences and devices,
-    /// the reference prefixes and marks, and the audit trail. Starts cold. Returns the tasks these data held running
-    /// here, now paused. Callers answer for the lease and for telling the user.
+    /// the reference prefixes it has and the marks, and the audit trail. Starts cold. Returns the tasks these data held
+    /// running here, now paused. Callers answer for the lease and for telling the user.
     pub(crate) fn install_restored(
         &mut self,
         mut data: Shared,
@@ -1660,19 +1761,25 @@ impl Service {
         data.raise_reference_marks(&mut prefs.reference_marks);
         prefs.away_since = None;
         prefs.away_kind = None;
+        // The user's choice of data, so the wait for the folders' is over.
+        prefs.awaiting_cloud = false;
         if note.epoch.is_some() {
             prefs.epoch = note.epoch;
         }
-        data.prefixes = self.file.data.prefixes.clone();
+        // The prefixes this device has stand, and those only the restored data knows come back with it: a store that
+        // started empty doesn't give up the prefix this device was billing under, nor what it knew of the others'.
+        let mut prefixes = std::mem::take(&mut data.prefixes);
+        prefixes.extend(self.file.data.prefixes.clone());
+        data.prefixes = prefixes;
         data.audit_log.extend(self.file.data.audit_log.clone());
         data.seed_tags();
         data.normalize();
         let now = self.now();
         let device = self.file.device_id.clone();
-        let ctx = Ctx {
-            now,
-            device: &device,
-        };
+        // What these data hold has been seen too, as far as a reader takes a stamp (`seen_in`), and the floor never goes
+        // down, so stamps made from here on are still later than those the restore took away.
+        self.newest = hlc::later(self.newest.take(), seen_in(&data, now));
+        let ctx = Ctx::hlc(now, &device, self.newest.as_ref());
         let names = data.close_own_open(&ctx, note.closed_at, &note.reason);
         data.audit(
             &ctx,
@@ -1683,17 +1790,26 @@ impl Service {
             Value::Null,
             note.after,
         );
-        let next = LocalFile {
+        let mut next = LocalFile {
             version: self.file.version,
             device_id: device.clone(),
             device_name: self.file.device_name.clone(),
             last_heartbeat: note.last_heartbeat,
             prefs,
             remote_devices: self.file.remote_devices.clone(),
+            newest_stamp: self.newest.clone(),
+            latest_change_here: self.file.latest_change_here,
             data,
         };
-        persist::save(&self.paths, &next, now)?;
-        persist::clear_heartbeat(&self.paths);
+        // The beat of the data replaced goes with it, in the same transaction.
+        save_with_floor(
+            &mut self.store,
+            &mut self.newest,
+            &self.file,
+            &mut next,
+            true,
+            now,
+        )?;
         self.file = next;
         self.revision += 1;
         self.warm = false;
@@ -1816,6 +1932,7 @@ impl Service {
         self.mutate(|f, _| {
             f.prefs.sync_targets.retain(|t| t.root != root);
             Self::forget_folder(f, root);
+            f.prefs.awaiting_cloud = false;
             Ok(())
         })?;
         self.lease
@@ -1836,6 +1953,73 @@ impl Service {
         }
     }
 
+    /// True while a first start waits for its data from the sync folders (see `LocalPrefs::awaiting_cloud`).
+    #[must_use]
+    pub fn awaiting_cloud(&self) -> bool {
+        self.file.prefs.awaiting_cloud
+    }
+
+    /// Ends a first start once a folder has given data. Takes this device's heartbeat from its own file, so a run that
+    /// file knows of is not forgotten, then puts back the drafts that waited for the data. Returns true when it ended it
+    /// now.
+    pub(crate) fn finish_awaiting(&mut self, arrived: bool, own_beat: Option<Ts>) -> bool {
+        if !self.file.prefs.awaiting_cloud || !arrived {
+            return false;
+        }
+        let now = self.now();
+        let ended = self
+            .mutate_system(|f, _| {
+                f.prefs.awaiting_cloud = false;
+                f.last_heartbeat = f.last_heartbeat.max(own_beat.map(|b| b.min(now)));
+                Ok(())
+            })
+            .is_ok();
+        if ended {
+            self.put_back_drafts();
+        }
+        ended
+    }
+
+    /// The drafts a first start left on disk until its data had arrived, put back as a launch puts them back. If the
+    /// store can't take them they stay on disk for the next launch, and the next save writes every row.
+    pub(crate) fn put_back_drafts(&mut self) {
+        let before = self.file.clone();
+        let kept_drafts = self.replay_drafts();
+        let now = self.now();
+        match save_with_floor(
+            &mut self.store,
+            &mut self.newest,
+            &before,
+            &mut self.file,
+            false,
+            now,
+        ) {
+            Ok(_) => {
+                self.revision += 1;
+                self.settle_drafts(kept_drafts);
+            }
+            Err(e) => eprintln!("could not save the words put back: {e}"),
+        }
+    }
+
+    /// Makes every save fail inside its transaction, as a full disk would, or lets saves through again.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn set_saves_blocked(&mut self, blocked: bool) {
+        self.store.block_saves(blocked);
+    }
+
+    /// The store as it is on disk, read again.
+    #[cfg(test)]
+    pub(crate) fn stored(&self) -> LocalFile {
+        self.store.reload().unwrap()
+    }
+
+    /// The store's record rows as they are on disk (kind, id, JSON text).
+    #[cfg(test)]
+    pub(crate) fn stored_rows(&self) -> Vec<(String, String, String)> {
+        self.store.rows()
+    }
+
     /// Records a heartbeat while something is running, so a crash loses at most one interval.
     pub fn heartbeat(&mut self) -> Result<(), CoreError> {
         if self
@@ -1847,7 +2031,7 @@ impl Service {
             return Ok(());
         }
         let now = self.now();
-        persist::save_heartbeat(&self.paths, &self.file.device_id, now)?;
+        self.store.save_heartbeat(now)?;
         self.file.last_heartbeat = Some(now);
         Ok(())
     }
@@ -1880,6 +2064,12 @@ impl Service {
         seen: BTreeMap<String, RemoteDevice>,
         own_files: Vec<DeviceFile>,
     ) -> bool {
+        // Where each other clock was when its file was written, as just read, for the clock-behind warning.
+        for (id, device) in &seen {
+            if *id != self.file.device_id {
+                self.others_written.insert(id.clone(), device.written_at);
+            }
+        }
         // What this may close has to end where it ended on the old clock, if that has just been put back.
         let found = self.idle.notice_clock(self.now());
         self.unsaved_steps.extend(self.idle.take_steps_back());
@@ -1922,13 +2112,17 @@ impl Service {
         }
         let data_changed = merged != self.file.data;
         let devices_changed = known != self.file.remote_devices;
+        if data_changed {
+            // Seen now, whether or not the save below works, so what `reconcile` stamps in it beats what just arrived.
+            // Only what passed the readers' checks arrived, so nothing more than two days ahead, but what was here may be
+            // a restore's (`seen_in`).
+            let seen = seen_in(&merged, self.now());
+            self.newest = hlc::later(self.newest.take(), seen);
+        }
         if !data_changed && !devices_changed {
             let device = self.file.device_id.clone();
             let mut probe = self.file.data.clone();
-            let reconciled = probe.reconcile(&Ctx {
-                now: self.now(),
-                device: &device,
-            });
+            let reconciled = probe.reconcile(&Ctx::hlc(self.now(), &device, self.newest.as_ref()));
             // A settlement the owner's own record replaces waits while it is on a summary, until that is voided.
             if !reconciled && !probe.settlement_due(&device) {
                 return false;
@@ -2076,6 +2270,8 @@ impl Service {
                 f.prefs.sync_targets.push(to);
             }
             f.prefs.pending_copy = pending;
+            // A folder the user chose: what it holds, or that it holds nothing, is theirs to decide.
+            f.prefs.awaiting_cloud = false;
             Ok(())
         });
         if result.is_ok() {
@@ -2165,6 +2361,57 @@ impl Service {
             .remote_devices
             .get(id)
             .map_or_else(|| "another device".to_owned(), |d| d.name.clone())
+    }
+
+    /// The newest stamp this device has seen: what a commit's stamps follow (see `hlc`).
+    #[must_use]
+    pub(crate) fn newest_seen(&self) -> Option<&Stamp> {
+        self.newest.as_ref()
+    }
+
+    /// This computer's clock is behind another device's, or behind itself, by `hlc::CLOCK_BEHIND_WARN_SECS` or more.
+    ///
+    /// The clock is compared with wall clocks only, never with a stamp (addendum P13, review F3): with the time each
+    /// other device wrote its file by its own clock, as last read (`others_written`), and with the latest time, by this
+    /// clock, at which a change was saved here (`LocalFile::latest_change_here`). The hybrid logical clock puts a stamp
+    /// past the floor, so a burst of saves on any device reads ahead of every clock, and a stamp made while a clock was
+    /// fast stays ahead after it is put right; a file's write time does neither. A change saved here at a time this clock
+    /// has not reached again means this clock was set back. The further ahead of the two is named; another device wins a
+    /// tie. `capped` is whether this device's stamps are held at the lead cap now, as its floor is a day or more past
+    /// the clock. Nothing is kept: the next snapshot after the clock is right says nothing.
+    #[must_use]
+    pub fn clock_behind(&self) -> Option<ClockBehindView> {
+        let now = self.now();
+        let other = self
+            .others_written
+            .iter()
+            .max_by_key(|(_, at)| **at)
+            .map(|(id, at)| (*at, Some(id.as_str())));
+        let here = self.file.latest_change_here.map(|at| (at, None));
+        let (newest_at, by) = match (other, here) {
+            (Some(o), Some(h)) => {
+                if h.0 > o.0 {
+                    h
+                } else {
+                    o
+                }
+            }
+            (o, h) => o.or(h)?,
+        };
+        let behind_secs = newest_at.secs().saturating_sub(now.secs());
+        if behind_secs < CLOCK_BEHIND_WARN_SECS {
+            return None;
+        }
+        let lead = self
+            .newest
+            .as_ref()
+            .map_or(0, |n| n.at.secs().saturating_sub(now.secs()));
+        Some(ClockBehindView {
+            behind_secs,
+            newest_at,
+            cause_device: by.map(|id| self.device_name_of(id)),
+            capped: lead >= HLC_MAX_LEAD_SECS,
+        })
     }
 
     #[must_use]
@@ -2354,6 +2601,7 @@ impl Service {
             );
         }
         warnings.extend(self.folders_failing());
+        warnings.extend(self.awaiting_warning());
         for (kind, colors) in [
             (
                 "projects",
@@ -2494,6 +2742,7 @@ impl Service {
                 .collect(),
             notices: self.notices.clone(),
             warnings,
+            clock_behind: self.clock_behind(),
             sync: SyncView {
                 targets,
                 detected: self.detected.clone(),
@@ -2567,6 +2816,20 @@ impl Service {
                 packaged: self.packaged,
             },
         }
+    }
+
+    /// A first start still waiting for its data, once a folder has been tried: nothing is written there until it comes.
+    fn awaiting_warning(&self) -> Option<String> {
+        let tried = self
+            .targets
+            .values()
+            .any(|s| s.last_read_at.is_some() || s.last_error.is_some());
+        (self.file.prefs.awaiting_cloud && tried).then(|| {
+            format!(
+                "This computer's data hasn't arrived from {} yet, so nothing is written there until it does. Check that the folder is synced to this computer, then press Sync now in Settings > Sync between devices.",
+                folder_list(&self.file.prefs.sync_targets)
+            )
+        })
     }
 
     /// A folder that has been failing a while. The status says so too, but only on the page with the status.
@@ -2687,6 +2950,7 @@ fn name_device(e: CoreError, devices: BTreeMap<String, RemoteDevice>) -> CoreErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::crash_image;
     use crate::time::ManualClock;
 
     const T0: &str = "2026-03-01T09:00:00Z";
@@ -2922,7 +3186,8 @@ mod tests {
                 .iter()
                 .any(|n| n.message.contains("did not shut down cleanly"))
         );
-        // Recovery was saved, so a second launch has nothing to do.
+        // Recovery was saved, so a second launch has nothing to do. The first one ends first: the store is one app's.
+        drop(s);
         let again = open(dir.path(), &clock);
         assert!(again.snapshot().notices.is_empty());
     }
@@ -2932,11 +3197,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, _) = running(dir.path(), &clock);
-        let main = dir.path().join(persist::MAIN_FILE);
-        let before = std::fs::read(&main).unwrap();
+        let before = s.stored();
+        let changes = s.store.total_changes();
         clock.advance(30);
         s.heartbeat().unwrap();
-        assert_eq!(std::fs::read(&main).unwrap(), before);
+        // One row, the beat. The records and the rest of the store stay as they were.
+        assert_eq!(s.store.total_changes() - changes, 1);
+        assert_eq!(s.stored().data, before.data);
         // In memory it counts at once, for what other devices are told.
         assert_eq!(
             s.device_file().last_heartbeat.unwrap().iso(),
@@ -2949,11 +3216,9 @@ mod tests {
         assert_eq!(seg.end.unwrap().iso(), "2026-03-01T09:00:30Z");
     }
 
-    /// A run of work with main damaged at the end. `.bak` must still tell the truth about it, as it did
-    /// when every heartbeat rotated the store, whichever moment the damage comes.
-    fn damage_main(dir: &Path) {
-        std::fs::write(dir.join(persist::MAIN_FILE), b"junk").unwrap();
-    }
+    // The `after_a_crash_*` tests: a run of work, then the process killed at the end. The next launch reads the database
+    // and its WAL as they were on disk (`crash_image`), and must still tell the truth about the run, whichever moment
+    // the crash comes.
     fn minutes_of(s: &Service, task: &str) -> i64 {
         s.file()
             .data
@@ -2973,7 +3238,7 @@ mod tests {
     }
 
     #[test]
-    fn with_main_damaged_after_a_switch_hours_stay_on_the_right_tasks() {
+    fn after_a_crash_after_a_switch_hours_stay_on_the_right_tasks() {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, a) = running(dir.path(), &clock);
@@ -2983,51 +3248,51 @@ mod tests {
             .unwrap();
         s.start_task(&b).unwrap();
         beats(&mut s, &clock, 420);
+        let image = crash_image(dir.path());
         drop(s);
-        damage_main(dir.path());
-        let again = open(dir.path(), &clock);
+        let again = open(image.path(), &clock);
         assert_eq!(minutes_of(&again, &a), 60);
         assert_eq!(minutes_of(&again, &b), 420);
     }
 
     #[test]
-    fn with_main_damaged_right_after_a_pause_the_hours_are_kept() {
+    fn after_a_crash_right_after_a_pause_the_hours_are_kept() {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, a) = running(dir.path(), &clock);
         beats(&mut s, &clock, 180);
         clock.advance(10);
         s.pause_task(&a).unwrap();
+        let image = crash_image(dir.path());
         drop(s);
-        damage_main(dir.path());
-        let again = open(dir.path(), &clock);
+        let again = open(image.path(), &clock);
         assert_eq!(minutes_of(&again, &a), 180);
     }
 
     #[test]
-    fn with_main_damaged_after_a_clean_quit_the_hours_are_kept() {
+    fn after_a_crash_after_a_clean_quit_the_hours_are_kept() {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, a) = running(dir.path(), &clock);
         beats(&mut s, &clock, 480);
         s.on_exit().unwrap();
+        let image = crash_image(dir.path());
         drop(s);
-        damage_main(dir.path());
-        let again = open(dir.path(), &clock);
+        let again = open(image.path(), &clock);
         assert_eq!(minutes_of(&again, &a), 480);
     }
 
     #[test]
-    fn with_main_damaged_an_edit_older_than_one_beat_survives() {
+    fn after_a_crash_an_edit_older_than_one_beat_survives() {
         let dir = tempfile::tempdir().unwrap();
         let clock = ManualClock::at(T0);
         let (mut s, a) = running(dir.path(), &clock);
         beats(&mut s, &clock, 10);
         let project = s.create_project(&pinput("Later")).unwrap();
         beats(&mut s, &clock, 20);
+        let image = crash_image(dir.path());
         drop(s);
-        damage_main(dir.path());
-        let again = open(dir.path(), &clock);
+        let again = open(image.path(), &clock);
         assert!(again.file().data.projects.contains_key(&project));
         assert_eq!(minutes_of(&again, &a), 30);
     }
@@ -3042,7 +3307,8 @@ mod tests {
         clock.advance(86_400);
         s.heartbeat().unwrap();
         s.restore_backup(&name).unwrap();
-        assert!(!dir.path().join(persist::HEARTBEAT_FILE).exists());
+        // No beat is left in the store: what it holds is the backup's.
+        assert_eq!(s.stored().last_heartbeat.unwrap().iso(), T0);
         assert_eq!(s.file().last_heartbeat.unwrap().iso(), T0);
     }
 
@@ -3396,18 +3662,20 @@ mod tests {
         let (mut s, _) = running(dir.path(), &clock);
         s.observe_activity(Some(0)).unwrap();
         clock.advance(3600);
-        let store = dir.path().join("z-work-data.json");
-        let keep = std::fs::read(&store).unwrap();
-        // A directory in the way of the temp file makes the write fail on every platform.
-        let tmp = dir.path().join("z-work-data.json.tmp");
-        std::fs::create_dir_all(&tmp).unwrap();
+        // The save fails inside its transaction, as on a full disk.
+        s.set_saves_blocked(true);
         assert!(s.observe_activity(Some(0)).is_err());
         assert!(pending_gaps(&s).is_empty());
-        std::fs::remove_dir_all(&tmp).unwrap();
-        std::fs::write(&store, keep).unwrap();
+        s.set_saves_blocked(false);
         clock.advance(5);
         assert!(s.observe_activity(Some(0)).unwrap());
         assert_eq!(pending_gaps(&s).len(), 1);
+        // The save after a failed one rewrote every row, so memory and disk can't have drifted apart.
+        assert_eq!(
+            s.store.last_save().upserted,
+            crate::store::record_count(&s.file().data)
+        );
+        assert_eq!(s.stored(), *s.file());
     }
 
     #[test]
@@ -5699,13 +5967,14 @@ mod tests {
         s.stash_draft(&t, &doc("Typed"), &Value::Null).unwrap();
         s.on_exit().unwrap();
         drop(s);
-        // The temporary file the save writes through is a folder, so the save fails.
-        let blocked = dir.path().join("z-work-data.json.tmp");
-        std::fs::create_dir(&blocked).unwrap();
+        // The launch's own save fails inside its transaction.
+        crate::store::block_new_stores(true);
         clock.advance(5);
-        assert!(Service::open(dir.path(), Arc::new(clock.clone()), "pc").is_err());
+        let failed = Service::open(dir.path(), Arc::new(clock.clone()), "pc");
+        crate::store::block_new_stores(false);
+        assert!(failed.is_err());
+        drop(failed);
         assert!(!drafts_on_disk(dir.path()).is_empty());
-        std::fs::remove_dir(&blocked).unwrap();
         let s = open(dir.path(), &clock);
         assert_eq!(s.file().data.tasks[&t].description, doc("Typed"));
     }
@@ -7124,12 +7393,12 @@ mod tests {
         let mut s = open(dir.path(), &clock);
         let p = s.create_project(&pinput("Kept")).unwrap();
         drop(s);
-        // Something at that path that can't be read as a file, as a locked one can't.
-        let bak = dir.path().join("z-work-data.json.bak");
-        std::fs::remove_file(&bak).unwrap();
-        std::fs::create_dir(&bak).unwrap();
+        // Something at the old backup's path that can't be read as a file, as a locked one can't, and an old store that
+        // can't be read either: neither is looked at while the database is fine.
+        std::fs::create_dir(dir.path().join("z-work-data.json.bak")).unwrap();
+        std::fs::write(dir.path().join("z-work-data.json"), b"junk").unwrap();
         let s = Service::open(dir.path(), Arc::new(clock), "pc");
-        let s = s.expect("the main file is fine");
+        let s = s.expect("the database is fine");
         assert!(s.file().data.projects.contains_key(&p));
     }
 
@@ -7522,16 +7791,12 @@ mod tests {
         s.observe_activity(Some(0)).unwrap();
         work_for(&mut s, &clock, 10);
         clock.set("2026-03-02T09:10:00Z");
-        let store = dir.path().join("z-work-data.json");
-        let keep = std::fs::read(&store).unwrap();
-        // A directory in the way of the temp file makes the write fail on every platform.
-        let tmp = dir.path().join("z-work-data.json.tmp");
-        std::fs::create_dir_all(&tmp).unwrap();
+        // The save fails inside its transaction, as on a full disk.
+        s.set_saves_blocked(true);
         assert!(s.observe_activity(Some(0)).is_err());
         assert_eq!(stretches(&s, &t).len(), 1, "memory stays as it was");
         assert!(s.snapshot().notices.is_empty());
-        std::fs::remove_dir_all(&tmp).unwrap();
-        std::fs::write(&store, keep).unwrap();
+        s.set_saves_blocked(false);
         clock.advance(60);
         s.observe_activity(Some(0)).unwrap();
         assert_eq!(
@@ -7691,8 +7956,7 @@ mod tests {
         s.run_daily_backup().unwrap();
         let backup = s.list_backups().unwrap()[0].name.clone();
         held_by_laptop(&mut s);
-        let store = dir.path().join("z-work-data.json");
-        let before = std::fs::read(&store).unwrap();
+        let before = s.store.total_changes();
         let (data, revision) = (s.file().data.clone(), s.revision());
 
         assert_eq!(
@@ -7706,7 +7970,7 @@ mod tests {
         read_only_error(s.restore_backup(&backup));
         assert_eq!(s.file().data, data);
         assert_eq!(s.revision(), revision, "nothing was committed");
-        assert_eq!(std::fs::read(&store).unwrap(), before, "nor written");
+        assert_eq!(s.store.total_changes(), before, "nor written");
         assert!(!s.lease.want_claim, "and nothing asks for the lease");
 
         // A cold start is checked first, so warm up before it: this is about the lease.
@@ -7844,12 +8108,11 @@ mod tests {
         s.add_sync_target(custom_folder("/not/there")).unwrap();
         assert!(s.create_task(&tinput("", "no-project")).is_err());
         assert!(!s.lease.want_claim);
-        // A directory in the way of the temp file makes the write fail on every platform.
-        let tmp = dir.path().join("z-work-data.json.tmp");
-        std::fs::create_dir_all(&tmp).unwrap();
+        // The save fails inside its transaction, as on a full disk.
+        s.set_saves_blocked(true);
         assert!(s.create_project(&pinput("P")).is_err());
         assert!(!s.lease.want_claim, "nothing happened that needs the lease");
-        std::fs::remove_dir_all(&tmp).unwrap();
+        s.set_saves_blocked(false);
     }
 
     fn restored_elsewhere(at: Ts) -> EpochInfo {
@@ -7878,15 +8141,14 @@ mod tests {
         .unwrap();
         s.add_sync_target(custom_folder("/not/there")).unwrap();
         s.update_project(&p, &pinput("Renamed")).unwrap();
-        let store = dir.path().join("z-work-data.json");
-        let kept = std::fs::read(&store).unwrap();
+        let kept = s.store.total_changes();
         let refused = s.restore_backup(&before).unwrap_err();
         assert_eq!(refused.code(), "conflict");
         assert_eq!(
             refused.to_string(),
             "This backup is from before the version of 2026-03-01 09:00 was restored. Restoring it would undo that on every computer. Use Versions instead."
         );
-        assert_eq!(std::fs::read(&store).unwrap(), kept, "nothing was touched");
+        assert_eq!(s.store.total_changes(), kept, "nothing was touched");
 
         // One taken since is at the same point, so it does no harm.
         clock.advance(86_400);
@@ -7929,13 +8191,8 @@ mod tests {
         let clock = ManualClock::at(T0);
         let (mut s, t) = running(dir.path(), &clock);
         s.mutate(|f, _| {
-            f.data.set_device_prefix(
-                &Ctx {
-                    now: Ts::parse(T0).unwrap(),
-                    device: "other-device",
-                },
-                "Z",
-            )
+            f.data
+                .set_device_prefix(&Ctx::at(Ts::parse(T0).unwrap(), "other-device"), "Z")
         })
         .unwrap();
         let prefixes = s.file().data.prefixes.clone();
@@ -8006,8 +8263,7 @@ mod tests {
         let clock = ManualClock::at(T0);
         let mut s = open(dir.path(), &clock);
         let before = s.file().clone();
-        let tmp = dir.path().join("z-work-data.json.tmp");
-        std::fs::create_dir_all(&tmp).unwrap();
+        s.set_saves_blocked(true);
         let result = s.install_restored(
             Shared::default(),
             RestoreNote {
@@ -8022,7 +8278,8 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(s.file(), &before);
-        std::fs::remove_dir_all(&tmp).unwrap();
+        s.set_saves_blocked(false);
+        assert_eq!(s.stored(), before, "and the store either");
     }
 
     #[test]

@@ -1,8 +1,9 @@
-// The e2e build's query parameters for the lease, versions, packaged build and Start with Windows: what a Playwright spec gets by
-// opening the page with them.
+// The e2e build's query parameters for the lease, versions, packaged build, Start with Windows and the clock behind: what a Playwright spec
+// gets by opening the page with them.
 import { clearMocks } from '@tauri-apps/api/mocks';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { toIso } from '../lib/tz';
 import type { AutostartInfo, Snapshot, VersionList } from '../lib/types';
 import { installE2eBackend } from './e2eEntry';
 import { handle, type MockState } from './ipcMock';
@@ -93,5 +94,60 @@ describe('the e2e query', () => {
     window.__mockLeaseLost({ deviceName: 'Home PC' });
     expect(snap(s).lease).toMatchObject({ state: 'heldByOtherLive', readOnly: true, holder: { deviceName: 'Home PC' } });
     expect(s.tasks.find((t) => t.id === 't-logo')?.state).toBe('paused');
+  });
+});
+
+describe('the e2e query for the clock behind', () => {
+  it('starts with no line, as every spec has so far', () => {
+    const s = open('seed=demo');
+    expect(s.newestStamp).toBeNull();
+    expect(snap(s)).toHaveProperty('clockBehind', null);
+  });
+
+  it('?clockBehind=5400 has the newest change seen 90 minutes ahead of the clock, saved on LAPTOP', () => {
+    const s = open('clockBehind=5400');
+    expect(s.newestStamp).toEqual({ at: s.now + 5400, causeDevice: 'LAPTOP' });
+    expect(snap(s).clockBehind).toEqual({ behindSecs: 5400, newestAt: toIso(s.now + 5400), causeDevice: 'LAPTOP', capped: false });
+  });
+
+  it('&clockBy=here says it was saved on this computer, and &clockBy=<name> names the other one', () => {
+    const here = open('clockBehind=7200&clockBy=here');
+    expect(here.newestStamp).toEqual({ at: here.now + 7200, causeDevice: null });
+    expect(snap(here).clockBehind).toMatchObject({ behindSecs: 7200, causeDevice: null });
+    const named = open('clockBehind=7200&clockBy=Home%20PC');
+    expect(snap(named).clockBehind).toMatchObject({ behindSecs: 7200, causeDevice: 'Home PC' });
+  });
+
+  it('shows from 120 s, like the backend: 60 and 119 give no line, 120 gives it', () => {
+    expect(snap(open('clockBehind=60')).clockBehind).toBeNull();
+    expect(snap(open('clockBehind=119')).clockBehind).toBeNull();
+    expect(snap(open('clockBehind=120')).clockBehind).toMatchObject({ behindSecs: 120 });
+  });
+
+  it('?clockBehind=172800 is capped, as every gap of a day or more is: 86399 is not and 86400 is', () => {
+    const s = open('clockBehind=172800');
+    expect(snap(s).clockBehind).toEqual({ behindSecs: 172_800, newestAt: toIso(s.now + 172_800), causeDevice: 'LAPTOP', capped: true });
+    expect(snap(open('clockBehind=86399')).clockBehind).toMatchObject({ behindSecs: 86_399, capped: false });
+    expect(snap(open('clockBehind=86400')).clockBehind).toMatchObject({ behindSecs: 86_400, capped: true });
+    expect(snap(open('clockBehind=172800&clockBy=here')).clockBehind).toMatchObject({ causeDevice: null, capped: true });
+  });
+
+  it('gives no line for zero or a negative number: the newest change is not ahead of the clock', () => {
+    expect(snap(open('clockBehind=0')).clockBehind).toBeNull();
+    expect(snap(open('clockBehind=-3600')).clockBehind).toBeNull();
+  });
+
+  it('goes with any seed and any lease, and the wizard of a fresh store', () => {
+    expect(snap(open('seed=p2&clockBehind=300')).clockBehind).toMatchObject({ behindSecs: 300 });
+    const leased = open('lease=live&clockBehind=300');
+    expect(snap(leased)).toMatchObject({ lease: { state: 'heldByOtherLive' }, clockBehind: { behindSecs: 300 } });
+    expect(snap(open('seed=empty&firstRun=1&clockBehind=300'))).toMatchObject({ setup: { pending: true }, clockBehind: { behindSecs: 300 } });
+  });
+
+  it('refuses what is not a whole number of seconds, or an empty computer name, so a typo fails the spec loudly instead of testing nothing', () => {
+    expect(() => open('clockBehind=')).toThrow(/clockBehind=/);
+    expect(() => open('clockBehind=soon')).toThrow(/clockBehind=/);
+    expect(() => open('clockBehind=90.5')).toThrow(/clockBehind=/);
+    expect(() => open('clockBehind=5400&clockBy=')).toThrow(/clockBy=/);
   });
 });

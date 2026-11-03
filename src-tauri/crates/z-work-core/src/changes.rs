@@ -693,10 +693,7 @@ mod tests {
             settled: false,
         });
         let after_edit = crate::adjust::seg_json(&cur.segments["s1"]);
-        let laptop = Ctx {
-            now: at("13:40"),
-            device: LAPTOP,
-        };
+        let laptop = Ctx::at(at("13:40"), LAPTOP);
         cur.audit(
             &laptop,
             "segment",
@@ -706,10 +703,7 @@ mod tests {
             before_edit,
             after_edit,
         );
-        let unknown = Ctx {
-            now: at("13:45"),
-            device: "33333333-3333-4333-8333-333333333333",
-        };
+        let unknown = Ctx::at(at("13:45"), "33333333-3333-4333-8333-333333333333");
         cur.audit(
             &unknown,
             "summary",
@@ -739,10 +733,7 @@ mod tests {
 
         // Past the cap the rest is only counted, and an earlier day says its date.
         let mut many = cur.clone();
-        let yesterday = Ctx {
-            now: at("13:40").later(-86_400),
-            device: ME,
-        };
+        let yesterday = Ctx::at(at("13:40").later(-86_400), ME);
         for i in 0..AUDIT_LINES + 3 {
             many.audit(
                 &yesterday,

@@ -1,12 +1,42 @@
-// The parts of an MSIX package for the Microsoft Store that come from values, not from files: the version the Store
-// takes, the identity Partner Center issues, AppxManifest.xml, where the licenses go, and which version an exe carries.
+// The parts of the MSIX packages for the Microsoft Store that come from values, not from files: the version the Store
+// takes, the two identities one run packs (the Store's and a test one), their package family names and file names,
+// AppxManifest.xml, where the licenses go, and which version an exe carries.
 // All pure, so a test can check them on any OS without makemsix. scripts/package-msix.mjs does the files.
+import { createHash } from 'node:crypto';
 import { posix, resolve } from 'node:path';
 
 /** The exe the package starts. package-msix.mjs puts it beside AppxManifest.xml. */
 export const EXECUTABLE = 'zWorkTracker.exe';
 /** The images the manifest names, as Assets\<name>.png, and the size in pixels each is cut to from the app icon. */
 export const ASSETS = { StoreLogo: 50, Square44x44Logo: 44, Square150x150Logo: 150 };
+
+/**
+ * The two packages one run makes from the same build, in the order they are made. Neither is signed here.
+ * `store` carries the identity Partner Center issued for the app (Product management > Product identity). Those values are
+ * public and final, so they are kept here and need no setting; the Store signs what it publishes.
+ * `test` carries an identity of our own, for trying the package on a PC: its Publisher is the subject of the throwaway
+ * certificate it is signed with by hand before it is installed. Its package family name differs from the Store's, so it
+ * keeps its data in a folder of its own.
+ * `suffix` ends the file name, after the version and the architecture.
+ */
+export const PACKAGES = Object.freeze({
+  store: Object.freeze({
+    suffix: 'store',
+    identity: Object.freeze({
+      name: 'PedroMiguelRodriguesJorge.zWorkTracker',
+      publisher: 'CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9',
+      publisherDisplayName: 'Pedro Miguel Rodrigues Jorge',
+    }),
+  }),
+  test: Object.freeze({
+    suffix: 'test-unsigned',
+    identity: Object.freeze({
+      name: 'rustcircle.zWorkTracker.Test',
+      publisher: 'CN=zWorkTracker Test Signing',
+      publisherDisplayName: 'zWorkTracker (test)',
+    }),
+  }),
+});
 
 const MAX_PART = 65535;
 const PART = '(0|[1-9]\\d{0,4})';
@@ -16,11 +46,13 @@ const NAME = /^[-.A-Za-z0-9]{3,50}$/;
 // A control character other than tab, line feed and carriage return, or U+FFFE or U+FFFF. XML does not allow them.
 const NOT_XML = /[^\P{Cc}\t\n\r]|[\uFFFE\uFFFF]/u;
 const ESCAPED = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' };
-const IDENTITY = [
-  ['name', 'ZWT_STORE_IDENTITY_NAME', 'Package/Identity/Name'],
-  ['publisher', 'ZWT_STORE_PUBLISHER', 'Package/Identity/Publisher'],
-  ['publisherDisplayName', 'ZWT_STORE_PUBLISHER_DISPLAY_NAME', 'Package/Properties/PublisherDisplayName'],
-];
+// What --identity may say, and the packages each choice makes.
+const CHOICES = Object.freeze({ store: ['store'], test: ['test'], both: ['store', 'test'] });
+// The variables that named the Store identity while Partner Center had not issued it. They are no longer read.
+const RETIRED = ['ZWT_STORE_IDENTITY_NAME', 'ZWT_STORE_PUBLISHER', 'ZWT_STORE_PUBLISHER_DISPLAY_NAME'];
+// Windows spells a publisher in a package family name with these 32 characters: the digits and the lowercase letters,
+// less i, l, o and u.
+const ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
 
 /**
  * The four-part version a package carries: 'x.y.z' becomes 'x.y.z.0'. A fourth part is taken only as 0, so what this
@@ -42,25 +74,104 @@ export function msixVersion(version) {
 }
 
 /**
- * The three values Partner Center issues for the app, under Product management > Product identity. They are the Store's
- * to give, so none has a default: any that is missing or blank is named in the error, together with where to find it.
- * Spaces around a value, left by copying it, are removed.
+ * The command line of package-msix.mjs: `--build`, which builds the Windows app first, and `--identity store|test|both`
+ * (or `--identity=test`), which says which packages to make. With no `--identity` it is `store`, the Store identity;
+ * `--identity both` makes the Store package and the test package from the same build. Returns `{ build, kinds }`, `kinds` being the packages to make in the order
+ * they are made. Anything else throws, so a misspelt option is not taken for a default.
  */
-export function readIdentity(env) {
-  const read = IDENTITY.map(([key, variable, field]) => ({ key, variable, field, value: (env[variable] ?? '').trim() }));
-  const missing = read.filter((item) => item.value === '');
-  if (missing.length > 0) {
-    const names = missing.map((item) => `${item.variable} (${item.field})`).join(', ');
-    throw new Error(`Missing ${names}. Partner Center issues these, so they have no defaults: copy them from your app's Product management > Product identity page.`);
+export function parseArguments(argv) {
+  let build = false;
+  let choice = null;
+  const unknown = [];
+  for (let at = 0; at < argv.length; at++) {
+    const arg = argv[at];
+    if (arg === '--build') {
+      build = true;
+    } else if (arg === '--identity' || arg.startsWith('--identity=')) {
+      const value = arg === '--identity' ? argv[++at] : arg.slice('--identity='.length);
+      if (choice !== null) throw new Error('--identity was given more than once: say store, test or both once.');
+      if (typeof value !== 'string' || !Object.hasOwn(CHOICES, value)) {
+        throw new Error(`--identity must be store, test or both (got ${value === undefined ? 'nothing' : JSON.stringify(value)}).`);
+      }
+      choice = value;
+    } else {
+      unknown.push(arg);
+    }
   }
-  const identity = Object.fromEntries(read.map((item) => [item.key, item.value]));
-  if (!identity.publisher.startsWith('CN=')) {
-    throw new Error(`ZWT_STORE_PUBLISHER must be Package/Identity/Publisher from Product identity, which starts with CN= (got ${JSON.stringify(identity.publisher)}).`);
+  if (unknown.length > 0) {
+    throw new Error(`Unknown argument: ${unknown.join(' ')}. The options are --build, which builds the Windows app first, and --identity store|test|both, which says which packages to make (the default is store).`);
   }
-  if (!NAME.test(identity.name)) {
-    throw new Error(`ZWT_STORE_IDENTITY_NAME must be Package/Identity/Name from Product identity: 3 to 50 letters, digits, dots or hyphens (got ${JSON.stringify(identity.name)}).`);
+  return { build, kinds: [...CHOICES[choice ?? 'store']] };
+}
+
+/**
+ * The variables of earlier versions that are set in `env`. They named the Store identity before Partner Center issued it and
+ * are not read now: the identities are in PACKAGES. The script says so when one is set, so a value left in a shell, from making
+ * a test package say, is not taken for an override of the Store identity.
+ */
+export function retiredVariables(env) {
+  return RETIRED.filter((variable) => (env[variable] ?? '').trim() !== '');
+}
+
+/**
+ * Checks an identity against what Partner Center issues: a name of 3 to 50 letters, digits, dots and hyphens, and a publisher
+ * that is a distinguished name starting with CN=. The display name is free text, so it is checked only by `buildManifest`.
+ * Returns the identity, or throws.
+ */
+export function checkIdentity(identity) {
+  const { name, publisher } = identity;
+  if (typeof publisher !== 'string' || !publisher.startsWith('CN=')) {
+    throw new Error(`Package/Identity/Publisher must start with CN= (got ${JSON.stringify(publisher)}).`);
+  }
+  if (typeof name !== 'string' || !NAME.test(name)) {
+    throw new Error(`Package/Identity/Name must be 3 to 50 letters, digits, dots or hyphens (got ${JSON.stringify(name)}).`);
   }
   return identity;
+}
+
+/** The identity of the `store` or `test` package, checked. Anything else throws. */
+export function identityOf(kind) {
+  if (typeof kind !== 'string' || !Object.hasOwn(PACKAGES, kind)) {
+    throw new Error(`Unknown package ${JSON.stringify(kind)}: the packages are ${Object.keys(PACKAGES).join(' and ')}.`);
+  }
+  return checkIdentity({ ...PACKAGES[kind].identity });
+}
+
+/** The file name of a package: `zWorkTracker_1.3.2.0_x64_store.msix`. The version may be given with or without its fourth part. */
+export function msixFileName(productName, version, kind) {
+  identityOf(kind);
+  return `${productName}_${msixVersion(version)}_x64_${PACKAGES[kind].suffix}.msix`;
+}
+
+/**
+ * The 13 characters that stand for a publisher in a package family name. `hash` is the first 8 bytes of the SHA-256 of the
+ * Publisher string written as UTF-16LE: those 64 bits and one 0 bit after them make 65, read as 13 groups of 5 bits, the most
+ * significant group first, each group a character of `0123456789abcdefghjkmnpqrstvwxyz`.
+ */
+export function encodePublisherHash(hash) {
+  if (hash.length !== 8) throw new Error(`A publisher hash is 8 bytes, not ${hash.length}.`);
+  let bits = 0n;
+  for (const byte of hash) bits = (bits << 8n) | BigInt(byte);
+  bits <<= 1n;
+  let id = '';
+  for (let group = 12; group >= 0; group--) id += ID_ALPHABET[Number((bits >> BigInt(5 * group)) & 31n)];
+  return id;
+}
+
+/** The 13 characters that stand for `publisher`, a string such as `CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9`, in a package family name. */
+export function publisherId(publisher) {
+  if (typeof publisher !== 'string' || publisher === '') throw new Error('A publisher id needs the Publisher string of the manifest.');
+  return encodePublisherHash(createHash('sha256').update(publisher, 'utf16le').digest().subarray(0, 8));
+}
+
+/**
+ * The package family name Windows gives a package: its Identity Name, an underscore and the id of its Publisher. It names the
+ * folder the package keeps its data in, under %LOCALAPPDATA%\Packages. Pass the Name and Publisher read back from a built package's
+ * manifest to learn what Windows will call it.
+ */
+export function packageFamilyName(name, publisher) {
+  if (typeof name !== 'string' || name === '') throw new Error('A package family name needs the Identity Name of the manifest.');
+  return `${name}_${publisherId(publisher)}`;
 }
 
 /**
@@ -147,4 +258,9 @@ export function buildManifest({ name, publisher, publisherDisplayName, displayNa
   </Capabilities>
 </Package>
 `;
+}
+
+/** AppxManifest.xml of the `store` or `test` package: `buildManifest` with the identity of that package. */
+export function manifestFor(kind, { displayName, description, version }) {
+  return buildManifest({ ...identityOf(kind), displayName, description, version });
 }
