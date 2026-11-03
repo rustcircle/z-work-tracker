@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { dayLabel, formatDuration, listOf } from '../../components/format';
 import { Badge, Button, Card, ConfirmDialog, ProjectChip } from '../../components/ui';
 import { api } from '../../lib/api';
@@ -21,6 +22,7 @@ export function newestFirst(list: readonly BillingSummary[]): BillingSummary[] {
 
 export function SummariesCard() {
   const { snapshot, zones, adopt } = useAppState();
+  const ro = useReadOnly();
   const hide = snapshot.prefs.hideEarnings;
   const list = useMemo(() => newestFirst(snapshot.billing.summaries), [snapshot.billing.summaries]);
   const projects = useMemo(() => new Map<string, Project>(snapshot.projects.map((p) => [p.id, p])), [snapshot.projects]);
@@ -152,6 +154,8 @@ export function SummariesCard() {
                       small
                       variant="danger"
                       aria-label={`Void ${b.reference}`}
+                      disabled={ro.readOnly}
+                      title={ro.why ?? undefined}
                       onClick={() => {
                         setVoidError(null);
                         setVoiding(b);
@@ -186,6 +190,7 @@ export function SummariesCard() {
             <p>
               The time on <strong>{voiding.reference}</strong> returns to unbilled, so it shows up again in the unbilled time of its period. The number {voiding.reference} is not reused: the next summary gets the next number.
             </p>
+            {ro.readOnly && <p className="muted">{ro.why}</p>}
             {voidError && (
               <p className="bl-error" role="alert">
                 {voidError}

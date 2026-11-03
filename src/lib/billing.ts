@@ -1,9 +1,11 @@
 // Derived rounding and earnings, matching `z-work-core`'s billing.rs. Pinned on both sides by
 // fixtures/billing-fixtures.json. Nothing here is stored.
-// Rules: a row is one task on one day in the zone. Its exact time is rounded once; larger totals
-// are sums of rows. Earnings keep the exact numerator (rate cents x seconds) and round half up to
-// cents only at the total shown. Currencies are never added together. The rounding difference goes
-// to the last rate in force that day, moving back to earlier buckets if it would go below zero.
+// Rules: a row is one task on one day in the zone. Its exact time is rounded once; larger totals of
+// time are sums of rows. Earnings keep the exact numerator (rate cents x billable seconds). A row shows
+// its own amount rounded, and a total is the numerators of its rows added up, then rounded half up to
+// cents once (`totalCents`), never a sum of rounded rows. Currencies are never added together. The
+// rounding difference goes to the last rate in force that day, moving back to earlier buckets if it
+// would go below zero.
 import { addDays, dayOf, startOfDay } from './tz';
 import type { Currency, PieceKind, Project, RateVersion, RoundMethod, RoundingVersion, Stamp } from './types';
 import { parseIso } from './tz';
@@ -184,11 +186,15 @@ function allocate(buckets: Bucket[], diff: number): void {
   }
 }
 
+/** Gives a row its billable seconds from its task, its day, its counted seconds and the rule in force. */
+export type Bill = (taskId: string, day: string, counted: number, rule: Rule) => number;
+
 /**
  * One row per task per day in `zone`, in no particular order. A billable pause adds to billable only:
  * the row's exact time plus its pauses is rounded once. Thinking counts in exact like any work.
+ * `bill` takes the place of that rounding, as a summary of part of a day needs.
  */
-export function taskDays(spans: readonly SpanLike[], zone: string, book: RateBook, rounding: readonly RoundingVersion[]): TaskDay[] {
+export function taskDays(spans: readonly SpanLike[], zone: string, book: RateBook, rounding: readonly RoundingVersion[], bill?: Bill): TaskDay[] {
   const midnight = new Map<string, number>();
   const acc = new Map<string, { taskId: string; projectId: string; day: string; first: number | null; pause: number; thinking: number; pieces: (RatePiece & { pause: boolean })[] }>();
   for (const s of spans) {
@@ -230,7 +236,7 @@ export function taskDays(spans: readonly SpanLike[], zone: string, book: RateBoo
     const exactSecs = buckets.reduce((n, b) => n + b.exactSecs, 0);
     const counted = exactSecs + row.pause;
     const rule = ruleFor(rounding, row.projectId, row.day);
-    const billableSecs = roundSeconds(counted, rule.incrementMinutes, rule.method);
+    const billableSecs = bill ? bill(row.taskId, row.day, counted, rule) : roundSeconds(counted, rule.incrementMinutes, rule.method);
     allocate(buckets, billableSecs - counted);
     rows.push({
       taskId: row.taskId,
@@ -261,6 +267,33 @@ export function numeratorsOf(rows: readonly TaskDay[]): Numerators {
     }
   }
   return out;
+}
+
+export type Cents = Partial<Record<Currency, number>>;
+
+/** Exact numerators as whole cents, per currency. */
+export function centsOfNumerators(n: Numerators): Cents {
+  const out: Cents = {};
+  for (const c of ['EUR', 'USD'] as const) {
+    const v = n[c];
+    if (v !== undefined) out[c] = centsFromNumerator(v);
+  }
+  return out;
+}
+
+/** The money these rows come to, per currency. Every total shown is this: their exact amounts added up, and rounded once. */
+export const totalCents = (rows: readonly TaskDay[]): Cents => centsOfNumerators(numeratorsOf(rows));
+
+/** What a document prints where its rows don't add up to its total. */
+export const ROUNDED_ROWS_NOTE = 'Row amounts are rounded; the total is worked out from the exact amounts.';
+
+/** Whether the amounts rows show add up to something other than their total, in any currency. */
+export function rowsDifferFromTotal(rows: readonly Cents[], totals: Cents): boolean {
+  return (['EUR', 'USD'] as const).some((c) => {
+    const total = totals[c];
+    const shown = rows.filter((r) => r[c] !== undefined);
+    return total !== undefined && shown.length > 0 && shown.reduce((n, r) => n + (r[c] as number), 0) !== total;
+  });
 }
 
 /** Exact numerators per currency from exact (unrounded) time: what the live ticker's exact figure shows. */

@@ -2,6 +2,7 @@
 // the drill-down panel.
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 
+import { Modal } from '../../components/ui';
 import { clockAt, dayOf, zoneLabel, cityOf } from '../../lib/tz';
 import { DataTable, ProjectChip, useEscape } from './charts';
 import { drillInto, type DrillResult, type DrillSel } from './drill';
@@ -139,49 +140,34 @@ export function Invite({ title, children }: { title: string; children: ReactNode
 export function GlossaryDialog({ open, focusId, onClose }: { open: boolean; focusId: string | null; onClose: () => void }) {
   const [q, setQ] = useState('');
   const list = useMemo(() => searchGlossary(q), [q]);
-  const ref = useRef<HTMLDivElement>(null);
-  useEscape(open, onClose);
-  useEffect(() => {
-    if (!open) return;
-    ref.current?.querySelector<HTMLInputElement>('input')?.focus();
-  }, [open]);
   useEffect(() => {
     if (open && focusId) document.getElementById(`gloss-${focusId}`)?.scrollIntoView?.({ block: 'center' });
   }, [open, focusId]);
-  if (!open) return null;
   return (
-    <div className="a-modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="a-modal" role="dialog" aria-modal="true" aria-labelledby="gloss-h" ref={ref}>
-        <header className="a-modal-head">
-          <h2 id="gloss-h">Metrics glossary</h2>
-          <button type="button" className="a-btn" onClick={onClose}>
-            Close
-          </button>
-        </header>
-        <label className="a-field">
-          <span>Search metrics</span>
-          <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, formula or Exact / Billable" />
-        </label>
-        <p className="muted a-count" role="status">
-          {list.length} of {searchGlossary('').length} metrics
-        </p>
-        <div className="a-gloss-list">
-          {list.map((e) => (
-            <article key={e.id} id={`gloss-${e.id}`} className={`a-gloss ${e.id === focusId ? 'a-gloss-focus' : ''}`}>
-              <h3>
-                {e.name} <span className="a-basis">{e.basis === 'Neither' ? 'Not time-based' : `Uses ${e.basis}`}</span>
-              </h3>
-              <p className="muted a-family">{e.family}</p>
-              <p>{e.definition}</p>
-              <p className="a-formula">
-                <strong>Formula:</strong> {e.formula}
-              </p>
-            </article>
-          ))}
-          {list.length === 0 ? <p>No metric matches &ldquo;{q}&rdquo;.</p> : null}
-        </div>
+    <Modal open={open} title="Metrics glossary" onClose={onClose} wide>
+      <label className="a-field">
+        <span>Search metrics</span>
+        <input type="search" data-autofocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name, formula or Exact / Billable" />
+      </label>
+      <p className="muted a-count" role="status">
+        {list.length} of {searchGlossary('').length} metrics
+      </p>
+      <div className="a-gloss-list">
+        {list.map((e) => (
+          <article key={e.id} id={`gloss-${e.id}`} className={`a-gloss ${e.id === focusId ? 'a-gloss-focus' : ''}`}>
+            <h3>
+              {e.name} <span className="a-basis">{e.basis === 'Neither' ? 'Not time-based' : `Uses ${e.basis}`}</span>
+            </h3>
+            <p className="muted a-family">{e.family}</p>
+            <p>{e.definition}</p>
+            <p className="a-formula">
+              <strong>Formula:</strong> {e.formula}
+            </p>
+          </article>
+        ))}
+        {list.length === 0 ? <p>No metric matches &ldquo;{q}&rdquo;.</p> : null}
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -216,14 +202,28 @@ export interface DrillContext {
 
 const MAX_SEGMENTS = 60;
 
+/** The panel lies under the dialogs (layer 50 in styles/ui.css) and the toasts (60), whatever layer analysis.css gives it: a dialog opened over it is not covered by it. */
+const PANEL_LAYER = 49;
+
 export function DrillPanel({ sel, ctx, onClose }: { sel: DrillSel; ctx: DrillContext; onClose: () => void }) {
   const res: DrillResult = useMemo(() => drillInto(ctx.spans, ctx.zone, sel, new Map([...ctx.tasks].map(([id, t]) => [id, t.tags]))), [ctx.spans, ctx.zone, ctx.tasks, sel]);
   const [all, setAll] = useState(false);
   const ref = useRef<HTMLElement>(null);
+  // Where focus was before the panel took it, to give it back when the panel closes. A chart mark is an SVG element.
+  const opener = useRef<HTMLElement | SVGElement | null>(null);
   useEscape(true, onClose);
   useEffect(() => {
+    const active = document.activeElement;
+    if ((active instanceof HTMLElement || active instanceof SVGElement) && !ref.current?.contains(active)) opener.current = active;
     ref.current?.focus();
   }, [sel]);
+  useEffect(
+    () => () => {
+      // Only if focus was left with the panel: someone who has moved on to another control keeps it.
+      if (opener.current?.isConnected && (document.activeElement === null || document.activeElement === document.body)) opener.current.focus();
+    },
+    [],
+  );
   const both = ctx.clientZone !== null && ctx.clientZone !== ctx.zone;
   const range = (s: number, e: number, zone: string): string => {
     const day = dayOf(s, zone);
@@ -232,7 +232,7 @@ export function DrillPanel({ sel, ctx, onClose }: { sel: DrillSel; ctx: DrillCon
   };
   const shown = all ? res.segments : res.segments.slice(0, MAX_SEGMENTS);
   return (
-    <aside className="a-drill" role="dialog" aria-label={`Drill-down: ${sel.title}`} tabIndex={-1} ref={ref}>
+    <aside className="a-drill" style={{ zIndex: PANEL_LAYER }} role="dialog" aria-label={`Drill-down: ${sel.title}`} tabIndex={-1} ref={ref}>
       <header className="a-modal-head">
         <h2>{sel.title}</h2>
         <button type="button" className="a-btn" onClick={onClose}>

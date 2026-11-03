@@ -3,7 +3,7 @@ import { MASK, money as fmtMoney } from '../../lib/billing';
 import type { Currency } from '../../lib/types';
 import { Columns, HBars, Legend, timeScale, type Col, type HRow } from './charts';
 import { fmtHM, fmtHMS, fmtPct, fmtSignedPct } from './format';
-import { UNTAGGED_COLOR, type BudgetAlert, type FixedFeeStat, type TagStat } from './fam-p2';
+import { UNTAGGED_COLOR, budgetPercentText, type BudgetAlert, type FixedFeeStat, type TagStat } from './fam-p2';
 import type { SecEnv } from './secenv';
 import { basisWord, tipTime } from './secenv';
 import { Card, Invite, Section, Stat } from './ui';
@@ -178,7 +178,7 @@ export function FixedFeeCard({ env }: { env: SecEnv }) {
                   <td>{priceText(env, f.currency, f.feeCents)}</td>
                   <td>{fmtHM(f.billableSecs)}</td>
                   <td>{f.effectiveHourlyCents === null || f.currency === null ? 'Not enough data' : env.hide ? MASK : `${fmtMoney(f.currency, f.effectiveHourlyCents)} per hour`}</td>
-                  <td>{b === undefined ? 'No budget' : b.needsTargetRate ? 'Needs a price per hour' : `${b.percent}%`}</td>
+                  <td>{b === undefined ? 'No budget' : b.needsTargetRate ? 'Needs a price per hour' : budgetPercentText(env.hide, b)}</td>
                 </tr>
               );
             })}
@@ -215,7 +215,7 @@ export function BudgetStatusCard({ env }: { env: SecEnv }) {
       data={{
         caption: 'Budget status per project',
         columns: ['Project', 'Basis', 'Used', 'Status'],
-        rows: m.budgetStatus.map((b) => [b.name, b.basis === 'hours' ? 'Hours' : 'Fee', b.needsTargetRate ? 'Needs a price per hour' : `${b.percent}%`, b.needsTargetRate ? 'Not measurable' : LEVEL_TEXT[b.level].text]),
+        rows: m.budgetStatus.map((b) => [b.name, b.basis === 'hours' ? 'Hours' : 'Fee', b.needsTargetRate ? 'Needs a price per hour' : budgetPercentText(env.hide, b), b.needsTargetRate ? 'Not measurable' : LEVEL_TEXT[b.level].text]),
       }}
     >
       <ul className="a-budget-list">
@@ -246,12 +246,15 @@ export function BudgetStatusCard({ env }: { env: SecEnv }) {
                 </p>
               ) : (
                 <>
-                  <div className="a-bar" role="img" aria-label={`${b.name}: ${b.percent}% of the ${b.basis === 'hours' ? 'hours budget' : 'fixed fee'} used. ${lv.text}.`}>
-                    <div className="a-bar-fill" style={{ width: `${w}%` }} />
-                    <span className="a-bar-tick" style={{ left: '80%' }} aria-hidden="true" />
-                  </div>
+                  {/* The bar's length is the percent, so it goes with it. The level is still said in words above. */}
+                  {env.hide && b.basis === 'fee' ? null : (
+                    <div className="a-bar" role="img" aria-label={`${b.name}: ${b.percent}% of the ${b.basis === 'hours' ? 'hours budget' : 'fixed fee'} used. ${lv.text}.`}>
+                      <div className="a-bar-fill" style={{ width: `${w}%` }} />
+                      <span className="a-bar-tick" style={{ left: '80%' }} aria-hidden="true" />
+                    </div>
+                  )}
                   <p className="a-budget-msg tabular">
-                    <strong>{b.percent}% used.</strong> {budgetBasisText(env, b)}
+                    <strong>{budgetPercentText(env.hide, b)} used.</strong> {budgetBasisText(env, b)}
                   </p>
                 </>
               )}

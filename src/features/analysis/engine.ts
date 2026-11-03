@@ -7,7 +7,8 @@
 import { RateBook, taskDays, type TaskDay } from '../../lib/billing';
 import { attributeSpan, windowsFor, type ShiftWindow } from '../../lib/shifts';
 import { toSegs, type BandIndex, type Seg } from '../../lib/split';
-import { addDays, hhmmToMinutes, instantOfWall, isZone, offsetAt, startOfDay, weekdayOf } from '../../lib/tz';
+import { clientHoursWindows } from '../../lib/clientHours';
+import { addDays, isZone, offsetAt, startOfDay } from '../../lib/tz';
 import type { PieceKind, Snapshot } from '../../lib/types';
 import { dayNum, dayStr, periodOf, previousRange, weekdayIndex, type Period, type RangeSpec } from './range';
 
@@ -566,20 +567,10 @@ function mergeShift(a: ShiftAgg, b: ShiftAgg): ShiftAgg {
   };
 }
 
-/** Client working hours, Monday to Friday in the client's zone, as ascending instant pairs. */
+/** The client's working hours in the client's zone, every day of the week, as ascending instant pairs. The Timeline's windows come from the same function (lib/clientHours.ts). */
 export function clientWorkWindows(snapshot: Snapshot, clientZone: string, from: number, to: number): [number, number][] {
-  const startMin = hhmmToMinutes(snapshot.settings.clientWorkStart ?? '09:00');
-  const endMin = hhmmToMinutes(snapshot.settings.clientWorkEnd ?? '17:00');
-  const out: [number, number][] = [];
-  if (endMin <= startMin) return out;
-  const first = dayOfInstant(from, clientZone) - 1;
-  const last = dayOfInstant(to, clientZone) + 1;
-  for (let d = first; d <= last; d += 1) {
-    const day = dayStr(d);
-    if (weekdayOf(day) > 5) continue;
-    out.push([instantOfWall(day, startMin, clientZone), instantOfWall(day, endMin, clientZone)]);
-  }
-  return out;
+  const { clientWorkStart, clientWorkEnd } = snapshot.settings;
+  return clientHoursWindows(from, to, clientZone, clientWorkStart ?? '09:00', clientWorkEnd ?? '17:00').map((w): [number, number] => [w.start, w.end]);
 }
 
 function overlapSecs(spans: readonly SpanRec[], work: readonly [number, number][]): number {
@@ -721,10 +712,14 @@ function cachedGaps(snapshot: Snapshot): Gap[] {
 
 // ---------------------------------------------------------------- prepare and evaluate
 
+/** How far before a period the current day streak looks, in days. */
+export const STREAK_LOOKBACK_DAYS = 400;
+
 function extWindow(period: Period, zone: string): { from: number; to: number } {
   const year = period.toDay.slice(0, 4);
   return {
-    from: Math.min(period.from, startOfDay(addDays(`${period.fromDay.slice(0, 4)}-01-01`, -7), zone)),
+    // The calendar around the period, and as far back as the streak reads: a period in January would otherwise cut it short.
+    from: Math.min(period.from, startOfDay(addDays(`${period.fromDay.slice(0, 4)}-01-01`, -7), zone), startOfDay(addDays(period.fromDay, -STREAK_LOOKBACK_DAYS), zone)),
     to: Math.max(period.to, startOfDay(addDays(`${year}-12-31`, 8), zone)),
   };
 }

@@ -64,7 +64,53 @@ pub struct Project {
     #[serde(default)]
     pub fee_currency: Option<String>,
     pub created_at: Ts,
+    /// The clock of the record as a whole, moved by every edit. It is all that a build older than the group
+    /// clocks below compares, and what they fall back to in a copy from such a build.
     pub stamp: Stamp,
+    /// The clock of the name, colour and client zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_stamp: Option<Stamp>,
+    /// The clock of billable, billing type, fee and fee currency, which only mean something together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_stamp: Option<Stamp>,
+    /// The clock of the budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_stamp: Option<Stamp>,
+    /// The clock of the archive state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_stamp: Option<Stamp>,
+}
+
+impl Project {
+    #[must_use]
+    pub fn identity_clock(&self) -> &Stamp {
+        self.identity_stamp.as_ref().unwrap_or(&self.stamp)
+    }
+    #[must_use]
+    pub fn billing_clock(&self) -> &Stamp {
+        self.billing_stamp.as_ref().unwrap_or(&self.stamp)
+    }
+    #[must_use]
+    pub fn budget_clock(&self) -> &Stamp {
+        self.budget_stamp.as_ref().unwrap_or(&self.stamp)
+    }
+    #[must_use]
+    pub fn archive_clock(&self) -> &Stamp {
+        self.archive_stamp.as_ref().unwrap_or(&self.stamp)
+    }
+
+    /// Writes out the clock of each group that has none. An edit does this before it moves `stamp`, or fields
+    /// it leaves alone would look as new as the edit.
+    pub fn pin_clocks(&mut self) {
+        for clock in [
+            &mut self.identity_stamp,
+            &mut self.billing_stamp,
+            &mut self.budget_stamp,
+            &mut self.archive_stamp,
+        ] {
+            clock.get_or_insert_with(|| self.stamp.clone());
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,7 +207,8 @@ impl Task {
     }
 }
 
-/// One unit of work. Only the owning device ever closes its own segment.
+/// One unit of work. Only the owning device ever writes its raw end. Another can close it for everyone else
+/// with an edit, when its owner is gone, see `settle_foreign_open_segment`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Segment {
@@ -193,6 +240,13 @@ impl Segment {
             None => Some((self.start, self.end)),
         }
     }
+
+    /// Still being timed, as anyone but its owner can tell. A raw-open segment with any edit is closed. The
+    /// owner's own bookkeeping goes by the raw end instead, so that it still closes it.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.end.is_none() && self.edit.is_none()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +258,10 @@ pub struct SegmentEdit {
     pub voided: bool,
     #[serde(default)]
     pub reason: String,
+    /// Written by another device, closing a segment at its last known moment because its owner was gone. The
+    /// owner's own record replaces this once it exists. A correction made on top is a new edit, and stays.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub settled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,7 +524,7 @@ pub struct Shared {
     pub prefixes: BTreeMap<String, DevicePrefix>,
     #[serde(default)]
     pub audit_log: BTreeMap<String, AuditEntry>,
-    /// Asks made from other devices to pause a running task. Only the owner closes its segment.
+    /// Asks made from other devices to pause a running task. Only the owner writes its segment's raw end.
     #[serde(default)]
     pub pause_requests: BTreeMap<String, PauseRequest>,
 }
@@ -544,6 +602,23 @@ pub struct LocalPrefs {
     /// A sync folder move whose previous folder couldn't be read, to retry later.
     #[serde(default)]
     pub pending_copy: Option<PendingCopy>,
+    /// The restore this device's data follows. `None` is epoch 0, a store that never saw one.
+    #[serde(default)]
+    pub epoch: Option<EpochInfo>,
+    /// The folders whose restores this device follows. A root joins after its first successful read, so one
+    /// connected later can't silently bring data from past a restore. `None` is a store from before this field.
+    #[serde(default)]
+    pub sync_joined: Option<Vec<String>>,
+    /// The last known holder of the lease, for a folder that can't be reached and for generations. Written only
+    /// when the holder or the generation changes, as every save of the preferences rewrites the whole store.
+    #[serde(default)]
+    pub lease_memo: Option<LeaseMemo>,
+    /// The last version written to each folder, by root.
+    #[serde(default)]
+    pub version_marks: BTreeMap<String, VersionMark>,
+    /// A folder waiting for the user to choose between its restored data and this device's.
+    #[serde(default)]
+    pub join_pending: Option<JoinPending>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -551,6 +626,82 @@ pub struct LocalPrefs {
 pub struct PendingCopy {
     pub from: String,
     pub to: String,
+}
+
+/// A restore every device follows. Files from below it are fenced, so nothing about merging changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpochInfo {
+    pub epoch: u64,
+    /// The device id of the restorer.
+    pub by: String,
+    pub at: Ts,
+    /// The version file's name.
+    pub restored_from: String,
+    /// When that version was taken.
+    pub base_taken_at: Ts,
+}
+
+impl EpochInfo {
+    /// How restores are ordered, with no epoch as `(0, "")`.
+    #[must_use]
+    pub fn key(info: Option<&Self>) -> (u64, &str) {
+        info.map_or((0, ""), |e| (e.epoch, e.by.as_str()))
+    }
+}
+
+/// The last known holder of the lease.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseMemo {
+    pub device_id: String,
+    pub device_name: String,
+    pub generation: u64,
+    pub at: Ts,
+}
+
+/// The last version written to one folder.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionMark {
+    pub name: String,
+    pub at: Ts,
+    pub checksum: String,
+}
+
+/// A folder with a restore in its past, and a device with its own data: only the user can say which goes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinPending {
+    pub root: String,
+    pub info: EpochInfo,
+}
+
+/// Why a version is written. The word is part of the file's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VersionReason {
+    Auto,
+    Quit,
+    Manual,
+    TakeOver,
+    PreRestore,
+    PreAdopt,
+    Restored,
+}
+
+impl VersionReason {
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Quit => "quit",
+            Self::Manual => "manual",
+            Self::TakeOver => "takeover",
+            Self::PreRestore => "pre-restore",
+            Self::PreAdopt => "pre-adopt",
+            Self::Restored => "restored",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -588,5 +739,246 @@ pub struct DeviceFile {
     pub written_at: Ts,
     #[serde(default)]
     pub last_heartbeat: Option<Ts>,
+    /// The restore this file's data follows. An older app writes none, and is fenced after a restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch_info: Option<EpochInfo>,
     pub data: Shared,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::validate::check_device_file;
+    use serde_json::json;
+
+    const NOW: &str = "2026-11-02T12:00:00Z";
+
+    fn now() -> Ts {
+        Ts::parse(NOW).unwrap()
+    }
+
+    fn file(epoch_info: Option<EpochInfo>) -> DeviceFile {
+        DeviceFile {
+            schema_version: SCHEMA_VERSION,
+            device_id: "d".into(),
+            device_name: "pc".into(),
+            written_at: now(),
+            last_heartbeat: None,
+            epoch_info,
+            data: Shared::default(),
+        }
+    }
+
+    fn epoch(n: u64, by: &str) -> EpochInfo {
+        EpochInfo {
+            epoch: n,
+            by: by.into(),
+            at: now(),
+            restored_from: "20261102T120000Z--a1b2c3d4--auto".into(),
+            base_taken_at: now(),
+        }
+    }
+
+    #[test]
+    fn a_plain_edit_is_written_as_it_always_was_and_a_settled_one_says_so() {
+        let edit = SegmentEdit {
+            start: now(),
+            end: now(),
+            voided: false,
+            reason: String::new(),
+            settled: false,
+        };
+        let plain = serde_json::to_value(&edit).unwrap();
+        assert_eq!(plain.get("settled"), None);
+        let back: SegmentEdit = serde_json::from_value(plain).unwrap();
+        assert!(!back.settled, "a copy from an older app is not settled");
+        let settled = SegmentEdit {
+            settled: true,
+            ..edit
+        };
+        let v = serde_json::to_value(&settled).unwrap();
+        assert_eq!(v["settled"], true);
+        assert_eq!(serde_json::from_value::<SegmentEdit>(v).unwrap(), settled);
+    }
+
+    #[test]
+    fn open_means_no_raw_end_and_no_edit() {
+        let edit = SegmentEdit {
+            start: now(),
+            end: now(),
+            voided: false,
+            reason: String::new(),
+            settled: true,
+        };
+        let running = Segment::default();
+        assert!(running.is_open());
+        let closed = Segment {
+            end: Some(now()),
+            ..Segment::default()
+        };
+        assert!(!closed.is_open());
+        let settled = Segment {
+            edit: Some(edit.clone()),
+            ..Segment::default()
+        };
+        assert!(!settled.is_open());
+        assert!(settled.end.is_none(), "its owner still closes its raw end");
+        let voided = Segment {
+            edit: Some(SegmentEdit {
+                voided: true,
+                ..edit
+            }),
+            ..Segment::default()
+        };
+        assert!(!voided.is_open());
+    }
+
+    #[test]
+    fn a_device_file_from_an_older_app_reads_with_no_epoch_and_an_older_app_reads_a_new_one() {
+        let old = json!({
+            "schemaVersion": SCHEMA_VERSION,
+            "deviceId": "d",
+            "deviceName": "pc",
+            "writtenAt": NOW,
+            "lastHeartbeat": null,
+            "data": {},
+        });
+        let read: DeviceFile = serde_json::from_value(old).unwrap();
+        assert_eq!(read.epoch_info, None);
+        check_device_file(&read, now()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&read).unwrap().get("epochInfo"),
+            None,
+            "and it is written back the same"
+        );
+
+        // The shape an older app reads.
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        #[expect(dead_code, reason = "these only have to parse")]
+        struct OldDeviceFile {
+            schema_version: u64,
+            device_id: String,
+            device_name: String,
+            written_at: Ts,
+            #[serde(default)]
+            last_heartbeat: Option<Ts>,
+            data: Shared,
+        }
+        let new = file(Some(epoch(3, "d")));
+        let bytes = serde_json::to_vec(&new).unwrap();
+        serde_json::from_slice::<OldDeviceFile>(&bytes).unwrap();
+        check_device_file(&new, now()).unwrap();
+        let back: DeviceFile = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back, new);
+        assert_eq!(
+            serde_json::to_value(&new).unwrap()["epochInfo"]["restoredFrom"],
+            "20261102T120000Z--a1b2c3d4--auto"
+        );
+    }
+
+    #[test]
+    fn preferences_from_before_the_lease_read_as_empty() {
+        let prefs: LocalPrefs = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(prefs.epoch, None);
+        assert_eq!(prefs.sync_joined, None);
+        assert_eq!(prefs.lease_memo, None);
+        assert!(prefs.version_marks.is_empty());
+        assert_eq!(prefs.join_pending, None);
+        let full = LocalPrefs {
+            epoch: Some(epoch(2, "d")),
+            sync_joined: Some(vec!["/a".into()]),
+            lease_memo: Some(LeaseMemo {
+                device_id: "d".into(),
+                device_name: "pc".into(),
+                generation: 7,
+                at: now(),
+            }),
+            version_marks: BTreeMap::from([(
+                "/a".to_owned(),
+                VersionMark {
+                    name: "n".into(),
+                    at: now(),
+                    checksum: "c".into(),
+                },
+            )]),
+            join_pending: Some(JoinPending {
+                root: "/b".into(),
+                info: epoch(3, "e"),
+            }),
+            ..LocalPrefs::default()
+        };
+        let back: LocalPrefs = serde_json::from_slice(&serde_json::to_vec(&full).unwrap()).unwrap();
+        assert_eq!(back, full);
+    }
+
+    #[test]
+    fn restores_are_ordered_by_epoch_then_device_and_none_comes_first() {
+        let (a2, b2, a3) = (epoch(2, "a"), epoch(2, "b"), epoch(3, "a"));
+        assert_eq!(EpochInfo::key(None), (0, ""));
+        assert!(EpochInfo::key(None) < EpochInfo::key(Some(&a2)));
+        assert!(EpochInfo::key(Some(&a2)) < EpochInfo::key(Some(&b2)));
+        assert!(EpochInfo::key(Some(&b2)) < EpochInfo::key(Some(&a3)));
+    }
+
+    #[test]
+    fn a_restore_that_cant_be_right_makes_a_file_no_use_to_anyone() {
+        check_device_file(&file(Some(epoch(1, "d"))), now()).unwrap();
+        let bad = [
+            EpochInfo {
+                epoch: (1 << 40) + 1,
+                ..epoch(1, "d")
+            },
+            EpochInfo {
+                by: String::new(),
+                ..epoch(1, "d")
+            },
+            EpochInfo {
+                by: "x".repeat(65),
+                ..epoch(1, "d")
+            },
+            EpochInfo {
+                restored_from: "a\nb".into(),
+                ..epoch(1, "d")
+            },
+            EpochInfo {
+                at: Ts::parse("2026-11-05T12:00:00Z").unwrap(),
+                ..epoch(1, "d")
+            },
+            EpochInfo {
+                base_taken_at: Ts::parse("2026-11-05T12:00:00Z").unwrap(),
+                ..epoch(1, "d")
+            },
+            EpochInfo {
+                at: Ts::parse("1999-01-01T00:00:00Z").unwrap(),
+                ..epoch(1, "d")
+            },
+        ];
+        for info in bad {
+            assert!(
+                check_device_file(&file(Some(info.clone())), now()).is_err(),
+                "{info:?}"
+            );
+            let mut f = file(Some(info.clone()));
+            assert!(
+                crate::validate::keep_valid_records(&mut f, now()).is_err(),
+                "{info:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_reason_has_the_word_a_versions_file_name_uses() {
+        for (reason, word) in [
+            (VersionReason::Auto, "auto"),
+            (VersionReason::Quit, "quit"),
+            (VersionReason::Manual, "manual"),
+            (VersionReason::TakeOver, "takeover"),
+            (VersionReason::PreRestore, "pre-restore"),
+            (VersionReason::PreAdopt, "pre-adopt"),
+            (VersionReason::Restored, "restored"),
+        ] {
+            assert_eq!(reason.word(), word);
+        }
+    }
 }

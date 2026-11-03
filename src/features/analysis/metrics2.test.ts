@@ -209,14 +209,14 @@ describe('zones', () => {
     settings: { myZone: 'UTC', clientZone: 'America/New_York' },
   };
 
-  it('bands in both zones, client-hours overlap on weekdays only, and the gap change', () => {
+  it('bands in both zones, client-hours overlap on every day of the week, and the gap change', () => {
     const z = go(spec, 'UTC', { kind: 'week', anchor: '2026-03-04' }, {}, 'exact').zonesView;
     // UTC 12-16 is Afternoon; New York (EST, UTC-5) 07-11 is Morning.
     expect(z.bandsMy).toEqual([0, 0, 18000, 0]);
     expect(z.bandsClient).toEqual([0, 18000, 0, 0]);
-    // Client hours 09-17 EST = 14-22 UTC: Monday overlap 14-16 = 7200; Saturday does not count.
-    expect(z.overlapSecs).toBe(7200);
-    expect(z.overlapShare).toBeCloseTo(0.4);
+    // Client hours 09-17 EST = 14-22 UTC: Monday overlap 14-16 = 7200, and Saturday 15-16 = 3600, because every day counts.
+    expect(z.overlapSecs).toBe(10800);
+    expect(z.overlapShare).toBeCloseTo(0.6);
     // New York clocks go forward on 8 March 07:00 UTC, so the gap changes inside the week.
     expect(z.gaps.map((g) => g.gapSecs)).toEqual([-18000, -14400]);
     expect(z.markers).toHaveLength(1);

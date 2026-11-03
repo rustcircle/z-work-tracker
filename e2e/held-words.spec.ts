@@ -470,12 +470,12 @@ test.describe('words that meet newer text', () => {
       await window.__mockEmit('state-changed');
     });
     await page.clock.runFor(1000);
-    await form.getByRole('combobox', { name: 'Project' }).selectOption('p-web');
-    await page.evaluate(async () => {
+    // A choice of project saves at once, so it only meets a newer one this editor hasn't heard of yet.
+    await page.evaluate(() => {
       const task = window.__mock.tasks.find((t) => t.id === 't-guide');
       if (task) task.projectId = 'p-pack';
-      await window.__mockEmit('state-changed');
     });
+    await form.getByRole('combobox', { name: 'Project' }).selectOption('p-web');
     await page.clock.runFor(1000);
     await expect(form.getByTestId('save-state')).toContainText('name and project');
     const foot = form.locator('.editor-foot');

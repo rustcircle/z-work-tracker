@@ -1,11 +1,14 @@
 // Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty`, `?theme=`, `?firstRun=1` (the wizard; `&step=N` resumes at a saved step, `&pc=2` is a second computer whose OneDrive folder already holds data) or `?firstRun=legacy` (the old prompts), `?mica=1`, `?launch=cold`.
+// Single-device lease: `?lease=live|stale|unknown|mine` (another computer holds it, looks inactive, no folder can be read, this computer holds it), or `free`,
+// `checking`, `unknown-writable`; each connects a folder when none is. `?versions=1` (two folders and seven saved versions), `?packaged=1` (a Microsoft Store build),
+// `?autostart=offByUser|offByPolicy|onByPolicy|unavailable|on|off` (Start with Windows as Windows reports it) and `?join=1` (a folder waiting for a choice).
 import { emit } from '@tauri-apps/api/event';
 
 import { toIso } from '../lib/tz';
-import type { Theme } from '../lib/types';
+import type { LeaseHolderView, Theme } from '../lib/types';
 import { demoP2State, demoState } from './demoSeed';
 import { fullProject } from './factories';
-import { DEVICE_ID, crashRelaunch, emptyState, installMock, relaunch, type MockState } from './ipcMock';
+import { DEVICE_ID, crashRelaunch, emptyState, installMock, isAutostartState, isLeaseSeed, loseLease, relaunch, seedJoinPending, seedLease, seedVersions, type MockState } from './ipcMock';
 
 declare global {
   interface Window {
@@ -13,6 +16,8 @@ declare global {
     __mockRelaunch: (kind: 'quit' | 'crash') => void;
     /** Fires a backend event at the app, such as 'state-changed', 'cold-resume' or 'flush-edits'. */
     __mockEmit: (event: string, payload?: unknown) => Promise<void>;
+    /** Another computer takes the lease over while this one holds it: a running task closes, this computer turns read-only, and the page is told. `by` describes the new holder. */
+    __mockLeaseLost: (by?: Partial<LeaseHolderView>) => void;
   }
 }
 
@@ -71,6 +76,23 @@ export function installE2eBackend(): void {
   // `mica=1`: a system that can show Mica (Windows 11), for the setting's enabled state.
   if (q.get('mica') === '1') state.micaAvailable = true;
   if (q.get('sync') === '1') seedSync(state);
+  const lease = q.get('lease');
+  if (lease !== null) {
+    if (!isLeaseSeed(lease)) throw new Error(`?lease= must be one of live, stale, unknown, mine, free, checking, unknown-writable; got "${lease}"`);
+    if (state.targets.length === 0) seedSync(state);
+    seedLease(state, lease);
+  }
+  if (q.get('versions') === '1') {
+    if (state.targets.length === 0) seedSync(state);
+    seedVersions(state);
+  }
+  if (q.get('join') === '1') seedJoinPending(state);
+  if (q.get('packaged') === '1') state.packaged = true;
+  const autostart = q.get('autostart');
+  if (autostart !== null) {
+    if (!isAutostartState(autostart)) throw new Error(`?autostart= must be on, off, offByUser, offByPolicy, onByPolicy or unavailable; got "${autostart}"`);
+    state.autostartInfo = { ...state.autostartInfo, state: autostart };
+  }
   if (q.get('launch') === 'cold') relaunch(state);
   window.__mock = state;
   // A real relaunch restarts the page and the process: the test reloads nothing but the launch state.
@@ -81,5 +103,9 @@ export function installE2eBackend(): void {
     void emit('state-changed');
   };
   window.__mockEmit = (event, payload) => emit(event, payload);
+  window.__mockLeaseLost = (by) => {
+    loseLease(state, by);
+    void emit('state-changed');
+  };
   installMock(state);
 }

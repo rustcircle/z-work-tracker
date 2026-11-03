@@ -2,41 +2,132 @@
 
 [![CI](https://github.com/rustcircle/z-work-tracker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rustcircle/z-work-tracker/actions/workflows/ci.yml)
 
-A desktop app for Windows 11 that accounts for labor hours by project and task. It logs start and end times automatically in UTC, shows them on a timeline in any time zone, works out billable time and earnings, analyses how the time was spent, and exports to Excel and CSV.
+A desktop app for Windows 10 and 11 that accounts for labor hours by project and task. It logs start and end times automatically in UTC, shows them on a timeline in any time zone, works out billable time and earnings, analyses how the time was spent, and exports to Excel and CSV.
 
 It runs locally. It makes no network calls and sends no telemetry. Data leaves the machine only if you choose a OneDrive or Google Drive folder for sync.
 
-Status: phase 2 build. It has been run and tested on macOS, and the Windows installer has been built, but the only things to run on Windows so far are the CI test gates and the GitHub build, which signed the installer and checked the signatures on the runner: **the app itself has never run on real Windows**. See [Known limitations](#known-limitations).
+Status: version 1.3.1. It has been run and tested on macOS, and the Windows installer and the Microsoft Store package have been built, but the only things to run on Windows so far are the CI test gates and the GitHub build, which signed the installer and checked the signatures on the runner: **the app itself has never run on real Windows**, as either build. See [Known limitations](#known-limitations).
 
 ![Timeline](docs/images/timeline-light.png)
 
 ## Contents
 
-- [Install and uninstall](#install-and-uninstall)
-- [User guide](#user-guide)
-- [Metrics reference](#metrics-reference)
-- [Data and privacy](#data-and-privacy)
-- [Developer guide](#developer-guide)
-- [Performance](#performance)
-- [Packaging and signing](#packaging-and-signing)
-- [Troubleshooting](#troubleshooting)
-- [Known limitations](#known-limitations)
-- [Roadmap](#roadmap)
-- [Third-party data licences](#third-party-data-licences)
-- [Code signing policy](#code-signing-policy)
-- [Licence](#licence)
+- [zWorkTracker](#zworktracker)
+  - [Install and uninstall](#install-and-uninstall)
+  - [Migration guide](#migration-guide)
+  - [User guide](#user-guide)
+  - [Metrics reference](#metrics-reference)
+  - [Data and privacy](#data-and-privacy)
+  - [Developer guide](#developer-guide)
+  - [Performance](#performance)
+  - [Packaging and signing](#packaging-and-signing)
+  - [Troubleshooting](#troubleshooting)
+  - [Known limitations](#known-limitations)
+  - [Roadmap](#roadmap)
+  - [Third-party data licences](#third-party-data-licences)
+  - [Code signing policy](#code-signing-policy)
+  - [Licence](#licence)
+
+`pnpm check:readme` checks that this list and the headings agree.
 
 ## Install and uninstall
 
-**Install.** Run `zWorkTracker_0.2.0_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
+**Install.** Run `zWorkTracker_1.3.1_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data.
 
 An unsigned installer can make Windows SmartScreen say "Windows protected your PC". To continue, choose **More info**, then **Run anyway**. This project's builds are meant for your own PCs, signed with [a self-signed certificate](#trusting-your-own-builds-with-a-self-signed-certificate); SmartScreen may still warn about a downloaded file even then.
 
-**What the app needs from Windows.** It needs one thing: the Microsoft Edge WebView2 Runtime that comes with Windows 11. The app ships no runtime and never downloads one. If WebView2 is missing or disabled, both the installer and the app say so instead of opening a blank window. Everything else is inside the app: JavaScript, map data, time zone data, chart code and icons.
+**What the app needs from Windows.** It runs on Windows 10 and 11, and needs one thing from them: the Microsoft Edge WebView2 Runtime. Windows 11 includes it. Many Windows 10 computers have it, but not all. The app ships no runtime and never downloads one. Everything else is inside the app: JavaScript, map data, time zone data, chart code and icons.
+
+**If WebView2 is missing.** Neither build opens a blank window:
+
+- The installer checks first. If it doesn't find the runtime, it says so, gives Microsoft's download page, <https://developer.microsoft.com/en-us/microsoft-edge/webview2/>, and asks **Open the download page now?** Yes opens the page in your browser, and either answer carries on with the install. A silent install (`/S`) asks nothing.
+- The app checks at every launch, in the installer build and the Microsoft Store build alike. If the runtime isn't there or is turned off, it shows a Windows message titled "zWorkTracker" that starts "zWorkTracker needs the Microsoft Edge WebView2 Runtime, and it wasn't found or is turned off on this computer", gives the same link, and ends "Your data is safe." **Open download page** opens the link and **Close** closes the message. Either way the app then exits, with no window and no tray icon. Install the Evergreen runtime from that page, then open zWorkTracker again.
+- If the runtime is there but its window still can't be created, the app shows the same message with the error beneath it, where before it would have closed with nothing on screen.
 
 **Uninstall.** Use **Settings > Apps > Installed apps**. A running copy, even one hidden in the tray, is first asked to quit normally, so an open work segment closes cleanly. Uninstalling removes program files, shortcuts, registry entries and the "Start with Windows" entry.
 
-The uninstaller asks **Also delete my time data**, unticked by default, so your data stays unless you tick it. It never touches your OneDrive or Google Drive folders.
+The uninstaller asks **Also delete my time data**, unticked by default, so your data stays unless you tick it. It never touches your OneDrive or Google Drive folders, and so never touches the versions saved there.
+
+### Microsoft Store build: where your data lives
+
+There is also a Microsoft Store (MSIX) build of the same program. It knows it is the Store build when Windows gives it a package identity, and it then behaves differently in four ways. None of this has been seen on Windows yet; see [Known limitations](#known-limitations).
+
+- **Your data is private to the package, and uninstalling deletes it.** Windows keeps the files a Store app creates under AppData in a private folder of its own, and removes that folder when the app is uninstalled, with no question like the installer's. Your hours, the dated backups and the safety copies all live there. [Where the Store version keeps its data](#4-where-the-store-version-keeps-its-data) says where that is likely to be. **So a cloud folder is the permanent copy:** connect OneDrive or Google Drive, or both, in **Settings > Sync between devices**. Versions saved there stay when the app is uninstalled.
+- **It asks firmly for a cloud folder.** The setup's **Sync between computers** step opens with "Choose a cloud folder." and says Windows removes the app's files when it is uninstalled. Skipping it, or **Finish with defaults** before it, asks **Continue without a folder?** first. Until a folder is connected, a warning stays at the top of the app: "This copy of zWorkTracker keeps its data in a private Windows folder. Uninstalling the app deletes that folder and your hours with it. Connect a OneDrive or Google Drive folder in Settings > Sync between devices." Removing the last folder warns about this too, and **Settings > Backups** says its backups are removed on uninstall.
+- **Start with Windows goes through Windows.** The switch turns the package's startup task, `zWorkTrackerStartup`, on and off, as a Store app's Run entry in the registry would never start anything. Windows has the last word: if you turned it off in Task Manager or **Settings > Apps > Startup**, the switch is greyed and says "You turned this off in Windows, so only Windows can turn it back on: Settings > Apps > Startup.", with an **Open Startup settings** button. A policy can also hold it off or on, and the switch says so.
+- **Notifications are Windows toasts under the package's own name.** Reminders, budget alerts and time-away questions use the package's identity, so Windows shows and lists them as zWorkTracker's. If that fails, the app falls back to the route the installer build uses.
+
+To uninstall the Store build, use **Settings > Apps > Installed apps**. Connect a cloud folder and let it sync first.
+
+## Migration guide
+
+For moving to 1.3.1: upgrading the installer version, moving from the installer version to the Microsoft Store version, and restoring or moving to a new PC. None of these steps has been run on Windows yet. Back up first, whichever you do.
+
+### 1. Back up first
+
+1. Stop or pause every running task.
+2. Quit the app fully: use **Quit** in the tray icon's menu. Closing the window with X only hides it to the tray, and the app goes on running.
+3. Copy the data folder somewhere safe. In PowerShell:
+
+```powershell
+Copy-Item "$env:APPDATA\com.rustcircle.zworktracker" "$env:USERPROFILE\Documents\zWorkTracker-backup" -Recurse
+```
+
+That copies the installer version's data folder, with its `backups` folder inside. If you use sync, the files in your OneDrive or Google Drive folder are a further copy, and both services keep earlier copies of each file of their own (see [Versions and restoring](#versions-and-restoring)).
+
+### 2. Upgrading the installer version in place
+
+1. Back up, as above.
+2. Run `zWorkTracker_1.3.1_x64-setup.exe` over the version you have. **Don't uninstall the old one first.** The installer is meant to be run over an older one: it asks a running copy to quit through its normal exit path, so an open work segment closes cleanly, replaces the program files in `%LOCALAPPDATA%\zWorkTracker`, and keeps your data folder, `%APPDATA%\com.rustcircle.zworktracker\`, as it is. Uninstalling first would also remove the Start with Windows entry, and would delete your data if **Also delete my time data** were ticked.
+3. Open the app and check **Settings > About**: App version should say 1.3.1. Your projects, hours and billing summaries should all be there. The data file's format hasn't changed in this release, so nothing is converted.
+4. Update every PC that syncs with yours before you work on them side by side. An older version doesn't know about [one computer at a time](#one-computer-at-a-time), and after a [restore from a version](#versions-and-restoring) its changes are skipped until it is updated.
+
+**Signing.** Windows judges the new installer as it judged the old one. A build signed with [your self-signed certificate](#trusting-your-own-builds-with-a-self-signed-certificate) is trusted only on PCs set up for it, and SmartScreen may still say "Windows protected your PC" about a downloaded file: choose **More info**, then **Run anyway**. If Smart App Control is on, it may refuse a self-signed build altogether, as Microsoft says it runs only apps its own service recognises or that a certificate authority in its Trusted Root Program signed. The Store version doesn't depend on your certificate: Microsoft signs it after certification.
+
+### 3. Moving from the installer version to the Store version
+
+The Store version keeps its data in a private folder that Windows deletes on uninstall (see [Microsoft Store build: where your data lives](#microsoft-store-build-where-your-data-lives)), so the move goes through a cloud folder, which also stays your permanent copy afterwards.
+
+1. **Back up**, as in step 1, and note a few figures to compare later: the number of projects, this month's Billable total on the Timeline, and the reference and total of your latest billing summary.
+2. **Turn on sync in the installer version.** In **Settings > Sync between devices**, choose **Add a folder** and connect your OneDrive or Google Drive folder, or both. Press **Sync now** and wait until each folder says "Written to OneDrive folder" (or Google Drive folder) with a recent time.
+3. **Wait for the upload.** The app can only say it wrote the files, not that they reached the cloud. Check that OneDrive or Google Drive shows the folder as up to date.
+4. **Quit the installer version** from the tray's **Quit**. A clean quit also tells the folder that this computer no longer holds the right to make changes, so the Store version can make changes straight away. Leave the installer version installed for now.
+5. **Install the Store version and open it.** Its setup offers the folder: if the folder is detected and holds data, the first step is **Connect your other computer**, with the counts it found, and **Connect and bring it in**. Otherwise choose it at the **Sync between computers** step, through **Choose another folder** if it isn't listed. Connecting merges the folder's data into the new, empty store.
+6. **Check the figures** against what you noted: projects, this month's hours, and the billing summaries on the Billing tab. **Settings > Sync between devices** lists the installer version as another device, as it has its own device id. Its file in the folder is harmless and is never deleted.
+7. **Uninstall the installer version** in **Settings > Apps > Installed apps**, and leave **Also delete my time data** unticked. Its data folder then stays as a fallback until you are sure, and you can delete it yourself later.
+
+**Use one version at a time.** Both versions follow the [one computer at a time](#one-computer-at-a-time) rule. The first to change something holds the right to make changes, and keeps it while a task runs, or until 15 minutes pass with no change, or until it quits. While the installer version holds it, the Store version shows a banner: "**Read-only.** *name* is using zWorkTracker (last seen *time* ago). You can look at everything here. Changes are off so the two computers don't overlap." To hand over, pause any task on the installer version and quit it from the tray, or press **Release now** in its **Settings > Sync between devices**, which refuses while a task runs there. Then press **Check again** on the banner. **Take over…** is offered once the other computer looks inactive, which is 15 minutes without a sign of it. While it still looks in use, quit it or press **Release now** there, or ask it to pause its task with **Pause it from here**.
+
+**On the same PC,** Microsoft documents that a Store app that finds no file of its own under AppData opens the one an installed version left there, so the Store version may open with your data already in it and skip the setup. It then carries on as the same device, with the same device id, and the banner above doesn't come between the two versions, since they count as one computer. Whether this happens hasn't been seen on Windows. Either way, connect a cloud folder in **Settings > Sync between devices** if it isn't connected already, and don't run the two versions at the same time.
+
+### 4. Where the Store version keeps its data
+
+Windows keeps the files a Store app creates under AppData in a private folder per user and per package, and removes it when the app is uninstalled ([Microsoft](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)). Microsoft's page doesn't name that folder. It is likely to be:
+
+```
+%LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache\Roaming\com.rustcircle.zworktracker\
+```
+
+**This path hasn't been confirmed by a real install.** The app asks Windows for its usual AppData folder and doesn't choose the private one itself. To find the package family name, in PowerShell:
+
+```powershell
+(Get-AppxPackage *zWorkTracker*).PackageFamilyName
+```
+
+The folder holds the same files as the installer version's (see [Data and privacy](#data-and-privacy)), backups included. **Uninstalling the Store version deletes it, so the cloud folder is the permanent copy.** To back it up by hand, use the `Copy-Item` command from step 1 with this folder as the source.
+
+### 5. Restoring, and moving to a new PC
+
+**From a version in your cloud folder.** This rolls back every computer that syncs with the folder.
+
+1. Update every computer to 1.3.1 first: an older version's changes are skipped after a restore until it is updated.
+2. Open **Settings > Versions** on a computer that isn't read-only. A read-only one has to take over first, and restoring makes this one the computer that is making changes.
+3. Find the version, open **What changed** to read its record, and press **Restore…**. The first step compares the version's counts with this computer's. **Continue**, then **Restore this version**.
+4. Before anything changes, a copy of today's data is saved on this computer and as a version in your folders, so restoring that copy undoes the restore. A running task is paused. Each other computer follows the restored data at its next sync, and keeps a copy of what it had as a version too.
+
+**From a backup on this computer.** In **Settings > Backups**, press **Restore** next to a dated backup, then **Restore this backup**. A safety copy is made first. This rolls back this computer only: with sync on, newer records in your sync folders merge back in at the next sync, so turn sync off first to go back for good. A backup from before a restored version is refused while folders are connected, because it would undo that restore everywhere. To restore the folder you copied in step 1, quit the app fully, put that folder back in place of `%APPDATA%\com.rustcircle.zworktracker\`, and open the app again.
+
+**Moving to a new PC.** With sync on, install zWorkTracker on the new PC, sign in to the same OneDrive or Google Drive there, and let it download the folder. If the setup finds the folder, its first step is **Connect your other computer**, where **Connect and bring it in** merges the folder's data, and the setup skips what that data already answers. Check the figures, and quit the old PC from the tray before you work on the new one. Without sync, copy the data folder over instead: quit the app on both, copy the folder from step 1 into `%APPDATA%\com.rustcircle.zworktracker\` on the new PC, then open the app. The new PC then carries on as the same device, so don't go on using the old one too. For a Store version on the new PC, go through a cloud folder, as in step 3, since its private folder's place isn't confirmed.
 
 ## User guide
 
@@ -97,14 +188,14 @@ Only one task runs at a time on a device. Starting or resuming another task paus
 
 ### Tray behaviour
 
-Closing the window with X hides it to the tray. **The app keeps running and a running task keeps timing.** The first time this happens, a notice explains it, because Windows 11 may tuck the icon into the overflow area.
+Closing the window with X hides it to the tray. **The app keeps running and a running task keeps timing.** The first time this happens, a notice explains it, because Windows may tuck the icon into the overflow area.
 
 - Left-click the tray icon to show the window.
 - The menu has Show, the current task with its elapsed time, Pause or Resume, and Quit. On a cold launch, tray Resume opens the window with the form and starts nothing.
 - Elapsed time in the tray is h:mm, with no seconds. The tray's text changes only when that minute or your data changes, and the amount is worked out again only when a billing step is due or your data changes. It can lag by up to a minute after a change the app makes by itself, without you doing anything in it.
 - The tooltip shows the running task or "No task running". The icon changes shape while a task runs: an open stopwatch when idle, a filled one with a play mark when running.
 
-Only the tray's **Quit** really exits. On a real exit a running segment closes at that moment and the task is marked paused. Opening the app again while it runs brings up the existing window. **Start with Windows** is an optional setting, off by default.
+Only the tray's **Quit** really exits. On a real exit a running segment closes at that moment and the task is marked paused. Opening the app again while it runs brings up the existing window. **Start with Windows** is an optional setting, off by default. When it's on, zWorkTracker opens its window when you sign in to Windows, as at any other launch: it doesn't start hidden in the tray. The Store build turns it on and off through Windows; see [Microsoft Store build: where your data lives](#microsoft-store-build-where-your-data-lives).
 
 If the app crashes, a heartbeat saved about every 30 seconds marks the last moment it was alive. At the next launch the open segment closes at that moment, the task is paused and a notice tells you, including that the next start asks for every field.
 
@@ -121,7 +212,7 @@ Raw UTC timestamps stay as they were, whatever you answer. An absence in progres
 
 ![The time-away dialog](docs/images/timeaway-dialog-light.png)
 
-**Reminders.** A notification tells you when a task has run a long time (4 hours by default) or is still running after your shift ended. Both can be turned off, and a reminder can be snoozed. Snoozing doesn't pause anything.
+**Reminders.** A notification tells you when a task has run a long time (4 hours by default) or is still running after your shift ended. Both can be turned off, and a reminder can be snoozed. Snoozing doesn't pause anything. In the Store build, notifications are Windows toasts under the package's own name.
 
 ### Timeline
 
@@ -187,7 +278,7 @@ Each change to a shift is kept as a dated version. **Revert** removes one versio
 The default is **15 minutes, rounding up**. Choices are Off (exact), 1, 5, 6, 10, 15, 30, 60 or a custom number of minutes, with Up, Nearest or Down. A project can override the setting.
 
 - Raw UTC times are never rounded. Rounding is a calculation, reversible by changing the setting.
-- The unit is **one task on one day** in the zone being viewed, rounded once. Many short pauses neither inflate nor erase time. Day, project and period totals are sums of the rounded rows.
+- The unit is **one task on one day** in the zone being viewed, rounded once. Many short pauses neither inflate nor erase time. Day, project and period totals of time are sums of the rounded rows.
 - Up: 1 minute bills 15; exactly 15:00 stays 15:00; 15:01 bills 30:00. Timestamps are stored in whole seconds, so sub-second timer noise can't add an increment.
 - Rows with no exact time stay at 0 and are flagged. Under Nearest or Down, a row that rounds to 0 is kept and flagged, not dropped.
 - Nearest rounds exact halves up.
@@ -240,7 +331,18 @@ Pick a project and period to see unbilled closed time per task and day. **Create
 
 Each device has its own prefix, which you can edit. Numbers count up per prefix across all devices. Two devices offline at once could still pick the same prefix and reference, so the app warns when it finds a shared prefix or a repeated reference.
 
-The preview tells you about time away you haven't answered yet. It's left out of the summary, and answering after that requires voiding the summary, so answer first. A partly billed task-day rounds again on its unbilled part, so it can round up twice. Time belongs to the day its segment started. A correction made on another device before the summary syncs still applies, while the frozen summary keeps its numbers.
+The preview tells you about time away you haven't answered yet. It's left out of the summary, and answering after that requires voiding the summary, so answer first. Time belongs to the day its segment started. A correction made on another device before the summary syncs still applies, while the frozen summary keeps its numbers.
+
+**A task-day billed in parts rounds once.** The next summary rounds the day's whole time and bills what that comes to, less what live summaries already hold for that day, so 20 minutes and then 20 more at 15 minutes up bill 30 and then 15, the 45 the report shows. The preview says when a row bills a difference like this. It can be less than the row's own time, or nothing, and what's already issued is never taken back or changed.
+
+- Voiding a summary takes what it held off the day, so a later preview rounds again what is left. The other summaries keep their numbers.
+- The day rounds under the rule in force for it now, whichever rule the earlier summaries were made under.
+- A summary from an older version keeps what it issued, even if it rounded one day twice. Later rows on that day bill only what the day's rounded time has grown past that.
+- A summary made in another zone has other days, so its rows are shared out over the days of this one by the time they list.
+- If a correction made on another device before a summary synced moved its time to another day, what it holds for that time goes with it. What it holds for time that was cut stays on its day and isn't taken off another day's work, so the summaries can come to more than the report.
+- If a rate changes during the day, a row bills at the rates of its own time, so money billed in parts can differ from the report's for that day, whose rounding goes to the last rate.
+
+A summary's amounts are stored when it is made and read as stored, so one from an older version keeps the total it issued, the sum of its rounded rows.
 
 ### Timesheet PDF
 
@@ -252,15 +354,15 @@ Enter a job's name and tags to get an estimate from comparable past stopped task
 
 ### Backups
 
-The app writes a dated copy of its data once a day into a `backups` folder beside it, keeping the newest 30 by default; choose 1 to 365. These stay on this computer and are separate from sync. **Restore** in Settings first saves the current data as a safety copy, then rolls back your data and shared settings to the backup. The newest 5 safety copies are kept, apart from the daily ones. A running task pauses first, and the next start counts as cold. A task the backup held running is paused at the last moment that backup knows about. Restoring the safety copy undoes a restore. What belongs to this device stays: its preferences and sync folders, its reference prefix, the reference numbers already used, so none is ever reused, and the audit trail, which records the restore. With sync on, newer records in your sync folders merge back in at the next sync, so to go back in time for good, turn sync off first.
+The app writes a dated copy of its data once a day into a `backups` folder beside it, keeping the newest 30 by default; choose 1 to 365. These stay on this computer and are separate from sync. **Restore** in Settings first saves the current data as a safety copy, then rolls back your data and shared settings to the backup. The newest 5 safety copies are kept, apart from the daily ones. A running task pauses first, and the next start counts as cold. A task the backup held running is paused at the last moment that backup knows about. Restoring the safety copy undoes a restore. What belongs to this device stays: its preferences and sync folders, its reference prefix, the reference numbers already used, so none is ever reused, and the audit trail, which records the restore. With sync on, newer records in your sync folders merge back in at the next sync, so to go back in time for good, turn sync off first. To roll back every computer, use [Versions](#versions-and-restoring) instead. While folders are connected, a backup from before a restored version is refused, because restoring it would undo that restore on every computer. In the Store build, backups live in its private folder and are removed with the app.
 
 ### Earnings and Hide earnings
 
-Earnings are derived from segments, rates and rounding, and stored nowhere as truth. They use billable time when an increment is on. Amounts keep an exact value (rate in cents times seconds) and round half up to cents only at the total shown, so visible rows can differ from a total by a cent. If a rate changes within a task-day, the rounding difference goes to the last rate in force that day.
+Earnings are derived from segments, rates and rounding, and stored nowhere as truth. They use billable time when an increment is on. Amounts keep an exact value (rate in cents times seconds). A row shows its own amount rounded half up to cents. A total adds up the exact values of its rows and rounds them once, the same way, so the PDF, summaries, Excel and Analysis come to the same figure for the same time, and visible rows can differ from their total by a cent or so. The PDF, a summary's CSV and copied text and the Billing tab say so when they do, and Excel's Earnings sheet says so in its title. If a rate changes within a task-day, the rounding difference goes to the last rate in force that day.
 
 EUR and USD are never added together; totals sit side by side. There are no exchange-rate lookups.
 
-**Hide earnings** in the header masks amounts everywhere, including the tray, and is remembered. Use it when a client may see the screen.
+**Hide earnings** in the header masks amounts everywhere, including the tray, the percent of a fixed fee in Analysis, and the saved fee and price in a project's editor, where **Change** beside each shows it for you to edit. It is remembered. Use it when a client may see the screen.
 
 ### Excel and CSV exports
 
@@ -271,7 +373,7 @@ The Excel workbook has these sheets:
 1. **Labor by project:** exactly `Project | Day | Time | Task name | Subtasks`, sorted by project, day and start, one row per task per day. Time is billable time as a real `[h]:mm:ss` value that sums, Day is a real date, and Subtasks are the list items from the description with numbering kept. Subtotals and a grand total use formulas with cached values. The title line states the zone and increment. A project filter keeps its subtotal row.
 2. **Segment details:** raw UTC start and end, your time, the client's time, Exact, Shift and, if included, rate, currency and exact amount.
 3. **Earnings** (if included): per project and currency, with per-currency totals.
-4. **Analytics:** KPI summary, Bands, Projects, Weekdays, Shifts when configured, and earnings sheets if included. These follow the last Analysis view, or all logged history if Analysis was never opened.
+4. **Analytics:** KPI summary, Bands, Projects, Weekdays, Shifts when configured, and earnings sheets if included. While the Analysis tab is open they follow its period and filters. Each sheet's title says when a filter is on, and so does the Export dialog. Once you leave the tab, they cover all logged history, the latest 1830 days at most.
 
 **Exporting a selection.** When entries are selected, the dialog's scope defaults to **Selected** instead of **All in period**. The backend gets only task ids and days, checks them, refuses an empty selection or an entry with no time, and recomputes everything itself, with rounding per task-day, so figures match the Timeline. Time and money on Labor by project, Segment details, Earnings, Adjustments and the Analytics sheets cover the selection only, with the first sheet's columns unchanged, and a sheet named **About this selection** says what the file is. The Subtasks column shows each task's full subtask list and ticks as of the export, which can include subtasks worked on days outside the selection, and the dialog and that sheet both say so. CSV and the PDF timesheet print no subtasks. The backend works out those Analytics sheets itself, by the same rules as the Analysis tab: their period runs from the first to the last selected day, each title says it is a selection, and `fixtures/analytics-parity.json` holds both sides to the same figures. A few things differ from a whole-period file, because of what a selection is: the earnings sheet has no row for a day left out, shift figures count only the shifts of selected days (a shift that runs on a selected day is named even with no selected time in it), the Shift column of Segment details covers the selected part of a segment, an effective hourly rate on a fixed fee is over the selected time only, a task counts as in progress only if its latest day is selected, a day holding only a billable pause still counts its project and task, and there is no projected total. Averages per calendar day and per weekday still count the days between selected days. CSV ends with a `selection` row and the PDF timesheet prints a line saying the same. The selection clears after an export only if you ask.
 
@@ -293,7 +395,8 @@ The app stores everything locally first, and works offline. To sync, it uses the
 
 - **Setup.** On first launch, and in Settings, detected folders are listed with checkboxes, plus **Choose another folder**. You can enable either or both. Nothing turns on silently. If nothing is detected, the screen explains that a desktop client is needed and offers the picker.
 - **Second PC.** If a folder already holds `zWorkTracker/devices/`, the app previews the counts and offers to connect and merge.
-- **One PC at a time.** The app is built for one PC at a time, so let sync finish on one before you edit on another. [Known limitations](#known-limitations) says what happens if you don't.
+- **One PC at a time.** Only one computer at a time makes changes, as far as plain cloud folders allow: see [One computer at a time](#one-computer-at-a-time). Let sync finish on one before you edit on another. [Known limitations](#known-limitations) says what can still happen.
+- **Two folders.** You can connect a OneDrive folder and a Google Drive folder at once: see [Two folders](#two-folders).
 - **When.** Once you've turned it on, it's automatic, with no further prompts: at launch, about 2 seconds after each major action (Start, Pause, Resume, Stop, or a change to a project, shift, rate or setting), about 15 seconds after a task's text was edited, every 30 minutes while the app runs, including hidden in the tray and during a running task, and at a real quit. A failed attempt retries after 30 seconds, 1 minute, 2 minutes and so on, up to every 15 minutes.
 - **Changing the folder.** You can switch to another folder or provider at any time in Settings; see below.
 - **Status.** Each folder shows its own status, such as "Written to OneDrive folder, 2 min ago". The app can't confirm the upload finished, so it only claims the write. A failing folder never affects another one, and never blocks time logging.
@@ -302,13 +405,14 @@ Each PC writes only its own file, `<folder>/zWorkTracker/devices/<device-uuid>.j
 
 **Merge rules, in plain language.**
 
-- Projects, settings, shifts, rates and increments: the latest edit wins per record, ties settled by device id.
+- Projects merge per group of fields: identity, billing, budget and archive. In each group the latest edit wins, ties settled by device id, so a rename on one PC and a fixed fee set on another both survive.
+- Settings, shifts, rates and increments: the latest edit wins per record, ties settled by device id.
 - Tasks merge per field. A name edited on one PC and a description edited on another both survive.
 - A task editor won't save over a newer value of a field if that value has reached this PC since the editor last showed or saved the field. It can only know what has synced here: if two PCs save the same field before either has synced, the later save wins and the other text is gone, with no notice (see [Known limitations](#known-limitations)). The backend compares the two in the same step as the write, by value, so edits to other fields and the running clock don't count, and the same text arriving from elsewhere isn't a conflict. A field you haven't changed shows the newer value. A field you have changed keeps your words and sends nothing: a notice says so, in the editor or, when the editor is closed, in a banner that stays until you open it. **Done** after that notice saves your words over the newer ones, which you can't read first, as the editor shows one value per field. A press of **Done** in the notice's first second chooses nothing, as focus may well be on **Done** already. **Discard my words** keeps the newer ones. To see both, copy your words, press **Discard my words**, and paste them back. Going on typing does nothing to either.
 - Task state follows the same rule, except Stopped is final and always wins.
 - Work segments are combined by id, and a closed copy beats an open copy.
 - Deleted items leave a marker so they don't come back. Archives don't either. A draft deleted on one PC but started on another stays, with its time. A task deleted with its time stays deleted: that marker beats every edit from every PC, and time that arrives afterwards is hidden with it.
-- Conflict copies and unknown files are ignored and never deleted. A damaged or newer-version file is skipped with a warning, and the last good data stays. A newer-version file is never overwritten.
+- Conflict copies and unknown files are ignored and never deleted. A damaged or newer-version file is skipped with a warning, and the last good data stays. A record that can be read but fails its checks, such as a time that makes no sense, is skipped on its own and named in the warning, and the rest of the file is read. A newer-version file is never overwritten.
 - An unreadable OneDrive Files On-Demand placeholder is retried later and isn't treated as damage.
 - If tasks run on two PCs at once, both are kept, a warning stays visible, and neither PC alters the other's segments. A task running on another PC can be stopped here, but its open segment is left for that PC to close. Until then it counts up to that PC's last known heartbeat. If the other PC seems stuck, **Pause it from here** records a synced, audited request. It never rewrites that device's segment: time counts up to the request on every PC, and the other PC closes its own segment when it next syncs, marked as paused by request. That PC then shows one notice naming the task and the device that asked, plus a system notification if its window is hidden.
 
@@ -317,7 +421,7 @@ Two projects created offline with the same name on two PCs stay as two projects.
 **Changing the sync folder.** In Settings, choose **Change folder**, or add a second one. A preview shows the source, the destination and the counts in each. The app then:
 
 1. Reads the previous folder's device files and merges them into local data by the rules above. If the new folder already has zWorkTracker data, that's merged too, not overwritten.
-2. Copies the other devices' files across and writes this device's merged file. A fresher file already in the new folder is left alone. Conflict copies aren't copied, and damaged or newer-version files are skipped with a warning.
+2. Copies the other devices' files across and writes this device's merged file. A fresher file already in the new folder is left alone. Conflict copies aren't copied, and damaged or newer-version files are skipped with a warning. A file with a record that can be read but fails its checks is not skipped: it is read without that record and copied as it is, and the warning names the record.
 3. Reads the new folder back and compares counts and a content checksum before calling it done. Only then does the setting change.
 
 The old folder is never changed or deleted: it just stops being written to, and you can remove it yourself. Time logging carries on during the copy. If a copy fails, the setting stays on the old folder and local data is unharmed, and running it again is safe. If the previous folder can't be read, for instance when it's offline or its client was removed, the move goes ahead from local data, says so, and offers **Retry copy** for later.
@@ -329,6 +433,59 @@ The old folder is never changed or deleted: it just stops being written to, and 
 **Keep the sync folder to yourself.** The files there are plain data, and whoever can write to that folder can change your hours and rates on every connected PC. The app rejects implausible files, such as impossible dates, oversized files or too many devices, but it can't tell a false entry from a real one. Don't use a folder shared with other people.
 
 If a folder stops responding, the app reports it and moves on, and doesn't start more work on that folder until the stuck call returns. After restoring an older local data file, the app recovers what only its own sync file still holds.
+
+#### One computer at a time
+
+With a sync folder connected, only one computer at a time makes changes. **This is a best effort, and the app says so in Settings > Sync between devices:** "Only one computer at a time can make changes. This is a best effort: cloud folders update late and can't lock anything, so two computers may both make changes for a few minutes. If that happens, nothing is lost: the changes merge."
+
+**How it works.** Each computer writes a small record of its own in every connected folder, `zWorkTracker/lease/<device-uuid>.json`, so no file has two writers and no conflict copies arise. The records carry a claim number, and the highest claim across every folder that can be read decides which computer holds the right to make changes. A computer claims it the first time it changes something, not at launch, so two PCs that both start with Windows don't lock each other out. It keeps it while a task runs on it, and lets go by itself after 15 minutes with no change and no task running, when you quit, or when you press **Release now** in **Settings > Sync between devices**, which refuses while a task runs there. While it holds it, it rewrites its record about every 2 minutes, and every computer reads the records about every minute, and at once on **Sync now** or **Check again**.
+
+**What you see.**
+
+| Situation | On this computer |
+|---|---|
+| No folder, nobody holds it, or this computer holds it | No banner. **Settings > Sync between devices** says "This computer is the one making changes." while it holds it, with **Release now** |
+| Another computer holds it and was heard from in the last 15 minutes | "**Read-only.** *name* is using zWorkTracker (last seen *time* ago). You can look at everything here. Changes are off so the two computers don't overlap." **Check again**. No **Take over…** yet: it comes once nothing has come from that computer for 15 minutes |
+| Another computer holds it, but nothing has changed in its record for 15 minutes, by this computer's clock | "**Read-only.** *name* looks inactive: nothing from it for *time*. It may be off, or its cloud app may simply not have synced yet." **Check again**, **Take over…** |
+| No folder can be read, and another computer was the last known holder within 24 hours | "**Read-only.** The sync folder can't be reached, and *name* was last using zWorkTracker *time* ago." **Check again**, **Work here anyway…** |
+| No folder can be read otherwise | A notice that this computer can't check, and that you can keep working: everything merges when the folder is back |
+
+"Looks inactive" is a guess from the time since the last sign, and nothing happens by itself because of it, apart from unlocking **Take over…**. If the other computer's clock seems to differ from this one's, the banner says so.
+
+**Read-only** lets you look at every tab, filter, export, change this computer's own preferences such as the theme and Hide earnings, switch between My time, Client time and Show both, sync, and ask the holder to pause a task with **Pause it from here**. It doesn't let you start, pause, resume or stop a task, edit anything, make corrections or billing summaries, change shared settings, restore a backup, or save or restore a version. Sync still reads, merges and writes this computer's own file, so the view stays current. Text you were typing when the computer went read-only isn't saved, and its editor says "Not saved: *name* is using zWorkTracker. Take over to save."
+
+**Take over** asks twice. **Take over from *name*?** shows when that computer was last heard from and which tasks shown as running there will close, at the last moment it is known to have been running. **Continue** leads to **Are you sure?**, which says the other computer becomes read-only only when it hears about this, which can take a few minutes, or until it reconnects if it's offline, and that until then both could make changes, which merge. Only its **Take over** button acts, and **Back** or **Cancel** change nothing. Take over is offered once the other computer looks inactive: nothing from it for 15 minutes. For one that looks in use there is no **Take over…**. Ask it to pause the task with **Pause it from here**, on the task, or quit it or press **Release now** there. Once its timer has stopped it lets go by itself after 15 minutes with no change, and **Check again** shows that. If the folders show a different holder by the time you confirm, nothing is taken over and the first question comes back with what they say now. If that holder has been heard from again and looks in use, the first question says so and has no **Continue**.
+
+After a take over, this computer syncs at once, saves a version, and the time the other computer left running is closed at its last known moment, which the history of changes records. The other computer, when it next reads the folder, closes its own timer and goes read-only with a notice such as "LAPTOP took over, so this computer is now read-only. "Task" stopped timing here at 14:12. Nothing was lost: it will sync." If it really kept working, its own recorded end replaces the one set by the take over when it next syncs, unless that time is already on a billing summary. **Work here anyway…** makes this computer writable at once while no folder can be read, and takes over when a folder is back, unless another computer took over meanwhile: then it goes back to read-only, and what you did is kept and merges.
+
+A task left running on a computer you can't get to can also be closed without a take over: **Close at last known time** under its time in task details does it once that computer has been silent for 24 hours, or after **Pause it from here**.
+
+#### Two folders
+
+You can connect two folders, typically one in OneDrive and one in Google Drive, through **Add a second folder** in **Settings > Sync between devices**, or by ticking both in the setup. Each holds a full working copy: every sync reads both, merges once and writes the same data to each, and one-computer-at-a-time records go to both. The first is labelled **Main** and the other **Second copy**; a restore tries the main one first, and removing the main one makes the other one main.
+
+Each folder shows its own status, and one failing never stops the other. If a folder hasn't been written for 30 minutes, a warning at the top of the app names it and the error, and says whether the other folder is fine. If one folder's copy of another computer's data is more than an hour behind the other folder's, the folder says so, as its cloud app may be paused. **Remove** stops using a folder and leaves its files where they are.
+
+#### Versions and restoring
+
+**Settings > Versions** lists saved copies of your data, kept in the sync folders, so any computer can restore from them, and uninstalling the app doesn't touch them.
+
+**Where they are.** `zWorkTracker/versions/<YYYY-MM>/` in each folder, one month per folder, for example `zWorkTracker/versions/2026-11/20261102T142530Z--a1b2c3d4--auto.json.gz`. The name gives the UTC time it was saved, the first 8 characters of the saving computer's id, and the reason. The file is gzip of the same data file a sync writes, so any unzip tool opens it. Beside it, `<name>.changes.txt` is a readable record, in UTC and plain words: who saved it and why, the counts, what changed since the version before, and what the history of changes gained in between.
+
+**When one is saved.** The computer that holds the right to make changes saves one after your data changes, at most once an hour. Any computer that may make changes also saves one when you close the app after changes (unless one was saved in the last 15 minutes), when you press **Save a version now**, after a take over, and around a restore. A read-only computer saves only the copy of its own data it keeps before following a restore.
+
+**How long they're kept.** Every version for 7 days, then the newest of each UTC day until 60 days, then the newest of each UTC month, forever. Versions saved around a restore or a take over are kept whole for a year first, and the list marks them **Kept for a year**. Only the computer that holds the right to make changes thins them out, by these rules and by file name alone, so two computers never disagree. If the versions take more than 1 GB in all, the page says so, and nothing is deleted because of it.
+
+**Your cloud provider keeps copies too.** OneDrive and Google Drive keep earlier copies of each file of their own, through **Version history** in OneDrive and **Manage versions** in Google Drive. That stays available as a second safety net, for the versions and for the device files.
+
+**Restoring.** Each row has **What changed**, which shows its record, and **Restore…**. The restore asks twice: first it compares the version's counts with this computer's, then it says what follows. A copy of today's data is saved first, on this computer and as a version in your folders, so restoring that copy undoes the restore. A running task is paused. The restored data then replaces the data on every computer that syncs with these folders: each follows it at its next sync, keeps a copy of what it had, and says so. A restore can't be undone by the next merge, because the restored data carries a number every newer app version respects.
+
+- **Update every computer before restoring.** A computer still on an older app version doesn't know about restores. Its changes are skipped, with "Skipped *name*: it holds data from before a restored version. Update and sync that device.", until it is updated.
+- A computer with data of its own that connects a folder holding a restore it hasn't followed is asked first: **Follow the restored data** or **Keep this computer's data too**, which merges, so rolled-back items may return on every computer.
+- Versions aren't copied when you change folder. **Look in another folder…** lists the versions in a folder that is no longer connected.
+- A read-only computer can list versions and read their records, but has to take over to restore or save one.
+
+The [Migration guide](#5-restoring-and-moving-to-a-new-pc) has the steps.
 
 ## Metrics reference
 
@@ -345,7 +502,7 @@ Definitions worth knowing:
 - **Exact** leaves out time away that's unanswered or dropped, and billable pauses. **Billable** adds billable pauses and rounds once per task-day. The **rounding adjustment** is Billable minus Exact, with billable pauses shown separately. Thinking counts in both, shown separately.
 - **Effective hourly rate** on a fixed-fee project is the fee divided by Billable hours. **Billed** and **unbilled** seconds are the time on and off a live billing summary. Tag analytics count a task's time under each of its tags, so tag totals can add up to more than the total.
 - A band or shift filter hides Billable figures, because rounding works on whole task-days.
-- Client working hours apply Monday to Friday.
+- Client working hours count every day of the week, weekends included, because you might work any day. Hours that end before they start, such as 22:00 to 06:00, run overnight into the next day, and 00:00 to 00:00 is round the clock. The Timeline and Analysis use the same rule.
 - A forecast is a straight-line projection and needs 7 or more days, 20% of the period elapsed and 2 active days. Budget pace uses the last 28 days.
 - Figures with too little data show "Not enough data".
 
@@ -354,6 +511,7 @@ Definitions worth knowing:
 | | |
 |---|---|
 | **Windows** | `%APPDATA%\com.rustcircle.zworktracker\` |
+| **Windows, Store build** | A private folder of the package, removed on uninstall; likely `%LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache\Roaming\com.rustcircle.zworktracker\`, unconfirmed. See [Where the Store version keeps its data](#4-where-the-store-version-keeps-its-data) |
 | **macOS** | `~/Library/Application Support/com.rustcircle.zworktracker/` |
 | **Main file** | `z-work-data.json`: versioned JSON with timestamps in UTC (`2026-03-08T07:00:00Z`) |
 | **Backup** | `z-work-data.json.bak`: the previous good version |
@@ -362,18 +520,19 @@ Definitions worth knowing:
 | **Heartbeat** | `z-work-heartbeat.json`: while a task runs, the last moment the app was alive. It holds one time |
 | **Dated backups** | `backups/`: one copy a day, plus safety copies made before a restore |
 | **Before a migration** | `z-work-data.v1.json`: the store as it was before an upgrade |
+| **Last version taken** | `versions-base.json.gz`: the data as of the last version this computer saved, which the next version's record of changes is compared with |
 | **Damaged files** | Kept as `z-work-data.corrupt-<time>.json` |
 
 Saves are atomic: a temporary file, then a rename. If the main file is damaged the app restores from the backup and tells you. If both are damaged it keeps both copies, starts empty and says so. A file from a newer app version is refused and left untouched. None of this wipes your data silently.
 
-**What leaves the machine:** nothing, except through your own sync folder. Those files hold your full labor data, including prices, unencrypted. There's no telemetry, and the build contains no HTTP or TLS library; a test enforces this.
+**What leaves the machine:** nothing, except through your own sync folder. There the app writes `zWorkTracker/devices/` (each computer's data), `zWorkTracker/lease/` (which computer is making changes) and `zWorkTracker/versions/` (saved versions, gzip, with their records of changes). Those files hold your full labor data, including prices, unencrypted. There's no telemetry, and the build contains no HTTP or TLS library; a test enforces this.
 
 ## Developer guide
 
 ### Prerequisites
 
-- Node 24 (`.nvmrc` and `engines` in `package.json`; CI reads the same file) and pnpm, whose version `packageManager` pins
-- rustup. The toolchain is pinned in `rust-toolchain.toml` (stable, with the `x86_64-pc-windows-gnu` target) and installs itself on first use. You don't need a global default.
+- Node 26 (`.nvmrc` and `engines` in `package.json`; CI reads the same file) and pnpm 12.16.1, the version `packageManager` pins
+- rustup. The toolchain is pinned in `rust-toolchain.toml` (stable, with the `x86_64-pc-windows-gnu` target) and installs itself on first use. You don't need a global default. The code needs Rust 1.99 or later (`rust-version` in `src-tauri/Cargo.toml`).
 - On macOS, Xcode command line tools. To build for Windows: `brew install mingw-w64 nsis`
 
 ### Install and run
@@ -428,11 +587,17 @@ src-tauri/
     persist.rs             Atomic save, backup, recovery, migrations
     merge.rs               Deterministic merge between devices
     sync.rs, detect.rs     Folder sync, sync folder detection
+    lease.rs, lease_io.rs  One computer at a time: the pure rules, then reading and writing the records
+    epoch.rs               The fence that keeps a restored version from being merged away
+    versions.rs, gz.rs, changes.rs   Versions in the sync folders, gzip, the record of changes
+    webview.rs             The WebView2 check and its message
     billing.rs             Day splitting, rounding, earnings
     report.rs, csv.rs, xlsx.rs, subtasks.rs   Exports
     tray.rs                Close-versus-quit decision, tray content
     service.rs, view.rs    Transactions, the UI's snapshot
   src/lib.rs               Tauri shell
+  src/startup_task.rs      Start with Windows for the Store build
+  crates/z-work-session/   Windows session and package queries, the workspace's only unsafe code
   windows/                 NSIS hooks and strings
 src/
   lib/                     tz engine, band splitting, billing, shifts, colour, themes, API
@@ -461,9 +626,9 @@ The synced state is a set of records with stable ids, merged by taking the maxim
 - Strict CSP in `tauri.conf.json`: no inline scripts or styles, no remote content. E2e tests run under that same CSP and fail on any violation.
 - Minimal capabilities: the window can only listen for backend events. No shell or filesystem plugin. The save and folder dialogs run from Rust.
 - Every command input is validated in Rust. Descriptions are allow-listed to known nodes and rendered only through the editor; ESLint rejects raw HTML injection.
-- Files from sync folders are untrusted: they are limited in size and count, schema-checked and checked for plausible times, durations and settings, and rejected files are skipped. Each folder runs on its own worker with a time limit. Validation doesn't authenticate the writer; see [Folder sync](#folder-sync-on-onedrive-and-google-drive).
+- Files from sync folders are untrusted: they are limited in size and count, schema-checked and checked for plausible times, durations and settings, and rejected files are skipped. A record that can be read but fails its checks is skipped and named in a warning, and the rest of that file is read. Each folder runs on its own worker with a time limit. Validation doesn't authenticate the writer; see [Folder sync](#folder-sync-on-onedrive-and-google-drive).
 - A save re-reads what it is about to write and refuses it if it wouldn't load, so a bad value can't replace a good store.
-- `unsafe` is forbidden in this project's crates, and clippy warns on `unwrap`, `expect`, `panic` and indexing.
+- `unsafe` is forbidden in this project's crates apart from `z-work-session`, which holds the few audited Windows calls, and clippy warns on `unwrap`, `expect`, `panic` and indexing.
 - The test-only `smoke` feature (data folder override, extra commands) is never enabled in shipped builds. The demo seed and IPC mock are absent from the production bundle.
 
 ### Git workflow
@@ -515,7 +680,40 @@ node scripts/perf-native.mjs --exe <dir>/release/zWorkTracker --store <store> --
 pnpm package:windows
 ```
 
-This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_0.2.0_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the installer and the files inside it are signed (reading those needs `brew install sevenzip`). `WebView2Loader.dll` ships inside the installer next to the exe.
+This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_1.3.1_x64-setup.exe`. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the installer and the files inside it are signed (reading those needs `brew install sevenzip`). `WebView2Loader.dll` ships inside the installer next to the exe.
+
+### Microsoft Store package from macOS
+
+```sh
+export ZWT_STORE_IDENTITY_NAME="<Package/Identity/Name>"
+export ZWT_STORE_PUBLISHER="<Package/Identity/Publisher>"
+export ZWT_STORE_PUBLISHER_DISPLAY_NAME="<Package/Properties/PublisherDisplayName>"
+pnpm package:msix
+```
+
+This packs the Windows build that `pnpm package:windows` left in `src-tauri/target/x86_64-pc-windows-gnu/release` as `bundle/msix/zWorkTracker_1.3.1.0_x64.msix` in that folder, to upload in Partner Center. It builds nothing itself: `pnpm package:msix --build` runs the same `tauri build` as `package:windows` first, and without it an exe whose version isn't the app's is refused. A package from an earlier run is removed first, and a run that fails leaves none. At the end it checks that what was packed is in the package, and prints its path, size and SHA-256, the identity read back from the manifest in it, and the version, build time and SHA-256 of the exe that went in.
+
+**It isn't signed, and doesn't need to be.** The Store re-signs MSIX packages with a Microsoft certificate after certification ([Microsoft](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements)), so the signing variables don't apply, and the file can't be installed on a PC as it is.
+
+**The identity is Partner Center's to give,** so it has no defaults. The three values are on the app's **Product management > Product identity** page, and have to be copied exactly: the Store compares them with the package. A missing one stops the script, which names it. The other variables are optional:
+
+- `ZWT_MAKEMSIX`: the `makemsix` binary from Microsoft's [MSIX Packaging SDK](https://github.com/microsoft/msix-packaging). The default is `~/msix-packaging/.vs/bin/makemsix`, where `./makemac.sh --pack` builds it; packing is off in that script unless `--pack` is given.
+- `ZWT_MSIX_OUT_DIR`: a folder for the package, instead of `bundle/msix`.
+- `CARGO_TARGET_DIR`: as for `package:windows`. A relative path is read from `src-tauri`, as Cargo does.
+
+It also needs `sips` and `unzip`, which macOS has. `--build` needs `brew install mingw-w64 nsis`, as `package:windows` does. Unlike `package:windows`, it doesn't check which DLLs the exe imports, so run that after changing dependencies.
+
+**The version** is the app's with a 0 added, so 1.3.1 is package version 1.3.1.0. The Store keeps the last part for itself and wants 0 there, the other parts are whole numbers up to 65535, and the first can't be 0 ([Microsoft](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements#package-version-numbering)). A version that breaks this stops the script, rather than making a package the Store would turn away. The manifest makes it a full-trust x64 app. Its minimum is Windows 10 version 2004 (`MinVersion="10.0.19041.0"`), so it covers the Windows 10 and 11 the rest of this README is written for. It declares a startup task, `zWorkTrackerStartup`, which stays off until it is turned on, and the app's **Start with Windows** switch now turns it on and off.
+
+**What has been tested.** With made-up identity values: `makemsix` accepted the manifest, the startup task included. It checks a manifest against Microsoft's schemas and nothing more, so it also accepts one that names files that aren't there or a version the Store refuses; the script checks those itself. The package unpacks to files identical to the ones packed, and its block map uses SHA-256, as the Store requires. **Not tested:** Partner Center accepting the upload, certification, the Windows App Certification Kit (it runs only on Windows, and Microsoft advises running it before submitting), and installing or running the package on Windows, including everything in the list below. The [checklist](#manual-windows-test-checklist) covers it.
+
+**How the app handles being packaged, not yet seen on Windows.** Microsoft documents that a packaged app's writes under HKCU, and the new files it creates under AppData, go to a private copy that only that app sees and that is removed on uninstall ([Microsoft](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)). The app now plans for that rather than avoiding it:
+
+- **No restricted capability.** The manifest declares `runFullTrust` and nothing else, and in particular not `unvirtualizedResources`, which turning that redirection off would take. `scripts/msix-manifest.test.ts` holds it to that.
+- **Local data is private and removed on uninstall, so the cloud folder is the permanent copy.** The app asks Windows for its package identity at launch and, when it has one, urges a cloud folder in the setup, keeps a warning up while none is connected, and says so on removing the last folder and under Backups. See [Microsoft Store build: where your data lives](#microsoft-store-build-where-your-data-lives).
+- **Start with Windows uses the startup task `zWorkTrackerStartup`,** through Windows' `StartupTask` API, instead of the HKCU `Run` key, which would never start anything from a package. The installer build keeps the `Run` key.
+- **Notifications** are sent as toasts under the package's AppUserModelID, which the notification plugin doesn't pass.
+- **WebView2:** the same message and download link as the installer build, since it is the same program.
 
 ### Trusting your own builds with a self-signed certificate
 
@@ -581,8 +779,8 @@ The artifact's name then ends in `-self-signed`. With no secrets the workflow st
 **5. Check it,** on a PC set up as in step 3. `signtool` comes with the Windows SDK, isn't on the PATH, and is found as in step 4. `Get-AuthenticodeSignature` is part of Windows, so it's enough on a PC without the SDK:
 
 ```powershell
-& $env:SIGNTOOL_PATH verify /pa /v .\zWorkTracker_0.2.0_x64-setup.exe
-Get-AuthenticodeSignature .\zWorkTracker_0.2.0_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+& $env:SIGNTOOL_PATH verify /pa /v .\zWorkTracker_1.3.1_x64-setup.exe
+Get-AuthenticodeSignature .\zWorkTracker_1.3.1_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
 ```
 
 `signtool` should end with `Successfully verified`, and `Status` should read `Valid`, with a `TimeStamperCertificate`. After installing, run the same two commands on `$env:LOCALAPPDATA\zWorkTracker\zWorkTracker.exe` and `uninstall.exe` beside it. Check the installer and the installed files: the exe left in `src-tauri\target` by the build is the unsigned original.
@@ -648,7 +846,9 @@ Never commit real values. `.env` is ignored by git, and so are certificate and k
 
 ### Manual Windows test checklist
 
-None of this has been run yet. Please check on a real Windows 11 PC:
+None of this has been run yet. Please check on real Windows 10 and Windows 11 PCs, and note for each item the Windows edition and build (`winver`), the build type, pass or fail, and a screenshot of every dialog. The installer build is `zWorkTracker_1.3.1_x64-setup.exe` from `pnpm package:windows`; the Store build is `zWorkTracker_1.3.1.0_x64.msix` from `pnpm package:msix --build`, installed test-signed with `Add-AppxPackage` or through Partner Center flighting.
+
+**Both builds, and the installer build:**
 
 - [ ] WebView2 is present and the app opens. With WebView2 disabled, a clear message appears, not a blank window
 - [ ] The installer runs without admin rights; SmartScreen behaves as described
@@ -670,12 +870,56 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 - [ ] Upgrade keeps data, and closes a running app cleanly
 - [ ] Uninstall removes files, shortcuts and the autostart entry; unticked keeps data, ticked deletes it; sync folders are untouched
 
+**WebView2 missing** (a Windows 10 22H2 VM, build 19045, with no "Microsoft Edge WebView2 Runtime" in Installed apps; Windows 11 can't remove it):
+
+- [ ] Starting either build shows one message titled "zWorkTracker", no window and no tray icon. It starts "zWorkTracker needs the Microsoft Edge WebView2 Runtime, and it wasn't found or is turned off on this computer.", shows <https://developer.microsoft.com/en-us/microsoft-edge/webview2/> and ends "Your data is safe." Buttons **Open download page** (default) and **Close**
+- [ ] **Open download page** opens that exact page in the default browser, and the process is gone from Task Manager within 2 seconds. **Close**, and Esc, end it with nothing opened
+- [ ] The installer, before copying files, shows a Yes/No warning with the same words, the link and "Open the download page now?". Yes opens the page and the install carries on; No carries on. `/S` installs silently with no message. On a PC with the runtime there is no warning
+- [ ] Upgrading or uninstalling the installer build with the runtime still missing shows no message from its `--quit` run
+- [ ] After installing the Evergreen runtime from that page, the app opens normally
+- [ ] With the runtime present, `set WEBVIEW2_USER_DATA_FOLDER=C:\Windows\System32\drivers\etc\hosts` in cmd, then starting `zWorkTracker.exe` from there, shows the same message followed by "Details: Failed to setup app: ..." and the same two buttons. If the window opens normally, try a folder you can't write to, such as `C:\Windows\System32`, and record what happened
+
+**Store build:**
+
+- [ ] First run with no sync folder: the **Sync between computers** step says "Choose a cloud folder." with the Store wording, and Skip asks **Continue without a folder?**. After setup, the warning "This copy of zWorkTracker keeps its data in a private Windows folder ... Settings > Sync between devices." stays until a folder is connected, then goes. The installer build shows no such warning
+- [ ] **Start with Windows** on: no Windows prompt, the switch stays on, Task Manager > Startup apps lists zWorkTracker as Enabled, and the app starts at sign-in, showing its window. Off: Disabled there, and it doesn't start
+- [ ] Turned on in the app, then disabled in Task Manager > Startup apps: the switch is off and greyed with "You turned this off in Windows, so only Windows can turn it back on: Settings > Apps > Startup.", and **Open Startup settings** opens that page. Turned back on there: the switch is on and movable again. The setup's Start with Windows step behaves the same
+- [ ] Optional: a policy that blocks startup tasks gives "A policy on this computer doesn't allow this, or the device doesn't support it." with the switch greyed
+- [ ] With the window hidden, a time-away question, a budget alert or the long-running reminder appears as a toast from zWorkTracker, with the package's name and icon, and is listed under zWorkTracker in the notification centre. With its notifications turned off in Settings > System > Notifications, none appears and nothing fails. The installer build's toasts still appear
+- [ ] A day of use: the window renders, data saves, **Settings > Backups** lists backups, and nothing complains about the WebView2 data folder. Record where the data folder really is (see [Where the Store version keeps its data](#4-where-the-store-version-keeps-its-data))
+- [ ] Uninstalling removes its private data folder
+
+**Installer build, Start with Windows:**
+
+- [ ] On: `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` has a zWorkTracker value and sign-in starts the app, showing its window. Off: the value is gone
+
+**Two PCs on real cloud folders** (OneDrive, then Google Drive, then both):
+
+- [ ] A timer started on PC A makes PC B show the read-only banner naming A, within about 2 minutes plus the cloud's delay. Record the delay: the design assumes under 5 minutes each way
+- [ ] **Check again** on B shows the current state when it finishes
+- [ ] Quitting A from the tray exits within 5 seconds, its `zWorkTracker\lease\<A's id>.json` says `released`, and B's banner clears without a take over
+- [ ] On B, while A is read-only, tray Resume shows "A is using zWorkTracker, so this computer is read-only. Take over from the banner to work here." as a toast, brings B's window up with the banner, and starts nothing
+- [ ] While A runs a timer and is online, B's banner has **Check again** only. **Pause it from here** on B for that task stops A's timer when A next syncs, and about 15 minutes later, with nothing changed on A, B's banner clears after **Check again**
+- [ ] Take over on B once nothing has come from A for 15 minutes, once with a timer left running on A (A's network cut) and once with A switched off: B's banner offers **Take over…** only after those 15 minutes. B syncs at once after the second question, A's settled time appears on A after its next sync, and A goes read-only with its notice
+- [ ] Removing one of two folders on the holder marks its lease record released there, and the other stays held
+- [ ] **Settings > Versions** lists versions from both folders; **Save a version now** works; **What changed** shows the record; a restore is followed by B at its next sync, which keeps a copy of what it had as a version
+
+**Moving from the installer build to the Store build** (see the [Migration guide](#3-moving-from-the-installer-version-to-the-store-version)):
+
+- [ ] On another PC: after the installer build has synced to a OneDrive folder and quit, the Store build's setup offers the folder, connecting it brings every project, task and hour, **Settings > Sync between devices** counts the installer copy as another device, and uninstalling the installer build with **Also delete my time data** unticked leaves the Store build's data as it was
+- [ ] On the same PC, with the installer build's data present and no folder connected: record whether the Store build opens with that data (the same device) or empty. Either is accepted
+- [ ] Starting one build while the other runs: record whether the running window comes up instead, or both run
+
 ## Troubleshooting
 
 | Problem | What to do |
 |---|---|
 | "Windows protected your PC" | SmartScreen doesn't know the file yet, signed or not. Choose **More info**, then **Run anyway**. |
-| Blank window or WebView2 message | Run Windows Update, or reinstall the WebView2 Runtime from Microsoft. Your data is safe. |
+| Blank window or WebView2 message | Install the Evergreen WebView2 Runtime from <https://developer.microsoft.com/en-us/microsoft-edge/webview2/>, or run Windows Update, then open the app again. Your data is safe. |
+| "Read-only." banner | Another computer is making changes. Quit it from its tray, or press **Release now** there, then **Check again** here. If you can't get to it, ask it to pause its task with **Pause it from here**, on the task. It lets go by itself 15 minutes after its last change. **Take over…** appears once nothing has come from it for 15 minutes. See [One computer at a time](#one-computer-at-a-time). |
+| "Skipped *name*: it holds data from before a restored version" | That computer is on an older app version, or hasn't synced since a restore. Update it and let it sync. |
+| A folder asks whether to follow restored data | Its data was restored from a version, and this computer has data from before that. Choose in **Settings > Sync between devices**; see [Versions and restoring](#versions-and-restoring). |
+| "This copy of zWorkTracker keeps its data in a private Windows folder" | This is the Store build with no cloud folder. Connect one in **Settings > Sync between devices** before you uninstall anything. |
 | The app seems gone after closing | It's in the tray; check the overflow arrow. Only tray **Quit** exits. |
 | Time kept running overnight | The app asks about a sleep or idle time when you return, and it counts nowhere until you answer. Answer **Drop**, or correct the segment. |
 | A summary won't let me answer about time away | That segment is on a billing summary. Void the summary, answer, then create it again. |
@@ -690,9 +934,19 @@ None of this has been run yet. Please check on a real Windows 11 PC:
 
 ## Known limitations
 
-**Built for one PC at a time.** Use the app on one PC at a time. Sync carries your work from one PC to the next, but it doesn't make two PCs safe to edit side by side. If you switch PCs before sync has finished, for example because PC A goes offline before its folder has uploaded, and you edit the same field on both, the later save wins and the other text disappears from both PCs with no notice. Neither PC can warn you, because neither has seen the other's text when it saves. So let sync finish before you switch. The app can only say it wrote to the sync folder, so check that OneDrive or Google Drive has finished uploading.
+**One computer at a time is a best effort.** Cloud folders sync late and offer no lock, so the [lease](#one-computer-at-a-time) can't be exact. Two PCs can both make changes for a few minutes: while a claim is still uploading or downloading, after a take over until the other PC hears of it, and while a PC works offline or with **Work here anyway…**. What both did merges, under the rules above, including the limit below. The 15 minutes after which a PC "looks inactive" assume about 5 minutes for a file to reach the cloud and 5 to come back down. **How long OneDrive and Google Drive really take hasn't been measured**, and the app has never run against their real desktop clients. An app on an older version doesn't take part at all: it writes whenever it is used, so update every PC.
 
-**Not verified on real Windows.** What has run on Windows is the CI test gates and the GitHub build, on `windows-latest`. A green gates run covers the type check, lint, unit tests, and the Rust format, lint and tests, which run on Windows itself. It also covers the Playwright tests, which run against the IPC mock and so don't drive the real backend. It says nothing about the installer or the app on a real desktop. The build made the installer, signed it with the self-signed certificate and checked the signatures with `signtool` on the runner. The app itself has never run on a real desktop. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, a PC trusting the certificate and accepting the signatures, Segoe UI rendering and shutdown handling. See the [checklist](#manual-windows-test-checklist).
+**After a restore, older app versions are left behind.** A PC on an app version from before 1.3.1 doesn't know a version was restored. It merges the restored data with its own and writes on as before, and every newer PC skips its file, with a warning naming it, until it is updated. Once it is updated, it follows the restore: the time it logged since the restore was made is carried into the restored data, and everything else it held is kept in a safety copy and as a version, not merged.
+
+**Clocks that are far out.** The app guards against a clock that jumps, but three cases are known and not fixed:
+
+- **Versions thinned too early.** A computer whose clock is far ahead, and that has never saved a version in a folder, judges the other computers' versions there by its own clock the first time it thins that folder out, so it can remove versions that are still young.
+- **Time cut after a restore.** A restore made on a computer whose clock was ahead is dated by that clock. A computer that follows it carries the time it logged since it last read the folder into the restored data. One that has not read the folder yet since it started, or that follows by answering the question in **Settings > Sync between devices**, carries only what it logged after the restore's date on that clock. Time logged between the real restore and that date stays in the copy it kept of its own data, and isn't in the restored data.
+- **A clock put back.** If a computer's clock is put back while a task runs, another computer can show extra live time on that task, up to the size of the step, until that clock passes the time it was at before the step. Figures and budget alerts there read the extra time. Open time isn't billed, and it corrects itself. A pause asked for from another computer just before the step is aimed at the old stretch, which the step has closed, so the timer goes on and the pause may need asking again.
+
+**Built for one PC at a time.** Use the app on one PC at a time. Sync carries your work from one PC to the next, but it doesn't make two PCs safe to edit side by side. If you switch PCs before sync has finished, for example because PC A goes offline before its folder has uploaded, and you edit the same field on both, the later save wins and the other text disappears from both PCs with no notice. Neither PC can warn you, because neither has seen the other's text when it saves. So let sync finish before you switch. The app can only say it wrote to the sync folder, so check that OneDrive or Google Drive has finished uploading. Two PCs that each bill their own part of one task-day before their files cross each round it alone, so those summaries can hold more than the report shows, with no warning. They stay as issued, and later rows on that day bill only what the day's rounded time has grown past them.
+
+**Not verified on real Windows.** What has run on Windows is the CI test gates and the GitHub build, on `windows-latest`. A green gates run covers the type check, lint, unit tests, and the Rust format, lint and tests, which run on Windows itself. It also covers the Playwright tests, which run against the IPC mock and so don't drive the real backend. It says nothing about the installer or the app on a real desktop. The build made the installer, signed it with the self-signed certificate and checked the signatures with `signtool` on the runner. The app itself has never run on a real desktop. That includes the installer, uninstaller and hooks, tray, WebView2 check, `--quit` during install, autostart, sync folder detection, Windows file-lock handling, a PC trusting the certificate and accepting the signatures, Segoe UI rendering and shutdown handling. **Nothing added in 1.3.1 has run on Windows either:** the WebView2 message and its download button, the installer's new warning, the Store build as a whole, its package detection, private data folder, startup task and toasts, one computer at a time, two folders and versions on real OneDrive and Google Drive folders, and moving from the installer build to the Store build. They were checked from macOS by compiling for Windows and by tests of the logic behind them, with fake cloud folders that delay and hold files. Where the Store build's data really lives, and whether on the same PC it opens the installer build's data, are unknown until it is installed. See the [checklist](#manual-windows-test-checklist).
 
 **Verified only on macOS or against a mock.**
 
@@ -751,7 +1005,7 @@ The full list of components, including a note on the ODbL data behind the map lo
 - **Accounts:** multi-factor authentication is required for all team members.
 - **Builds:** only builds by this repository's workflow on GitHub-hosted runners are submitted.
 - **Privacy:** this program makes no network calls and sends no telemetry. Data leaves your computer only through a OneDrive or Google Drive folder you choose, uploaded by that service's own desktop client.
-- **Contact:** p@rustcircle.com
+- **Contact:** pmrj@rustcircle.com
 
 ## Licence
 

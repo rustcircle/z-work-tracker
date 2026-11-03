@@ -4,6 +4,7 @@ import { useEffect, useId, useRef } from 'react';
 
 import { useApp, useAppState } from '../../app/store';
 import { nextMarkIn, useStepNow } from '../../app/stepClock';
+import { useReadOnly, type ReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { parseIso } from '../../lib/tz';
 import type { Segment, Task } from '../../lib/types';
@@ -78,6 +79,7 @@ function TimeParts({ task, pieces, nowSec, snapshotSec }: { task: Task; pieces: 
 
 function Subtasks({ task, rows, noSubtaskSecs, noneActive, workedSecs, orphanSecs, running }: { task: Task; rows: SubtaskRow[]; noSubtaskSecs: number; noneActive: boolean; workedSecs: number; orphanSecs: number; running: boolean }) {
   const { act } = useCommands();
+  const ro = useReadOnly();
   const headId = useId();
   const listRef = useRef<HTMLUListElement | null>(null);
   /** The row to give focus to once the switch is saved: the clicked button turns into a badge. */
@@ -93,6 +95,7 @@ function Subtasks({ task, rows, noSubtaskSecs, noneActive, workedSecs, orphanSec
   }, [activeKey]);
 
   const choose = (id: string | null): void => {
+    if (ro.readOnly) return;
     focusKey.current = id ?? 'none';
     void act(() => api.setActiveSubtask(task.id, id)).then((ok) => {
       if (!ok) focusKey.current = null;
@@ -109,7 +112,7 @@ function Subtasks({ task, rows, noSubtaskSecs, noneActive, workedSecs, orphanSec
       </div>
       <ul className="subtask-list" ref={listRef}>
         {rows.map((r) => (
-          <SubtaskItemRow key={r.id || r.text} row={r} onMakeActive={() => choose(r.id)} />
+          <SubtaskItemRow key={r.id || r.text} row={r} ro={ro} onMakeActive={() => choose(r.id)} />
         ))}
         <li className={`subtask-row subtask-none${noneActive ? ' subtask-active' : ''}`} data-row="none" tabIndex={-1} aria-current={noneActive ? 'true' : undefined}>
           <span className="subtask-mark" aria-hidden="true">–</span>
@@ -120,7 +123,7 @@ function Subtasks({ task, rows, noSubtaskSecs, noneActive, workedSecs, orphanSec
           {noneActive ? (
             <Badge tone="accent">Active</Badge>
           ) : (
-            <Button small onClick={() => choose(null)}>
+            <Button small disabled={ro.readOnly} title={ro.why ?? undefined} onClick={() => choose(null)}>
               No subtask
             </Button>
           )}
@@ -135,7 +138,7 @@ function Subtasks({ task, rows, noSubtaskSecs, noneActive, workedSecs, orphanSec
   );
 }
 
-function SubtaskItemRow({ row, onMakeActive }: { row: SubtaskRow; onMakeActive: () => void }) {
+function SubtaskItemRow({ row, ro, onMakeActive }: { row: SubtaskRow; ro: ReadOnly; onMakeActive: () => void }) {
   const textId = useId();
   return (
     <li className={`subtask-row${row.active ? ' subtask-active' : ''}${row.checked ? ' subtask-done' : ''}`} data-row={row.id || undefined} tabIndex={-1} aria-current={row.active ? 'true' : undefined}>
@@ -150,7 +153,7 @@ function SubtaskItemRow({ row, onMakeActive }: { row: SubtaskRow; onMakeActive: 
       {row.active ? (
         <Badge tone="accent">Active</Badge>
       ) : row.canActivate ? (
-        <Button small aria-describedby={textId} onClick={onMakeActive}>
+        <Button small disabled={ro.readOnly} title={ro.why ?? undefined} aria-describedby={textId} onClick={onMakeActive}>
           Make active
         </Button>
       ) : (

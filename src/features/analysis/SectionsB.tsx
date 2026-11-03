@@ -177,7 +177,8 @@ export function Consistency({ env }: { env: SecEnv }) {
 
 function BudgetCard({ env }: { env: SecEnv }) {
   const { m } = env;
-  const [pick, setPick] = useState(m.budgets[0]?.projectId ?? '');
+  // Null until a project is chosen: the list's first one until then, whichever that is by now.
+  const [pick, setPick] = useState<string | null>(null);
   const b = m.budgets.find((x) => x.projectId === pick) ?? m.budgets[0];
   if (!b) return null;
   const today = dayOfInstant(env.nowSec, m.zone);

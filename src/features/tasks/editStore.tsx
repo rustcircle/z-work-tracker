@@ -81,6 +81,8 @@ export interface EditSession {
   failures: number;
   /** Why the backend refuses to take this edit at all, if it does. Sending it again can't help, so nothing does until it changes. */
   refused: string | null;
+  /** The refusal is the lease's (`read_only`): another computer is in use. It lifts by itself once this computer can write, and the save then goes out again, with an editor on screen or without. */
+  refusedByLease: boolean;
   /** The next autosave or retry. Lives here so that rebuilt editors share one, and it outlives a closed editor. */
   timer: number | null;
   /** Stashed drafts are written one at a time, in order, across rebuilds. */
@@ -140,6 +142,7 @@ export function newSession(task: Task, report: (status: SaveStatus) => void): Ed
     queue: Promise.resolve(true),
     failures: 0,
     refused: null,
+    refusedByLease: false,
     timer: null,
     draftChain: Promise.resolve(),
     stashFailed: false,
@@ -352,6 +355,21 @@ export function EditStoreProvider({ children }: { children: ReactNode }) {
       if (!s.shown && s.failures > MAX_RETRIES && s.refused === null && hasUnsaved(s)) void s.retry();
     }
   }, [revision]);
+
+  // A save the lease refused goes out again once this computer can write: taking over is all that was missing. An editor on screen does that for
+  // its own draft. This is for a draft whose editor was closed meanwhile, which has nothing else to hear of the take over, and whose notice would
+  // go on saying to take over. A field the other computer changed meanwhile is held for the user to choose, as for any save.
+  const writable = !snapshot.lease.readOnly;
+  useEffect(() => {
+    if (!writable) return;
+    for (const s of [...sessions.current.values()]) {
+      if (s.shown || !s.refusedByLease || !hasUnsaved(s)) continue;
+      s.refusedByLease = false;
+      s.refused = null;
+      s.failures = 0;
+      void s.retry();
+    }
+  }, [writable]);
 
   // The backend asks for a save when the window hides or the app quits; so does a hidden page.
   useEffect(() => {

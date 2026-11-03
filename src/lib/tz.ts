@@ -101,6 +101,16 @@ export function zoneLabel(zone: string, sec: number): string {
 }
 
 const pad = (n: number): string => String(n).padStart(2, '0');
+/** Four digits, also for the years before 1000, so a day is always `YYYY-MM-DD`. */
+const yearText = (year: number): string => (year >= 1000 ? String(year) : String(year).padStart(4, '0'));
+
+/** `Date.UTC` reads the years 0 to 99 as 1900 to 1999. This reads them as they are. */
+export function utcMillis(year: number, monthIndex: number, date: number): number {
+  if (year < 0 || year > 99) return Date.UTC(year, monthIndex, date);
+  const t = new Date(0);
+  t.setUTCFullYear(year, monthIndex, date);
+  return t.getTime();
+}
 
 export interface Wall {
   day: string;
@@ -120,7 +130,7 @@ export function wallAt(sec: number, zone: string): Wall {
   const month = d.getUTCMonth() + 1;
   const date = d.getUTCDate();
   return {
-    day: `${year}-${pad(month)}-${pad(date)}`,
+    day: `${yearText(year)}-${pad(month)}-${pad(date)}`,
     year,
     month,
     date,
@@ -135,12 +145,21 @@ export const dayOf = (sec: number, zone: string): string => wallAt(sec, zone).da
 
 function dayToUtcSecs(day: string): number {
   const [y, m, d] = day.split('-').map(Number) as [number, number, number];
-  return Date.UTC(y, m - 1, d) / 1000;
+  return utcMillis(y, m - 1, d) / 1000;
+}
+
+/** True for a real calendar day written `YYYY-MM-DD`, with four digits for the year. */
+export function isDay(day: string): boolean {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!parts) return false;
+  const [y, m, d] = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
+  const t = new Date(utcMillis(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
 }
 
 export function addDays(day: string, n: number): string {
   const d = new Date((dayToUtcSecs(day) + n * 86400) * 1000);
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  return `${yearText(d.getUTCFullYear())}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
 
 /** 1 = Monday .. 7 = Sunday. */

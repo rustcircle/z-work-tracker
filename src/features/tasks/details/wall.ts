@@ -54,7 +54,18 @@ export function fieldFromInstant(sec: number, zone: string): WallField {
 
 export type Resolved = { ok: true; at: number } | { ok: false; message: string };
 
-export function wallToInstant(field: WallField, zone: string, label: string): Resolved {
+/** Whether two fields name the same wall time. The "which one" choice only counts at a time that happens twice. */
+function sameWall(a: WallField, b: WallField, zone: string): boolean {
+  return a.day === b.day && a.time === b.time && (a.second === b.second || repeated(b, zone) === null);
+}
+
+/**
+ * The instant a field holds. A date and a time input hold minutes, so an instant with seconds does not survive a round trip through
+ * them. Pass `kept`, the instant the field was made from, and a field that still shows its minute gives it back whole, so editing
+ * one end of an entry does not move the other.
+ */
+export function wallToInstant(field: WallField, zone: string, label: string, kept?: number): Resolved {
+  if (kept !== undefined && sameWall(field, fieldFromInstant(kept, zone), zone)) return { ok: true, at: kept };
   const r = resolveWall(field.day, field.time, zone);
   switch (r.kind) {
     case 'ok':

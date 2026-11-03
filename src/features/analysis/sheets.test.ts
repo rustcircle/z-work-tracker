@@ -87,6 +87,10 @@ describe('buildAnalyticsSheets', () => {
     for (const s of sheets.filter((x) => !x.containsPrices)) expect(s.columns.some((c) => c.kind === 'eur' || c.kind === 'usd')).toBe(false);
   });
 
+  it('r7: the earnings sheet says its rows can differ from its total', () => {
+    expect(by('Earnings by period')?.title).toContain('Row amounts are rounded; the total is worked out from the exact amounts.');
+  });
+
   it('shift sheet appears only when shifts exist', () => {
     expect(by('Shifts')).toBeUndefined();
     const withShift = buildAnalyticsSheets(mkSnapshot({ ...SPEC, shifts: [{ name: 'Morning', start: '09:00', end: '13:00', breakMinutes: 30 }] }), 'UTC', NOW, view);

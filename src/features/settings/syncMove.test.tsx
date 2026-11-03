@@ -1,10 +1,11 @@
 import { listen } from '@tauri-apps/api/event';
 import { clearMocks } from '@tauri-apps/api/mocks';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { boot as bootApp, polyfillDom } from '../../components/testKit';
+import { api } from '../../lib/api';
 import { demoState, DEMO_NOW } from '../../mocks/demoSeed';
 import type { MockState } from '../../mocks/ipcMock';
 import type { MoveProgress } from '../../lib/types';
@@ -206,7 +207,7 @@ describe('change the sync folder', () => {
 
   it('adds a second folder, keeping the first, through the same flow', async () => {
     const { user } = await setup();
-    await user.click(await screen.findByRole('button', { name: 'Add a folder' }));
+    await user.click(await screen.findByRole('button', { name: 'Add a second folder' }));
     await user.click(await screen.findByLabelText(`Google Drive folder (${NEW})`));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     expect(await screen.findByRole('heading', { name: 'Add this sync folder?' })).toBeVisible();
@@ -225,5 +226,102 @@ describe('change the sync folder', () => {
     await user.click(await screen.findByRole('button', { name: 'Add a folder' }));
     expect(await screen.findByRole('button', { name: 'Connect folder' })).toBeDisabled();
     expect(screen.queryByTestId('sync-move')).toBeNull();
+  });
+});
+
+describe('leaving Settings while a folder is being changed', () => {
+  /** A copy that goes on until the test lets it end, started from the confirm step of a Change folder. */
+  async function copyingOnHold() {
+    const { user } = await setup();
+    await toConfirm(user);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const real = api.moveSyncTarget;
+    vi.spyOn(api, 'moveSyncTarget').mockImplementation(async (...args) => {
+      await held;
+      return real(...args);
+    });
+    await user.click(screen.getByRole('button', { name: 'Copy and switch' }));
+    await screen.findByTestId('move-progress');
+    const away = async (): Promise<void> => {
+      await user.click(screen.getByRole('tab', { name: 'Timeline' }));
+      await screen.findByRole('region', { name: 'Timeline' });
+    };
+    const back = async (): Promise<void> => {
+      await user.click(screen.getByRole('tab', { name: 'Settings' }));
+      await screen.findByRole('region', { name: 'Settings' });
+    };
+    const end = async (): Promise<void> => {
+      await act(async () => {
+        release();
+        await held;
+      });
+    };
+    return { user, away, back, end };
+  }
+
+  it('R12: the copy is still shown as running when Settings is opened again, and Change folder and Sync now wait for it', async () => {
+    const { away, back, end } = await copyingOnHold();
+    await away();
+    await back();
+    const panel = await screen.findByTestId('sync-move');
+    expect(panel).toHaveTextContent('Copying your data…');
+    expect(within(panel).getByTestId('move-progress')).toBeVisible();
+    expect(screen.getByRole('button', { name: /^Change folder C:/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Sync now' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Add a second folder' })).toBeDisabled();
+    // Coming back does not pull the keyboard away from the tab that was pressed.
+    expect(screen.getByRole('tab', { name: 'Settings' })).toHaveFocus();
+    await end();
+    expect(await screen.findByTestId('move-summary')).toHaveTextContent("This device's data was written and checked.");
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Done' })).toBeVisible());
+    expect(state.targets.map((t) => t.root)).toEqual([NEW]);
+  });
+
+  it('R12: a copy that ends while Settings is not shown has its summary waiting, and Done closes it for good', async () => {
+    const { user, away, back, end } = await copyingOnHold();
+    await away();
+    await end();
+    await waitFor(() => expect(state.targets.map((t) => t.root)).toEqual([NEW]));
+    await back();
+    expect(await screen.findByTestId('move-summary')).toHaveTextContent('The folder now holds');
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByTestId('sync-move')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Change folder G:/ })).toBeEnabled();
+    // Closed means closed: another trip to Timeline and back does not bring it up again.
+    await away();
+    await back();
+    expect(screen.queryByTestId('sync-move')).toBeNull();
+  });
+
+  it('R12: a copy that fails while Settings is not shown still says that the folder was not changed', async () => {
+    const { user, away, back, end } = await copyingOnHold();
+    state.folders[NEW] = { devices: [], counts: { projects: 0, tasks: 0, segments: 0 }, available: true, failNext: true };
+    await away();
+    await end();
+    await waitFor(() => expect(state.folders[NEW]?.failNext).toBe(false));
+    await back();
+    const panel = await screen.findByTestId('sync-move');
+    expect(within(panel).getByRole('heading', { name: 'The folder was not changed' })).toBeVisible();
+    expect(within(panel).getByTestId('move-error')).toHaveTextContent("Could not write this device's file: the folder is read-only.");
+    expect(state.targets.map((t) => t.root)).toEqual([OLD]);
+    await user.click(within(panel).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByTestId('move-summary')).toBeVisible();
+  });
+
+  it('R12: a folder being chosen is still being chosen when Settings is opened again, and Cancel puts focus on a button that is on the page', async () => {
+    const { user } = await setup();
+    await user.click(await screen.findByRole('button', { name: /^Change folder C:/ }));
+    expect(screen.getByTestId('sync-move')).toBeVisible();
+    await user.click(screen.getByRole('tab', { name: 'Timeline' }));
+    await screen.findByRole('region', { name: 'Timeline' });
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    expect(await screen.findByRole('heading', { name: 'Choose the new sync folder' })).toBeVisible();
+    // The button that opened it went with the page it was on, so focus goes to the first button of the section as it is now.
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('sync-move')).toBeNull();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Change folder C:/ })).toHaveFocus());
   });
 });

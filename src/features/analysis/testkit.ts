@@ -105,6 +105,8 @@ export function mkSnapshot(spec: Spec): Snapshot {
     notices: [],
     warnings: [],
     sync: { targets: [], detected: [], promptPending: false, pendingCopy: null },
+    lease: { state: 'off', readOnly: false, holder: null, generation: null, note: null, reachableRoots: [], unreachableRoots: [] },
+    platform: { packaged: false },
     launch: { warm: true, coldRequired: ['name', 'project', 'description'], copySource: null },
     rawSegments: [],
     gaps: (spec.gaps ?? []).map(([taskId, start, end, decision], i): IdleGap => ({

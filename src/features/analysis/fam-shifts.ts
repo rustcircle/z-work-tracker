@@ -227,7 +227,7 @@ export function zonesOf(ctx: Ctx): ZonesView {
     totalSecs: cur.agg.total,
     overlapSecs: cur.overlap,
     overlapShare: ratio(cur.overlap, cur.agg.total),
-    workText: `${ctx.snapshot.settings.clientWorkStart ?? '09:00'}-${ctx.snapshot.settings.clientWorkEnd ?? '17:00'}, Monday to Friday`,
+    workText: `${ctx.snapshot.settings.clientWorkStart ?? '09:00'}-${ctx.snapshot.settings.clientWorkEnd ?? '17:00'}, every day`,
     gaps,
     gapNote: client ? gapText(Math.min(ctx.nowSec, cur.period.to - 1), zones.my, client) : null,
     markers,

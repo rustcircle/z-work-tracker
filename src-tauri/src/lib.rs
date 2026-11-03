@@ -1,13 +1,16 @@
-//! Tauri shell around `z-work-core`: commands, tray, heartbeat, sync thread and the real-exit path.
+//! Tauri shell around `z-work-core`: commands, tray, heartbeat, sync and lease threads and the real-exit path.
 //! Timers live in Rust threads, so they keep going while the window is hidden.
+
+mod startup_task;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use startup_task::{AutostartInfo, AutostartState};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -19,6 +22,11 @@ use z_work_core::adjust::{CorrectionInput, ManualEntryInput, PauseInput};
 use z_work_core::backup::BackupInfo;
 use z_work_core::catalog::{TagInput, TemplateInput};
 use z_work_core::detect::{RealEnv, detect, host_os};
+use z_work_core::epoch;
+use z_work_core::lease::LEASE_IO_LIMIT;
+use z_work_core::lease_io::{
+    self, TakeOverExpected, TakeOverMode, TakeOverPreview, TakeOverResult, TickOutcome,
+};
 use z_work_core::machine::{
     PatchOutcome, ProjectInput, RateInput, RoundingInput, ShiftInput, TaskExpected, TaskInput,
     TaskPatch,
@@ -36,11 +44,16 @@ use z_work_core::tray::{
     CloseDecision, ToggleRoute, TrayAction, TrayCache, TrayState, close_decision, toggle_route,
     tray_state,
 };
+use z_work_core::versions::{self, RestorePreview, VERSION_IO_LIMIT, VersionList};
 use z_work_core::view::Snapshot;
 use z_work_core::{CoreError, SystemClock, csv, xlsx};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const EXIT_SYNC_LIMIT: Duration = Duration::from_secs(5);
+/// How often the lease thread looks whether a pass is due: a read every minute, a beat every two minutes while holding.
+const LEASE_TICK: Duration = Duration::from_secs(15);
+/// The release written when quitting, out of `EXIT_SYNC_LIMIT`, so another computer can go ahead without a take over.
+const LEASE_RELEASE_LIMIT: Duration = Duration::from_millis(1500);
 const ACTIVITY_TICK: Duration = Duration::from_secs(5);
 const CHORES_TICK: Duration = Duration::from_secs(60);
 const QUIT_ARG: &str = "--quit";
@@ -74,6 +87,12 @@ enum SyncMsg {
     Stop,
 }
 
+enum LeaseMsg {
+    /// Something may have made a pass due, such as a change that needs the lease claimed: one runs if it is.
+    Wake,
+    Stop,
+}
+
 struct TrayHandles {
     icon: TrayIcon,
     status: MenuItem<tauri::Wry>,
@@ -87,6 +106,7 @@ struct TrayHandles {
 struct Core {
     service: Result<Arc<Mutex<Service>>, String>,
     sync: Mutex<Option<Sender<SyncMsg>>>,
+    lease: Mutex<Option<Sender<LeaseMsg>>>,
     tray: Mutex<Option<Arc<TrayHandles>>>,
     /// Wakes the tray thread. It alone writes the tray, so an older text can never overwrite a newer one.
     tray_wake: Mutex<Option<Sender<()>>>,
@@ -110,8 +130,18 @@ impl Core {
             .map_err(|e| CmdError::from(CoreError::StoreUnavailable(e.clone())))
     }
 
+    /// Also wakes the lease thread, unless stopping: a data change may need the lease claimed, which happens at once.
     fn tell_sync(&self, msg: SyncMsg) {
+        if !matches!(msg, SyncMsg::Stop) {
+            self.tell_lease(LeaseMsg::Wake);
+        }
         if let Some(tx) = guard(&self.sync).as_ref() {
+            let _ = tx.send(msg);
+        }
+    }
+
+    fn tell_lease(&self, msg: LeaseMsg) {
+        if let Some(tx) = guard(&self.lease).as_ref() {
             let _ = tx.send(msg);
         }
     }
@@ -239,11 +269,13 @@ fn apply_native_theme(app: &AppHandle, theme: Theme) {
     }
 }
 
-/// The one way the app really ends: close open segments, sync once within a limit, then exit.
+/// The one way the app really ends: close open segments, release the lease, sync once and write the version due,
+/// all within a limit, then exit.
 fn finish_exit(core: &Core) {
     if core.exit_done.swap(true, Ordering::SeqCst) {
         return;
     }
+    core.tell_lease(LeaseMsg::Stop);
     let Ok(svc) = core.service.as_ref() else {
         return;
     };
@@ -253,14 +285,27 @@ fn finish_exit(core: &Core) {
     core.tell_sync(SyncMsg::Stop);
     let svc = Arc::clone(svc);
     let lock = Arc::clone(&core.cycle_lock);
+    let deadline = Instant::now() + EXIT_SYNC_LIMIT;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        lease_io::release(&svc, &RealIo, LEASE_RELEASE_LIMIT);
         let _cycle = guard(&lock);
         run_cycle(&svc, &RealIo);
+        if let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            versions::run_at_quit(&svc, &RealIo, left);
+        }
         let _ = tx.send(());
     });
     // A stuck network drive must not hold the app open.
     let _ = rx.recv_timeout(EXIT_SYNC_LIMIT);
+}
+
+/// One sync, then the version that is due, if any, both under the cycle lock.
+fn sync_cycle(core: &Core, svc: &Mutex<Service>) -> bool {
+    let _cycle = guard(&core.cycle_lock);
+    let changed = run_cycle(svc, &RealIo);
+    versions::run_due(svc, &RealIo, VERSION_IO_LIMIT);
+    changed
 }
 
 fn request_quit(app: &AppHandle) {
@@ -527,6 +572,18 @@ fn set_rate(app: AppHandle, core: CoreState<'_>, input: RateInput) -> CmdResult<
 }
 
 #[tauri::command(async)]
+fn delete_rate_version(
+    app: AppHandle,
+    core: CoreState<'_>,
+    id: String,
+    confirm_retroactive: bool,
+) -> CmdResult<Snapshot> {
+    Ok(core
+        .change(&app, |s| s.delete_rate_version(&id, confirm_retroactive))?
+        .1)
+}
+
+#[tauri::command(async)]
 fn set_rounding(
     app: AppHandle,
     core: CoreState<'_>,
@@ -607,6 +664,8 @@ fn add_sync_target(
 
 #[tauri::command(async)]
 fn remove_sync_target(app: AppHandle, core: CoreState<'_>, root: String) -> CmdResult<Snapshot> {
+    // A lease held here is let go in that folder first, so a computer reading only that folder finds it free.
+    lease_io::release_one(&*core.svc()?, &RealIo, &root, LEASE_IO_LIMIT);
     Ok(core.change(&app, |s| s.remove_sync_target(&root))?.1)
 }
 
@@ -692,6 +751,13 @@ fn move_sync_target(
 ) -> CmdResult<MoveResult> {
     usable_folder(&to)?;
     let svc = core.svc()?;
+    // A folder connected already under another spelling is refused before any lease is let go.
+    guard(&svc).folder_gate(&to)?;
+    // The folder being replaced is left as `remove_sync_target` leaves one. If the move then fails, the lease comes back
+    // to it at a later pass.
+    if let Some(old) = from.as_deref().filter(|_| replacing) {
+        lease_io::release_one(&svc, &RealIo, old, LEASE_IO_LIMIT);
+    }
     let hung = guard(&svc).hung_targets();
     let target = SyncTarget {
         provider,
@@ -1159,14 +1225,158 @@ fn get_audit(core: CoreState<'_>, entity_id: Option<String>) -> CmdResult<Vec<Au
     Ok(guard(&*core.svc()?).audit_entries(entity_id.as_deref()))
 }
 
+/// "Sync now", and "Check again" on the read-only banner.
 #[tauri::command(async)]
 fn sync_now(app: AppHandle, core: CoreState<'_>) -> CmdResult<Snapshot> {
     let svc = core.svc()?;
-    let changed = {
+    // Who holds the lease first, read now whether due or not, so the answer says it. A timer closed because another
+    // computer holds it goes out with this sync.
+    let lease = lease_io::check_now(&svc, &RealIo, LEASE_IO_LIMIT);
+    let changed = sync_cycle(&core, &svc);
+    after_cycle(&app, &core, &svc, changed || lease.lost);
+    let snapshot = guard(&svc).snapshot();
+    Ok(snapshot)
+}
+
+/// Reads the lease folders afresh for the take over dialog.
+#[tauri::command(async)]
+fn lease_preview_take_over(app: AppHandle, core: CoreState<'_>) -> CmdResult<TakeOverPreview> {
+    let svc = core.svc()?;
+    let before = guard(&svc).revision();
+    let preview = lease_io::preview_take_over(&svc, &RealIo, LEASE_IO_LIMIT);
+    // The fresh read may have changed what the banner says.
+    if guard(&svc).revision() != before {
+        let _ = app.emit("state-changed", ());
+    }
+    Ok(preview)
+}
+
+#[tauri::command(async)]
+fn lease_take_over(
+    app: AppHandle,
+    core: CoreState<'_>,
+    expected: TakeOverExpected,
+    mode: TakeOverMode,
+) -> CmdResult<TakeOverResult> {
+    let result = lease_io::take_over(&*core.svc()?, &RealIo, expected, mode, LEASE_IO_LIMIT)?;
+    // At once, so the other computer sees the new holder and the closed segments before its owner goes on there.
+    core.tell_sync(SyncMsg::Now);
+    refresh_tray(&app, &core);
+    Ok(result)
+}
+
+/// "Release now".
+#[tauri::command(async)]
+fn lease_release(core: CoreState<'_>) -> CmdResult<Snapshot> {
+    let svc = core.svc()?;
+    lease_io::release_now(&svc, &RealIo, LEASE_IO_LIMIT)?;
+    let snapshot = guard(&svc).snapshot();
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn settle_lost_segment(
+    app: AppHandle,
+    core: CoreState<'_>,
+    segment_id: String,
+    reason: String,
+) -> CmdResult<Snapshot> {
+    Ok(core
+        .change(&app, |s| s.settle_lost_segment(&segment_id, &reason))?
+        .1)
+}
+
+/// `extra_root` also looks in a folder that is no longer connected.
+#[tauri::command(async)]
+fn list_versions(core: CoreState<'_>, extra_root: Option<String>) -> CmdResult<VersionList> {
+    Ok(versions::list(
+        &*core.svc()?,
+        &RealIo,
+        extra_root.as_deref(),
+        VERSION_IO_LIMIT,
+    ))
+}
+
+#[tauri::command(async)]
+fn read_version_changes(core: CoreState<'_>, root: String, name: String) -> CmdResult<String> {
+    Ok(versions::read_changes_within(
+        &*core.svc()?,
+        &RealIo,
+        &root,
+        &name,
+        VERSION_IO_LIMIT,
+    )?)
+}
+
+#[tauri::command(async)]
+fn save_version_now(core: CoreState<'_>) -> CmdResult<Snapshot> {
+    let svc = core.svc()?;
+    {
         let _cycle = guard(&core.cycle_lock);
-        run_cycle(&svc, &RealIo)
-    };
-    after_cycle(&app, &core, &svc, changed);
+        versions::save_now(&svc, &RealIo, VERSION_IO_LIMIT)?;
+    }
+    let snapshot = guard(&svc).snapshot();
+    Ok(snapshot)
+}
+
+#[tauri::command(async)]
+fn preview_restore_version(
+    core: CoreState<'_>,
+    root: String,
+    name: String,
+) -> CmdResult<RestorePreview> {
+    Ok(versions::preview_restore(
+        &*core.svc()?,
+        &RealIo,
+        &root,
+        &name,
+        VERSION_IO_LIMIT,
+    )?)
+}
+
+/// Restores a version on every computer that syncs with these folders.
+#[tauri::command(async)]
+fn restore_version(
+    app: AppHandle,
+    core: CoreState<'_>,
+    root: String,
+    name: String,
+) -> CmdResult<Snapshot> {
+    let svc = core.svc()?;
+    {
+        let _cycle = guard(&core.cycle_lock);
+        versions::restore(&svc, &RealIo, &root, &name, VERSION_IO_LIMIT)?;
+    }
+    // The other computers follow it from the next sync, so that is now. This wakes the lease thread too.
+    core.tell_sync(SyncMsg::Now);
+    refresh_tray(&app, &core);
+    let snapshot = guard(&svc).snapshot();
+    Ok(snapshot)
+}
+
+/// The answer for a folder whose data was restored while this computer has data from before that.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum JoinChoice {
+    Follow,
+    Keep,
+}
+
+#[tauri::command(async)]
+fn resolve_join(
+    app: AppHandle,
+    core: CoreState<'_>,
+    root: String,
+    choice: JoinChoice,
+) -> CmdResult<Snapshot> {
+    let svc = core.svc()?;
+    {
+        let _cycle = guard(&core.cycle_lock);
+        let follow = matches!(choice, JoinChoice::Follow);
+        epoch::resolve_join(&svc, &RealIo, &root, follow, TARGET_TIMEOUT)?;
+    }
+    core.tell_sync(SyncMsg::Now);
+    refresh_tray(&app, &core);
     let snapshot = guard(&svc).snapshot();
     Ok(snapshot)
 }
@@ -1228,13 +1438,98 @@ fn export_csv(
     save_via_dialog(&app, &name, "CSV file", "csv", text.as_bytes())
 }
 
+/// Whether this copy runs from the Microsoft Store package. Asked once, as it can't change while running.
+fn packaged() -> bool {
+    static PACKAGED: OnceLock<bool> = OnceLock::new();
+    *PACKAGED.get_or_init(|| z_work_session::package_full_name().is_some())
+}
+
+/// The AppUserModelID toasts must carry in the Store build. None in the installer build.
+#[cfg(windows)]
+fn packaged_aumid() -> Option<&'static str> {
+    static AUMID: OnceLock<Option<String>> = OnceLock::new();
+    AUMID
+        .get_or_init(|| {
+            packaged()
+                .then(z_work_session::application_user_model_id)
+                .flatten()
+        })
+        .as_deref()
+}
+
+/// Start with Windows as it stands: from Windows for the Store build, else from the autostart plugin.
+fn autostart_state(app: &AppHandle) -> AutostartState {
+    #[cfg(windows)]
+    if packaged() {
+        return startup_task::state();
+    }
+    if app.autolaunch().is_enabled().unwrap_or(false) {
+        AutostartState::On
+    } else {
+        AutostartState::Off
+    }
+}
+
 #[tauri::command(async)]
 fn get_autostart(app: AppHandle) -> bool {
-    app.autolaunch().is_enabled().unwrap_or(false)
+    autostart_state(&app).is_on()
+}
+
+#[tauri::command(async)]
+fn get_autostart_info(app: AppHandle) -> AutostartInfo {
+    AutostartInfo::of(packaged(), autostart_state(&app))
+}
+
+/// Windows' own list of startup apps, where only the user can turn back on what they turned off.
+#[tauri::command(async)]
+fn open_startup_settings() -> CmdResult<()> {
+    open_startup_page()
+}
+
+#[cfg(windows)]
+fn open_startup_page() -> CmdResult<()> {
+    open_in_shell("ms-settings:startupapps").map_err(|e| CmdError {
+        code: "io",
+        message: format!("could not open Startup settings: {e}"),
+    })
+}
+
+#[cfg(not(windows))]
+fn open_startup_page() -> CmdResult<()> {
+    Err(CmdError {
+        code: "unsupported",
+        message: "Startup settings are a Windows page.".to_owned(),
+    })
+}
+
+/// Hands a URL or a Settings page to Windows, as a click on a link would.
+#[cfg(windows)]
+fn open_in_shell(target: &str) -> std::io::Result<()> {
+    let mut child = std::process::Command::new("explorer.exe")
+        .arg(target)
+        .spawn()?;
+    // Explorer passes it on and ends; nothing here needs its answer.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[tauri::command(async)]
 fn set_autostart(app: AppHandle, enabled: bool) -> CmdResult<bool> {
+    // The Store build's Run entry would be private to it, so it asks Windows, which can refuse.
+    #[cfg(windows)]
+    if packaged() {
+        let state = if enabled {
+            startup_task::request_enable()
+        } else {
+            startup_task::disable()
+        };
+        return startup_task::outcome(enabled, state).map_err(|why| CmdError {
+            code: "autostart",
+            message: why.to_owned(),
+        });
+    }
     let manager = app.autolaunch();
     let result = if enabled {
         manager.enable()
@@ -1350,8 +1645,15 @@ fn tray_toggle(app: &AppHandle) {
         }
         ToggleRoute::Nothing => return,
     };
-    if let Err(e) = result {
-        eprintln!("tray action failed: {e}");
+    match result {
+        // Nothing changed. The window's banner says who holds the lease and offers the way out.
+        Err(e @ CoreError::ReadOnly { .. }) => {
+            notify(app, &e.to_string());
+            show_main(app);
+            return;
+        }
+        Err(e) => eprintln!("tray action failed: {e}"),
+        Ok(()) => {}
     }
     core.tell_sync(SyncMsg::Changed);
     refresh_tray(app, &core);
@@ -1440,19 +1742,26 @@ fn observe_activity(app: &AppHandle, core: &Core, idle: Option<u64>, locked: Opt
     }
 }
 
-/// Budget alerts, the forgotten-timer reminder and today's backup.
+/// Budget alerts, the forgotten-timer reminder, today's backup, and a change of the computer's time zone.
 fn run_chores(app: &AppHandle, core: &Core) {
     let Ok(svc) = core.service.as_ref() else {
         return;
     };
-    let alerts = {
+    let reported_zone = iana_time_zone::get_timezone().ok();
+    let (zone_changed, backed_up, alerts) = {
         let mut s = guard(svc);
-        if let Err(e) = s.run_daily_backup() {
+        let zone_changed = s.observe_system_zone(reported_zone);
+        let backed_up = s.run_daily_backup().unwrap_or_else(|e| {
             eprintln!("daily backup failed: {e}");
-        }
-        s.take_alerts()
+            false
+        });
+        (zone_changed, backed_up, s.take_alerts())
     };
-    if !alerts.is_empty() {
+    if zone_changed {
+        refresh_tray(app, core);
+    }
+    // A new backup is in no snapshot, but the list in Settings reads again when one arrives.
+    if zone_changed || backed_up || !alerts.is_empty() {
         let _ = app.emit("state-changed", ());
     }
     for text in alerts {
@@ -1483,7 +1792,33 @@ fn after_cycle(app: &AppHandle, core: &Core, svc: &Mutex<Service>, changed: bool
     }
 }
 
+/// What a lease pass owes the page and the user, whoever ran it.
+fn after_lease(app: &AppHandle, core: &Core, svc: &Mutex<Service>, outcome: TickOutcome) {
+    if outcome.lost {
+        // Another computer holds the lease now and a timer here may have closed: told as after a sync, and the
+        // closed timer goes out with the next one.
+        after_cycle(app, core, svc, true);
+        core.tell_sync(SyncMsg::Changed);
+    }
+    if outcome.changed || outcome.lost {
+        let _ = app.emit("state-changed", ());
+    }
+}
+
 fn notify(app: &AppHandle, text: &str) {
+    // In the Store build Windows knows the app by its package's AppUserModelID, which the notification plugin doesn't
+    // pass, and the plugin drops the answer, so a failure there would be silent.
+    #[cfg(windows)]
+    if let Some(aumid) = packaged_aumid() {
+        match tauri_winrt_notification::Toast::new(aumid)
+            .title("zWorkTracker")
+            .text1(text)
+            .show()
+        {
+            Ok(()) => return,
+            Err(e) => eprintln!("toast failed, trying the plugin: {e}"),
+        }
+    }
     if let Err(e) = app
         .notification()
         .builder()
@@ -1562,15 +1897,39 @@ fn spawn_sync(app: AppHandle, core: Arc<Core>, svc: Arc<Mutex<Service>>) {
             if !schedule.is_due(clock()) {
                 continue;
             }
-            let changed = {
-                let _cycle = guard(&core.cycle_lock);
-                run_cycle(&svc, &RealIo)
-            };
+            let changed = sync_cycle(&core, &svc);
             let failed = guard(&svc).any_target_failed();
             schedule.cycle_done(clock(), failed);
             after_cycle(&app, &core, &svc, changed);
             // Status also changes without data changing, so the UI always hears about it.
             let _ = app.emit("state-changed", ());
+        }
+    });
+}
+
+/// Who may change the data: a pass over the lease folders whenever one is due, looked at every `LEASE_TICK` and
+/// whenever data changes. Each folder's I/O has its own time limit, and the service lock is never held across it.
+fn spawn_lease(app: AppHandle, core: Arc<Core>, svc: Arc<Mutex<Service>>) {
+    let (tx, rx) = mpsc::channel();
+    *guard(&core.lease) = Some(tx);
+    std::thread::spawn(move || {
+        loop {
+            if core.exit_done.load(Ordering::SeqCst) {
+                return;
+            }
+            // The first look after opening is due at once.
+            let outcome = lease_io::run_tick(&svc, &RealIo, LEASE_IO_LIMIT);
+            after_lease(&app, &core, &svc, outcome);
+            match rx.recv_timeout(LEASE_TICK) {
+                Ok(LeaseMsg::Wake) | Err(RecvTimeoutError::Timeout) => {}
+                Ok(LeaseMsg::Stop) | Err(RecvTimeoutError::Disconnected) => return,
+            }
+            // Wakes that piled up are one pass.
+            while let Ok(msg) = rx.try_recv() {
+                if matches!(msg, LeaseMsg::Stop) {
+                    return;
+                }
+            }
         }
     });
 }
@@ -1591,32 +1950,81 @@ fn device_name() -> String {
         .unwrap_or_else(|| "This PC".to_owned())
 }
 
-/// A clear message instead of a blank window when the one system dependency is missing.
+/// A clear message instead of a blank window when the one system dependency is missing. `quiet` for the installer's
+/// `--quit`, which has nothing to ask to quit then: a running copy would have needed the runtime.
 #[cfg(windows)]
-fn webview_available() -> bool {
-    if tauri::webview_version().is_ok() {
+fn webview_available(quiet: bool) -> bool {
+    use z_work_core::webview::{WebviewCheck, decide, missing_text};
+    let found = tauri::webview_version().map_err(|e| e.to_string());
+    if decide(found.as_deref().map_err(String::as_str)) == WebviewCheck::Ready {
         return true;
     }
-    rfd::MessageDialog::new()
-        .set_title("zWorkTracker")
-        .set_level(rfd::MessageLevel::Error)
-        .set_description(
-            "Microsoft Edge WebView2 Runtime was not found or is disabled. It normally comes with Windows 11.\n\n\
-             Run Windows Update or reinstall the WebView2 Runtime from Microsoft, then open zWorkTracker again. Your data is safe.",
-        )
-        .show();
+    if !quiet {
+        show_start_problem(&missing_text(), true);
+    }
     false
 }
 
 #[cfg(not(windows))]
-fn webview_available() -> bool {
+const fn webview_available(_quiet: bool) -> bool {
     true
+}
+
+/// A native message, as there is no window to show one in, offering the runtime's download page when that is the cure.
+#[cfg(windows)]
+fn show_start_problem(text: &str, offer_download: bool) {
+    use z_work_core::webview::{CLOSE, DOWNLOAD_URL, OPEN_DOWNLOAD};
+    let dialog = rfd::MessageDialog::new()
+        .set_title("zWorkTracker")
+        .set_level(rfd::MessageLevel::Error)
+        .set_description(text);
+    if !offer_download {
+        let _ = dialog.show();
+        return;
+    }
+    let choice = dialog
+        .set_buttons(rfd::MessageButtons::OkCancelCustom(
+            OPEN_DOWNLOAD.to_owned(),
+            CLOSE.to_owned(),
+        ))
+        .show();
+    if choice == rfd::MessageDialogResult::Custom(OPEN_DOWNLOAD.to_owned())
+        && let Err(e) = open_in_shell(DOWNLOAD_URL)
+    {
+        eprintln!("could not open the download page: {e}");
+    }
+}
+
+/// Tauri ends a start it can't finish, such as a webview that can't be created, with a panic, and a release build has
+/// no console to show it in. This says it in a message too, once.
+#[cfg(windows)]
+fn report_startup_panics() {
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or_default();
+        if let Some(failure) = z_work_core::webview::startup_failure(message)
+            && !REPORTED.swap(true, Ordering::SeqCst)
+        {
+            show_start_problem(&failure.text, failure.offer_download);
+        }
+    }));
 }
 
 pub fn run() {
     let quit_only = std::env::args().any(|a| a == QUIT_ARG);
-    if !webview_available() {
+    if !webview_available(quit_only) {
         return;
+    }
+    #[cfg(windows)]
+    if !quit_only {
+        report_startup_panics();
     }
 
     let builder = tauri::Builder::default()
@@ -1642,7 +2050,7 @@ pub fn run() {
             }
             let handle = app.handle().clone();
             let dir = data_dir(&handle)?;
-            let service = Service::open(&dir, Arc::new(SystemClock), &device_name())
+            let service = Service::open_when_free(&dir, Arc::new(SystemClock), &device_name())
                 .map_err(|e| e.to_string());
             let core = Arc::new(Core {
                 service: service.map(|mut s| {
@@ -1651,9 +2059,11 @@ pub fn run() {
                     );
                     s.set_detected(detect(&RealEnv, host_os()));
                     s.set_mica_available(mica_available());
+                    s.set_packaged(packaged());
                     Arc::new(Mutex::new(s))
                 }),
                 sync: Mutex::new(None),
+                lease: Mutex::new(None),
                 tray: Mutex::new(None),
                 tray_wake: Mutex::new(None),
                 quitting: AtomicBool::new(false),
@@ -1666,6 +2076,7 @@ pub fn run() {
             spawn_ticker(handle.clone(), Arc::clone(&core));
             if let Ok(svc) = &core.service {
                 spawn_sync(handle.clone(), Arc::clone(&core), Arc::clone(svc));
+                spawn_lease(handle.clone(), Arc::clone(&core), Arc::clone(svc));
                 let theme = guard(svc).file().prefs.theme;
                 apply_native_theme(&handle, theme);
                 let mica = guard(svc).file().prefs.mica && mica_available();
@@ -1726,82 +2137,7 @@ pub fn run() {
         save_shift,
         delete_shift,
         set_rate,
-        set_rounding,
-        delete_rounding,
-        set_setting,
-        set_theme,
-        set_hide_earnings,
-        mark_client_zone_prompt_done,
-        mark_sync_prompt_done,
-        dismiss_notice,
-        add_sync_target,
-        remove_sync_target,
-        pick_sync_folder,
-        preview_sync_folder,
-        preview_sync_move,
-        move_sync_target,
-        revert_shift_version,
-        request_remote_pause,
-        stash_draft,
-        clear_draft,
-        keep_unsaved_words,
-        set_setup_step,
-        finish_setup,
-        set_mica,
-        window_ready,
-        add_manual_entry,
-        correct_segment,
-        void_segment,
-        restore_segment,
-        decide_gap,
-        mark_billable_pause,
-        unmark_billable_pause,
-        set_active_subtask,
-        save_tag,
-        delete_tag,
-        save_template,
-        delete_template,
-        task_from_template,
-        summary_preview,
-        create_summary,
-        void_summary,
-        set_device_prefix,
-        export_summary_csv,
-        export_pdf,
-        pick_pdf_logo,
-        clear_pdf_logo,
-        list_backups,
-        restore_backup,
-        set_backup_keep,
-        snooze_reminder,
-        get_audit,
-        sync_now,
-        export_xlsx,
-        export_csv,
-        get_autostart,
-        set_autostart,
-        ack_hide_notice,
-        quit_app
-    ]);
-    #[cfg(feature = "smoke")]
-    let builder = builder.invoke_handler(tauri::generate_handler![
-        get_snapshot,
-        create_project,
-        update_project,
-        set_project_archived,
-        delete_project,
-        create_task,
-        update_task,
-        patch_task,
-        delete_draft,
-        delete_task,
-        start_task,
-        resume_task,
-        pause_task,
-        stop_task,
-        save_shift,
-        delete_shift,
-        set_rate,
+        delete_rate_version,
         set_rounding,
         delete_rounding,
         set_setting,
@@ -1858,6 +2194,107 @@ pub fn run() {
         set_autostart,
         ack_hide_notice,
         quit_app,
+        lease_preview_take_over,
+        lease_take_over,
+        lease_release,
+        settle_lost_segment,
+        list_versions,
+        read_version_changes,
+        save_version_now,
+        preview_restore_version,
+        restore_version,
+        resolve_join,
+        get_autostart_info,
+        open_startup_settings
+    ]);
+    #[cfg(feature = "smoke")]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        get_snapshot,
+        create_project,
+        update_project,
+        set_project_archived,
+        delete_project,
+        create_task,
+        update_task,
+        patch_task,
+        delete_draft,
+        delete_task,
+        start_task,
+        resume_task,
+        pause_task,
+        stop_task,
+        save_shift,
+        delete_shift,
+        set_rate,
+        delete_rate_version,
+        set_rounding,
+        delete_rounding,
+        set_setting,
+        set_theme,
+        set_hide_earnings,
+        mark_client_zone_prompt_done,
+        mark_sync_prompt_done,
+        dismiss_notice,
+        add_sync_target,
+        remove_sync_target,
+        pick_sync_folder,
+        preview_sync_folder,
+        preview_sync_move,
+        move_sync_target,
+        revert_shift_version,
+        request_remote_pause,
+        stash_draft,
+        clear_draft,
+        keep_unsaved_words,
+        set_setup_step,
+        finish_setup,
+        set_mica,
+        window_ready,
+        add_manual_entry,
+        correct_segment,
+        void_segment,
+        restore_segment,
+        decide_gap,
+        mark_billable_pause,
+        unmark_billable_pause,
+        set_active_subtask,
+        save_tag,
+        delete_tag,
+        save_template,
+        delete_template,
+        task_from_template,
+        summary_preview,
+        create_summary,
+        void_summary,
+        set_device_prefix,
+        export_summary_csv,
+        export_pdf,
+        pick_pdf_logo,
+        clear_pdf_logo,
+        list_backups,
+        restore_backup,
+        set_backup_keep,
+        snooze_reminder,
+        get_audit,
+        sync_now,
+        export_xlsx,
+        export_csv,
+        get_autostart,
+        set_autostart,
+        ack_hide_notice,
+        quit_app,
+        lease_preview_take_over,
+        lease_take_over,
+        lease_release,
+        settle_lost_segment,
+        list_versions,
+        read_version_changes,
+        save_version_now,
+        preview_restore_version,
+        restore_version,
+        resolve_join,
+        get_autostart_info,
+        open_startup_settings,
         smoke::smoke_report,
         smoke::smoke_close_window,
         smoke::smoke_window_visible,
@@ -1871,6 +2308,11 @@ pub fn run() {
         Ok(app) => app,
         Err(e) => {
             eprintln!("could not start zWorkTracker: {e}");
+            #[cfg(windows)]
+            if !quit_only {
+                let failure = z_work_core::webview::build_failure(&e.to_string());
+                show_start_problem(&failure.text, failure.offer_download);
+            }
             std::process::exit(1);
         }
     };

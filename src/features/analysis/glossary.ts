@@ -102,7 +102,7 @@ export const GLOSSARY: readonly GlossaryEntry[] = [
   g('shifts.byProject', 'Shift time by project', 'Shifts', 'Exact', 'Logged time inside each shift, split by project.', 'worked in the shift\'s windows per project'),
 
   g('zones.bands', 'Hours by band in two zones', 'Zones', 'Exact', 'The same logged time bucketed by band in My zone and in the client zone, side by side.', 'band time in each zone'),
-  g('zones.overlap', 'Client working hours overlap', 'Zones', 'Exact', 'Logged time that falls inside the client\'s working hours (Settings, default 09:00-17:00) on Monday to Friday in the client\'s zone.', 'time inside client work hours / total'),
+  g('zones.overlap', 'Client working hours overlap', 'Zones', 'Exact', 'Logged time that falls inside the client\'s working hours (Settings, default 09:00-17:00) in the client\'s zone. Every day counts, weekends included, and hours that end before they start, such as 22:00-06:00, run overnight.', 'time inside client work hours / total'),
   g('zones.gap', 'Time gap between zones', 'Zones', 'Neither', 'The gap changes in weeks when the two zones switch daylight saving on different dates. Each stretch with a constant gap is listed.', 'offset(client) - offset(my zone)'),
   g('zones.markers', 'Clock changes', 'Zones', 'Neither', 'Dates in the period when a zone\'s clocks change. Zones without a change show none.', 'offset changes in the period'),
 

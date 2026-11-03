@@ -2,6 +2,7 @@
 import { useState, type FormEvent } from 'react';
 
 import { useApp } from '../../../app/store';
+import { useReadOnly } from '../../../app/useReadOnly';
 import { formatDuration } from '../../../components/format';
 import { Button, Field } from '../../../components/ui';
 import { api } from '../../../lib/api';
@@ -16,6 +17,7 @@ type Problem = { kind: 'overlap' | 'error'; message: string };
 
 export function AddTimeForm({ task }: { task: Task }) {
   const { zones, nowSec, adopt } = useApp();
+  const ro = useReadOnly();
   const zone = zones.active;
   const [start, setStart] = useState(() => fieldFromInstant(nowSec - 1800, zone));
   const [end, setEnd] = useState(() => fieldFromInstant(nowSec, zone));
@@ -32,6 +34,8 @@ export function AddTimeForm({ task }: { task: Task }) {
   };
 
   const submit = async (allowOverlap: boolean) => {
+    // What is typed stays for after a take over; nothing is sent meanwhile.
+    if (ro.readOnly) return;
     const s = wallToInstant(start, zone, 'Start');
     const e = wallToInstant(end, zone, 'End');
     const errors = { start: s.ok ? undefined : s.message, end: e.ok ? undefined : e.message, reason: reason.trim() === '' ? REASON_NEEDED : undefined };
@@ -110,7 +114,7 @@ export function AddTimeForm({ task }: { task: Task }) {
           <div className="details-warning" role="alert">
             <p>{problem.message}</p>
             <p>Add anyway keeps both entries, and both count.</p>
-            <Button small disabled={busy} onClick={() => void submit(true)}>
+            <Button small disabled={busy || ro.readOnly} title={ro.why ?? undefined} onClick={() => void submit(true)}>
               Add anyway
             </Button>
           </div>
@@ -122,8 +126,13 @@ export function AddTimeForm({ task }: { task: Task }) {
         )}
         {done && <p className="details-success">{done}</p>}
       </div>
+      {ro.readOnly && (
+        <p className="details-note" role="status">
+          {ro.why}
+        </p>
+      )}
       <div className="form-actions">
-        <Button type="submit" variant="primary" disabled={busy}>
+        <Button type="submit" variant="primary" disabled={busy || ro.readOnly} title={ro.why ?? undefined}>
           Add time
         </Button>
       </div>

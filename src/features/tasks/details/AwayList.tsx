@@ -2,6 +2,7 @@
 import { useId, useState } from 'react';
 
 import { useAppState } from '../../../app/store';
+import { useReadOnly } from '../../../app/useReadOnly';
 import { formatDuration } from '../../../components/format';
 import { Badge, Button } from '../../../components/ui';
 import { api } from '../../../lib/api';
@@ -27,6 +28,7 @@ const STATE: Record<GapDecision, { text: string; tone: 'warning' | 'success' | '
 
 export function AwayList({ task }: { task: Task }) {
   const { snapshot, zones } = useAppState();
+  const ro = useReadOnly();
   const zone = zones.active;
   const gaps = snapshot.gaps.filter((g) => g.taskId === task.id).sort((a, b) => (a.start < b.start ? 1 : a.start > b.start ? -1 : 0));
   const billedSegments = new Set(snapshot.rawSegments.filter((s) => s.billed).map((s) => s.id));
@@ -42,6 +44,11 @@ export function AwayList({ task }: { task: Task }) {
         </div>
       )}
       <p className="muted details-lead">Decide what time away means. You can change a decision later; the change is written to the history.</p>
+      {ro.readOnly && (
+        <p className="details-note" role="status">
+          {ro.why}
+        </p>
+      )}
       <div aria-live="polite" className="details-live">
         {notice && <p className="details-success">{notice}</p>}
       </div>
@@ -59,6 +66,7 @@ export function AwayList({ task }: { task: Task }) {
 
 function AwayItem({ gap, zone, billed, onNotice }: { gap: IdleGap; zone: string; billed: boolean; onNotice: (t: string | null) => void }) {
   const { adopt } = useAppState();
+  const ro = useReadOnly();
   const textId = useId();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -92,7 +100,7 @@ function AwayItem({ gap, zone, billed, onNotice }: { gap: IdleGap; zone: string;
       ) : (
         <div className="inline-actions" role="group" aria-label={`Decision for ${timesText(span, zone)}`}>
           {CHOICES.map((c) => (
-            <Button key={c.decision} small variant={gap.decision === c.decision ? 'primary' : 'secondary'} disabled={busy || gap.decision === c.decision} aria-describedby={textId} title={c.effect} onClick={() => void decide(c.decision, c.done)}>
+            <Button key={c.decision} small variant={gap.decision === c.decision ? 'primary' : 'secondary'} disabled={busy || gap.decision === c.decision || ro.readOnly} aria-describedby={textId} title={ro.readOnly ? (ro.why ?? undefined) : c.effect} onClick={() => void decide(c.decision, c.done)}>
               {c.label}
             </Button>
           ))}

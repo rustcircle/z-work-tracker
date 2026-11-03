@@ -5,7 +5,8 @@ import { onRadioKeyDown } from '../../components/ui';
 import { BANDS } from '../../lib/split';
 import { OUTSIDE, NO_FILTERS, type Filters } from './engine';
 import type { Basis } from './mctx';
-import { MAX_CUSTOM_DAYS, defaultRange, shiftRange, spanDays, type RangeKind, type RangeSpec } from './range';
+import { DayInput } from './DayInput';
+import { MAX_CUSTOM_DAYS, defaultRange, shiftRange, spanDays, withCustomEnd, type RangeKind, type RangeSpec } from './range';
 import { groupVersions } from '../../lib/shifts';
 import type { Snapshot } from '../../lib/types';
 
@@ -92,11 +93,11 @@ export function Controls(p: ControlsProps) {
           <div className="a-row">
             <label className="a-field a-inline">
               <span>From</span>
-              <input type="date" value={span.fromDay} max={span.toDay} onChange={(e) => e.target.value && p.setRange({ kind: 'custom', anchor: e.target.value, from: e.target.value, to: span.toDay })} />
+              <DayInput value={span.fromDay} max={span.toDay} onDay={(day) => p.setRange(withCustomEnd(range, 'from', day))} />
             </label>
             <label className="a-field a-inline">
               <span>To</span>
-              <input type="date" value={span.toDay} min={span.fromDay} onChange={(e) => e.target.value && p.setRange({ kind: 'custom', anchor: span.fromDay, from: span.fromDay, to: e.target.value })} />
+              <DayInput value={span.toDay} min={span.fromDay} onDay={(day) => p.setRange(withCustomEnd(range, 'to', day))} />
             </label>
             <span className="muted">Up to {MAX_CUSTOM_DAYS} days</span>
           </div>

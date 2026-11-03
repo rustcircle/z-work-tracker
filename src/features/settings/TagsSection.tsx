@@ -2,6 +2,7 @@
 import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from 'react';
 
 import { useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { normalizeHex, suggestColor } from '../../lib/color';
 import { errorCode, errorMessage } from '../../lib/errorMessage';
@@ -9,10 +10,12 @@ import { rememberColor } from '../../lib/recentColors';
 import type { Tag } from '../../lib/types';
 import { ColorPicker } from '../../components/ColorPicker';
 import { useColorNotices } from '../../components/colorNotice';
+import { useDirtyGuard } from '../../components/dirtyGuard';
 import { useOptionalNav } from '../../components/nav';
 import { IconEdit, IconPlus, IconTrash } from '../../components/icons';
 import { Button, ConfirmDialog, Field, ProjectChip } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
+import { ReadOnlyNote } from './ReadOnlyNote';
 import './catalog.css';
 
 export const MAX_TAG_NAME = 40;
@@ -28,11 +31,15 @@ export function validateTagName(name: string, tags: readonly Tag[], exceptId: st
 
 function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string | null) => void }) {
   const { snapshot, adopt } = useAppState();
+  const { readOnly } = useReadOnly();
   const notices = useColorNotices();
   const colorRef = useRef<HTMLDivElement | null>(null);
   const nav = useOptionalNav();
   const [name, setName] = useState(tag?.name ?? '');
   const [color, setColor] = useState(tag?.color ?? suggestColor(snapshot.tags.map((t) => t.color)));
+  // What the editor opened with: leaving the tab asks first only if something differs from it.
+  const [opened] = useState({ name, color: normalizeHex(color) ?? color });
+  useDirtyGuard(name !== opened.name || (normalizeHex(color) ?? color) !== opened.color);
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null);
@@ -60,7 +67,7 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
     setTouched(true);
-    if (nameError) return;
+    if (nameError || readOnly) return;
     const hex = normalizeHex(color) ?? color;
     setBusy(true);
     try {
@@ -119,7 +126,7 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
         </p>
       )}
       <div className="form-actions">
-        <Button variant="primary" type="submit" disabled={busy}>
+        <Button variant="primary" type="submit" disabled={busy || readOnly}>
           {tag ? 'Save tag' : 'Add tag'}
         </Button>
         <Button variant="ghost" onClick={() => onDone(null)}>
@@ -133,6 +140,7 @@ function TagEditor({ tag, onDone }: { tag: Tag | null; onDone: (savedId: string 
 export function TagsSection() {
   const { snapshot } = useAppState();
   const { act } = useCommands();
+  const { readOnly } = useReadOnly();
   const nav = useOptionalNav();
   // "New tag" next to a tag picker opens this section with the Add tag form already open; "Choose again" opens one tag.
   const [editing, setEditing] = useState<string | 'new' | null>(() => (nav?.tagIntent && nav.tagIntent.createdId === null ? 'new' : nav?.colorTarget?.kind === 'tag' ? nav.colorTarget.id : null));
@@ -157,6 +165,7 @@ export function TagsSection() {
 
   return (
     <div className="settings-stack">
+      <ReadOnlyNote />
       <p className="muted">
         Tags label what kind of work a task is. A task can have several, and a task with two tags counts fully in each. While at least one tag exists, a task needs a tag before its first start after launch.
       </p>
@@ -174,10 +183,10 @@ export function TagsSection() {
                   {uses(t.id)} {uses(t.id) === 1 ? 'task' : 'tasks'}
                 </span>
                 <span className="tag-actions">
-                  <Button small id={`tag-edit-${t.id}`} icon={<IconEdit />} onClick={() => setEditing(t.id)}>
+                  <Button small id={`tag-edit-${t.id}`} icon={<IconEdit />} disabled={readOnly} onClick={() => setEditing(t.id)}>
                     Edit <span className="visually-hidden">tag {t.name}</span>
                   </Button>
-                  <Button small variant="danger" icon={<IconTrash />} onClick={() => setDeleting(t)}>
+                  <Button small variant="danger" icon={<IconTrash />} disabled={readOnly} onClick={() => setDeleting(t)}>
                     Delete <span className="visually-hidden">tag {t.name}</span>
                   </Button>
                 </span>
@@ -200,7 +209,7 @@ export function TagsSection() {
         />
       ) : (
         <div>
-          <Button id="tag-add" icon={<IconPlus />} onClick={() => setEditing('new')}>
+          <Button id="tag-add" icon={<IconPlus />} disabled={readOnly} onClick={() => setEditing('new')}>
             Add tag
           </Button>
         </div>

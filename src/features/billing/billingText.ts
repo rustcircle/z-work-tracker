@@ -1,7 +1,7 @@
 // Wording and plain-text forms of billing summaries. Pure, so the tab and its tests share one source.
 // A summary is for the user's own guidance: never an invoice, never a tax document, and it has no tax,
 // sent or paid status.
-import { MASK, money } from '../../lib/billing';
+import { MASK, ROUNDED_ROWS_NOTE, money, rowsDifferFromTotal } from '../../lib/billing';
 import type { Currency, Project, SummaryRow } from '../../lib/types';
 import { dayLabel, formatDuration } from '../../components/format';
 
@@ -93,6 +93,7 @@ export function summaryText(i: SummaryTextInput): string {
   const amount = showMoney ? centsText(i.totals, false) : '';
   if (amount) total.push(amount);
   lines.push(total.join(' | '));
+  if (showMoney && rowsDifferFromTotal(i.rows.map((r) => r.cents), i.totals)) lines.push(ROUNDED_ROWS_NOTE);
   if (i.noAmount === 'fixedFee') lines.push(`${FIXED_FEE_TEXT}.${i.fee && !i.hide ? ` Fee: ${i.fee}.` : ''}`);
   if (i.noAmount === 'notBillable') lines.push('Not a billable project: no amount.');
   if (i.hide && i.noAmount === null) lines.push('Amounts are left out because Hide earnings is on.');

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 
 import { useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { dayOf, parseIso } from '../../lib/tz';
 import { resetSubtasks } from '../../lib/subtasks';
@@ -26,6 +27,9 @@ const liveIds = (ids: readonly string[], tags: readonly Tag[]): string[] => tags
 export function TaskForm({ continueFrom, onDone }: { continueFrom?: Task; onDone: () => void }) {
   const { snapshot, zones } = useAppState();
   const { act, transition } = useCommands();
+  // Another computer holding the lease refuses a save, so the buttons that save say so. What is typed stays, for after a take over.
+  const ro = useReadOnly();
+  const readOnlyId = useId();
   const launch = snapshot.launch;
   const source = continueFrom ? null : launch.warm ? launch.copySource : null;
 
@@ -85,6 +89,7 @@ export function TaskForm({ continueFrom, onDone }: { continueFrom?: Task; onDone
   }
 
   async function save(startAfter: boolean): Promise<void> {
+    if (ro.readOnly) return;
     setTouched(true);
     if (startAfter ? !errors.ok : !errors.draftOk) {
       focusFirstInvalid(errors);
@@ -225,10 +230,15 @@ export function TaskForm({ continueFrom, onDone }: { continueFrom?: Task; onDone
           To start, enter {missingText(errors)}.
         </p>
       )}
+      {ro.readOnly && (
+        <p className="validation-note" id={readOnlyId} role="status">
+          {ro.why}
+        </p>
+      )}
       <div className="form-actions">
         {continueFrom ? (
           <>
-            <Button variant="primary" type="submit" icon={<IconPlay />} disabled={!errors.ok || busy}>
+            <Button variant="primary" type="submit" icon={<IconPlay />} disabled={!errors.ok || busy || ro.readOnly} title={ro.why ?? undefined} aria-describedby={ro.readOnly ? readOnlyId : undefined}>
               Start
             </Button>
             <Button variant="ghost" onClick={() => void cancel()}>
@@ -237,10 +247,17 @@ export function TaskForm({ continueFrom, onDone }: { continueFrom?: Task; onDone
           </>
         ) : (
           <>
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || ro.readOnly} title={ro.why ?? undefined} aria-describedby={ro.readOnly ? readOnlyId : undefined}>
               Save draft
             </Button>
-            <Button variant="primary" icon={<IconPlay />} disabled={!errors.ok || busy} aria-describedby={!errors.ok ? 'start-needs' : undefined} onClick={() => void save(true)}>
+            <Button
+              variant="primary"
+              icon={<IconPlay />}
+              disabled={!errors.ok || busy || ro.readOnly}
+              title={ro.why ?? undefined}
+              aria-describedby={ro.readOnly ? readOnlyId : !errors.ok ? 'start-needs' : undefined}
+              onClick={() => void save(true)}
+            >
               Start
             </Button>
             <Button variant="ghost" onClick={() => void cancel()}>

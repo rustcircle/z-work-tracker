@@ -47,8 +47,71 @@ fn lww_tombstone<'a, T: Serialize>(
     }
 }
 
+/// Each group of fields merges by its own clock, so a rename on one device and a fee on another both survive.
+/// A tombstone outranks everything, so a deleted project never comes back.
+///
+/// A copy from a build without these clocks says that all its fields were written at its whole stamp, which is
+/// what that build means by it. Nothing can tell a stale field on such a copy from an edit, so each one wins over
+/// a group clock older than that stamp: a rename made there can carry a stale fee along and wipe the fee set
+/// elsewhere before it, and take the rename along too, where a whole-record merge would lose one or the other
+/// whole. A copy it merely passes on holds the same values, so only clocks rise, once. Every copy ends up the same.
 fn merge_project(a: &Project, b: &Project) -> Project {
-    lww_tombstone(a, a.deleted, &a.stamp, b, b.deleted, &b.stamp).clone()
+    let identity = |p: &Project| (p.name.clone(), p.color.clone(), p.client_zone.clone());
+    let billing = |p: &Project| {
+        (
+            p.billable,
+            p.billing_type,
+            p.fixed_fee_cents,
+            p.fee_currency.clone(),
+        )
+    };
+    let ((name, color, client_zone), identity_stamp) = field(
+        &identity(a),
+        a.identity_clock(),
+        &identity(b),
+        b.identity_clock(),
+    );
+    let ((billable, billing_type, fixed_fee_cents, fee_currency), billing_stamp) = field(
+        &billing(a),
+        a.billing_clock(),
+        &billing(b),
+        b.billing_clock(),
+    );
+    let (budget_hours, budget_stamp) = field(
+        &a.budget_hours,
+        a.budget_clock(),
+        &b.budget_hours,
+        b.budget_clock(),
+    );
+    let (archived, archive_stamp) = field(
+        &a.archived,
+        a.archive_clock(),
+        &b.archived,
+        b.archive_clock(),
+    );
+    Project {
+        id: a.id.clone(),
+        name,
+        color,
+        archived,
+        deleted: a.deleted || b.deleted,
+        billable,
+        budget_hours,
+        client_zone,
+        billing_type,
+        fixed_fee_cents,
+        fee_currency,
+        created_at: a.created_at.min(b.created_at),
+        stamp: if stamp_cmp(&a.stamp, &b.stamp) == Ordering::Less {
+            b.stamp.clone()
+        } else {
+            a.stamp.clone()
+        },
+        identity_stamp: Some(identity_stamp),
+        billing_stamp: Some(billing_stamp),
+        budget_stamp: Some(budget_stamp),
+        archive_stamp: Some(archive_stamp),
+    }
 }
 
 fn merge_shift(a: &ShiftVersion, b: &ShiftVersion) -> ShiftVersion {
@@ -271,9 +334,10 @@ pub fn merge(a: &Shared, b: &Shared) -> Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{PauseReason, TaskState};
+    use crate::model::{BillingType, PauseReason, TaskState};
     use crate::time::Ts;
     use proptest::prelude::*;
+    use serde::Deserialize;
     use serde_json::{Value, json};
 
     fn stamp() -> impl Strategy<Value = Stamp> {
@@ -283,24 +347,49 @@ mod tests {
         })
     }
 
+    /// With any mix of group clocks, as copies from older and newer builds meet in one folder.
     fn project() -> impl Strategy<Value = Project> {
-        (0u8..3, any::<bool>(), any::<bool>(), 0u8..3, stamp()).prop_map(
-            |(id, archived, deleted, n, stamp)| Project {
-                id: format!("p{id}"),
-                name: format!("name{n}"),
-                color: "#112233".into(),
-                archived,
-                deleted,
-                billable: n == 1,
-                budget_hours: None,
-                client_zone: None,
-                billing_type: crate::model::BillingType::Hourly,
-                fixed_fee_cents: None,
-                fee_currency: None,
-                created_at: Ts(0),
-                stamp,
-            },
+        (
+            (0u8..3, any::<bool>(), any::<bool>(), 0u8..3, stamp()),
+            (0u8..2, prop::option::of(0u8..3), 0i64..2),
+            (any::<bool>(), 0u8..3, prop::option::of(0u8..3)),
+            (
+                prop::option::of(stamp()),
+                prop::option::of(stamp()),
+                prop::option::of(stamp()),
+                prop::option::of(stamp()),
+            ),
         )
+            .prop_map(
+                |(
+                    (id, archived, deleted, n, stamp),
+                    (color, zone, created),
+                    (fixed, fee, budget),
+                    (identity_stamp, billing_stamp, budget_stamp, archive_stamp),
+                )| Project {
+                    id: format!("p{id}"),
+                    name: format!("name{n}"),
+                    color: format!("#11223{color}"),
+                    archived,
+                    deleted,
+                    billable: n == 1,
+                    budget_hours: budget.map(f64::from),
+                    client_zone: zone.map(|z| format!("zone{z}")),
+                    billing_type: if fixed {
+                        crate::model::BillingType::FixedFee
+                    } else {
+                        crate::model::BillingType::Hourly
+                    },
+                    fixed_fee_cents: fixed.then_some(i64::from(fee) * 100),
+                    fee_currency: fixed.then(|| "EUR".to_owned()),
+                    created_at: Ts(created),
+                    stamp,
+                    identity_stamp,
+                    billing_stamp,
+                    budget_stamp,
+                    archive_stamp,
+                },
+            )
     }
 
     fn task() -> impl Strategy<Value = Task> {
@@ -352,7 +441,7 @@ mod tests {
         (
             0u8..4,
             prop::option::of(1i64..5),
-            prop::option::of(1i64..5),
+            prop::option::of((1i64..5, any::<bool>())),
             stamp(),
         )
             .prop_map(|(id, end, edit, edit_stamp)| Segment {
@@ -361,11 +450,12 @@ mod tests {
                 device_id: "a".into(),
                 start: Ts(0),
                 end: end.map(Ts),
-                edit: edit.map(|e| crate::model::SegmentEdit {
+                edit: edit.map(|(e, settled)| crate::model::SegmentEdit {
                     start: Ts(0),
                     end: Ts(e),
                     voided: e == 2,
                     reason: String::new(),
+                    settled,
                 }),
                 edit_stamp,
                 ..Segment::default()
@@ -630,6 +720,66 @@ mod tests {
         }
 
         #[test]
+        fn the_laws_hold_for_copies_of_one_project(a in project(), b in project(), c in project()) {
+            let one = |p: Project| Shared {
+                projects: BTreeMap::from([(
+                    "p".to_owned(),
+                    Project { id: "p".to_owned(), ..p },
+                )]),
+                ..Shared::default()
+            };
+            let (a, b, c) = (one(a), one(b), one(c));
+            prop_assert_eq!(merge(&a, &a), a.clone());
+            prop_assert_eq!(merge(&a, &b), merge(&b, &a));
+            prop_assert_eq!(merge(&merge(&a, &b), &c), merge(&a, &merge(&b, &c)));
+            let m = merge(&a, &b);
+            prop_assert_eq!(merge(&m, &a), m.clone());
+            prop_assert_eq!(merge(&m, &b), m);
+        }
+
+        #[test]
+        fn each_group_of_a_project_comes_whole_from_the_copy_with_its_later_clock(
+            a in project(),
+            b in project(),
+        ) {
+            let b = Project { id: a.id.clone(), ..b };
+            let m = merge_project(&a, &b);
+            let later = |x: &Stamp, y: &Stamp| stamp_cmp(x, y) != Ordering::Less;
+            let identity = |p: &Project| (p.name.clone(), p.color.clone(), p.client_zone.clone());
+            let billing = |p: &Project| (p.billable, p.billing_type, p.fixed_fee_cents, p.fee_currency.clone());
+            let (ia, ib) = (a.identity_clock(), b.identity_clock());
+            prop_assert_eq!(m.identity_clock(), if later(ia, ib) { ia } else { ib });
+            prop_assert!(identity(&m) == identity(&a) || identity(&m) == identity(&b));
+            if stamp_cmp(ia, ib) != Ordering::Equal {
+                let winner = if later(ia, ib) { &a } else { &b };
+                prop_assert_eq!(identity(&m), identity(winner));
+            }
+            let (ba, bb) = (a.billing_clock(), b.billing_clock());
+            prop_assert_eq!(m.billing_clock(), if later(ba, bb) { ba } else { bb });
+            prop_assert!(billing(&m) == billing(&a) || billing(&m) == billing(&b));
+            if stamp_cmp(ba, bb) != Ordering::Equal {
+                let winner = if later(ba, bb) { &a } else { &b };
+                prop_assert_eq!(billing(&m), billing(winner));
+            }
+            let (ga, gb) = (a.budget_clock(), b.budget_clock());
+            prop_assert_eq!(m.budget_clock(), if later(ga, gb) { ga } else { gb });
+            prop_assert!(m.budget_hours == a.budget_hours || m.budget_hours == b.budget_hours);
+            if stamp_cmp(ga, gb) != Ordering::Equal {
+                let winner = if later(ga, gb) { &a } else { &b };
+                prop_assert_eq!(m.budget_hours, winner.budget_hours);
+            }
+            let (ra, rb) = (a.archive_clock(), b.archive_clock());
+            prop_assert_eq!(m.archive_clock(), if later(ra, rb) { ra } else { rb });
+            if stamp_cmp(ra, rb) != Ordering::Equal {
+                let winner = if later(ra, rb) { &a } else { &b };
+                prop_assert_eq!(m.archived, winner.archived);
+            }
+            prop_assert_eq!(m.deleted, a.deleted || b.deleted);
+            prop_assert_eq!(&m.stamp, if later(&a.stamp, &b.stamp) { &a.stamp } else { &b.stamp });
+            prop_assert_eq!(m.created_at, a.created_at.min(b.created_at));
+        }
+
+        #[test]
         fn a_task_deleted_with_its_time_stays_gone(a in shared(), b in shared()) {
             let m = merge(&a, &b);
             for (id, t) in &m.tasks {
@@ -859,6 +1009,10 @@ mod tests {
             billing_type: Default::default(),
             fixed_fee_cents: None,
             fee_currency: None,
+            identity_stamp: None,
+            billing_stamp: None,
+            budget_stamp: None,
+            archive_stamp: None,
         };
         let renamed = Project {
             deleted: false,
@@ -892,6 +1046,10 @@ mod tests {
             billing_type: Default::default(),
             fixed_fee_cents: None,
             fee_currency: None,
+            identity_stamp: None,
+            billing_stamp: None,
+            budget_stamp: None,
+            archive_stamp: None,
         };
         let gone = Project {
             deleted: true,
@@ -903,6 +1061,244 @@ mod tests {
         };
         assert!(merge_project(&a, &gone).deleted);
         assert!(merge_project(&gone, &a).deleted);
+    }
+
+    fn clock(at: i64, by: &str) -> Stamp {
+        Stamp {
+            at: Ts(at),
+            by: by.into(),
+        }
+    }
+    fn plain_project() -> Project {
+        Project {
+            id: "p".into(),
+            name: "P".into(),
+            color: "#112233".into(),
+            archived: false,
+            deleted: false,
+            billable: true,
+            budget_hours: None,
+            client_zone: None,
+            billing_type: BillingType::Hourly,
+            fixed_fee_cents: None,
+            fee_currency: None,
+            created_at: Ts(0),
+            stamp: clock(1, "a"),
+            identity_stamp: None,
+            billing_stamp: None,
+            budget_stamp: None,
+            archive_stamp: None,
+        }
+    }
+    /// The fee and budget from the finding, set at `at` on device a.
+    fn with_fee_and_budget(p: &Project, at: i64) -> Project {
+        let mut p = p.clone();
+        p.pin_clocks();
+        p.billing_type = BillingType::FixedFee;
+        p.fixed_fee_cents = Some(500_000);
+        p.fee_currency = Some("EUR".into());
+        p.billing_stamp = Some(clock(at, "a"));
+        p.budget_hours = Some(40.0);
+        p.budget_stamp = Some(clock(at, "a"));
+        p.stamp = clock(at, "a");
+        p
+    }
+    fn renamed(p: &Project, at: i64) -> Project {
+        let mut p = p.clone();
+        p.pin_clocks();
+        p.name = "renamed".into();
+        p.identity_stamp = Some(clock(at, "b"));
+        p.stamp = clock(at, "b");
+        p
+    }
+
+    #[test]
+    fn r10_a_rename_on_one_device_and_a_fee_and_budget_on_another_both_survive() {
+        let base = plain_project();
+        let (fee, rename) = (with_fee_and_budget(&base, 5), renamed(&base, 6));
+        for m in [merge_project(&fee, &rename), merge_project(&rename, &fee)] {
+            assert_eq!(m.name, "renamed");
+            assert_eq!(m.billing_type, BillingType::FixedFee);
+            assert_eq!(m.fixed_fee_cents, Some(500_000));
+            assert_eq!(m.fee_currency.as_deref(), Some("EUR"));
+            assert_eq!(m.budget_hours, Some(40.0));
+            assert_eq!(m.stamp, clock(6, "b"), "a build that compares only this");
+            assert_eq!(m.identity_stamp, Some(clock(6, "b")));
+            assert_eq!(m.billing_stamp, Some(clock(5, "a")));
+            assert_eq!(m.budget_stamp, Some(clock(5, "a")));
+            assert_eq!(m.archive_stamp, Some(clock(1, "a")));
+        }
+    }
+
+    #[test]
+    fn r10_archiving_and_editing_on_two_devices_both_survive_and_a_tombstone_still_outranks_them() {
+        let base = plain_project();
+        let mut archived = base.clone();
+        archived.pin_clocks();
+        archived.archived = true;
+        archived.archive_stamp = Some(clock(5, "a"));
+        archived.stamp = clock(5, "a");
+        let rename = renamed(&base, 6);
+        let m = merge_project(&archived, &rename);
+        assert!(m.archived, "a later edit of the name doesn't bring it back");
+        assert_eq!(m.name, "renamed");
+        assert_eq!(m, merge_project(&rename, &archived));
+        let mut gone = base.clone();
+        gone.pin_clocks();
+        gone.deleted = true;
+        gone.stamp = clock(2, "a");
+        assert!(merge_project(&gone, &rename).deleted);
+        assert_eq!(merge_project(&gone, &rename).name, "renamed");
+    }
+
+    /// A copy as a build without group clocks writes one, read the way this build reads it.
+    fn from_an_older_build(p: &Project) -> Project {
+        #[derive(Deserialize, Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Older {
+            id: String,
+            name: String,
+            color: String,
+            archived: bool,
+            deleted: bool,
+            billable: bool,
+            budget_hours: Option<f64>,
+            client_zone: Option<String>,
+            billing_type: BillingType,
+            fixed_fee_cents: Option<i64>,
+            fee_currency: Option<String>,
+            created_at: Ts,
+            stamp: Stamp,
+        }
+        let read: Older = serde_json::from_value(serde_json::to_value(p).unwrap()).unwrap();
+        let written = serde_json::to_string(&read).unwrap();
+        assert!(!written.contains("identityStamp"));
+        serde_json::from_str(&written).unwrap()
+    }
+
+    #[test]
+    fn r10_a_copy_from_an_older_build_counts_at_its_whole_stamp_and_never_stops_a_merge() {
+        // A file from before the clocks reads with none, and needs no other field.
+        let old: Project = serde_json::from_value(json!({
+            "id": "p", "name": "P", "color": "#112233", "createdAt": "2026-01-01T00:00:00Z",
+            "stamp": {"at": "2026-01-02T00:00:00Z", "by": "old"},
+        }))
+        .unwrap();
+        assert_eq!(old.identity_stamp, None);
+        assert_eq!(old.billing_clock(), &old.stamp);
+        let written = serde_json::to_string(&old).unwrap();
+        assert!(!written.contains("Stamp"), "it stays as it was: {written}");
+        // Its edit of any group is as new as its whole stamp: earlier than this clock, it gives way here...
+        let base = plain_project();
+        let fee = with_fee_and_budget(&base, 5);
+        let mut older_edit = from_an_older_build(&base);
+        older_edit.name = "older name".into();
+        older_edit.stamp = clock(3, "o");
+        for m in [
+            merge_project(&fee, &older_edit),
+            merge_project(&older_edit, &fee),
+        ] {
+            assert_eq!(m.fixed_fee_cents, Some(500_000));
+            assert_eq!(m.budget_hours, Some(40.0));
+            // ...and later than the name's clock, it takes the name, as a whole-record merge never could.
+            assert_eq!(m.name, "older name");
+            assert_eq!(m.stamp, clock(5, "a"));
+        }
+    }
+
+    /// The defined behaviour for what a build without clocks can do to a field. It rewrites every field at
+    /// its whole stamp, so nothing tells a stale field from an edit: its later edit carries its stale fee along.
+    /// That is what such a build does by itself, and every copy still ends up the same.
+    #[test]
+    fn r10_a_later_edit_on_an_older_build_can_still_carry_an_older_fee_and_every_copy_converges() {
+        let base = plain_project();
+        let fee = with_fee_and_budget(&base, 5);
+        let mut older = from_an_older_build(&base);
+        older.name = "renamed on the older build".into();
+        older.stamp = clock(6, "o");
+        let m = merge_project(&fee, &older);
+        assert_eq!(m, merge_project(&older, &fee));
+        assert_eq!(m.name, "renamed on the older build");
+        assert_eq!(m.fixed_fee_cents, None, "as that build itself now holds");
+        assert_eq!(m.budget_hours, None);
+        assert_eq!(m.stamp, clock(6, "o"));
+        // The older build keeps its copy, and reading it again changes nothing here.
+        assert_eq!(merge_project(&m, &older), m);
+    }
+
+    /// The same, where a whole-record merge would have gone the other way: a later edit here of something else
+    /// would have kept the fee and lost the rename. One of the two goes either way. This keeps the rename, and
+    /// the edit here, and the older build's copy then follows along.
+    #[test]
+    fn r10_a_stale_field_from_an_older_build_beats_an_older_group_clock_even_after_a_later_edit() {
+        let base = plain_project();
+        let mut later = with_fee_and_budget(&base, 5);
+        later.archived = true;
+        later.archive_stamp = Some(clock(9, "a"));
+        later.stamp = clock(9, "a");
+        let mut older = from_an_older_build(&base);
+        older.name = "renamed on the older build".into();
+        older.stamp = clock(6, "o");
+        let m = merge_project(&later, &older);
+        assert_eq!(m, merge_project(&older, &later));
+        assert_eq!(m.name, "renamed on the older build");
+        assert_eq!(m.fixed_fee_cents, None);
+        assert_eq!(m.budget_hours, None);
+        assert!(m.archived, "its clock is later than that copy");
+        assert_eq!(m.stamp, clock(9, "a"));
+        // That build takes this whole, as its stamp is later, and passing it on changes no value.
+        let followed = from_an_older_build(&m);
+        let settled = merge_project(&m, &followed);
+        assert_eq!(settled, merge_project(&followed, &m));
+        assert_eq!(
+            (
+                settled.name.as_str(),
+                settled.fixed_fee_cents,
+                settled.archived
+            ),
+            (m.name.as_str(), m.fixed_fee_cents, m.archived)
+        );
+        assert_eq!(merge_project(&settled, &followed), settled);
+    }
+
+    #[test]
+    fn r10_an_older_build_passing_a_copy_on_changes_no_value_and_settles() {
+        let base = plain_project();
+        let m = merge_project(&with_fee_and_budget(&base, 5), &renamed(&base, 6));
+        let passed_on = from_an_older_build(&m);
+        let again = merge_project(&m, &passed_on);
+        assert_eq!(again, merge_project(&passed_on, &m));
+        for (got, want) in [
+            (again.name.as_str(), "renamed"),
+            (again.fee_currency.as_deref().unwrap_or(""), "EUR"),
+        ] {
+            assert_eq!(got, want);
+        }
+        assert_eq!(again.fixed_fee_cents, Some(500_000));
+        assert_eq!(again.budget_hours, Some(40.0));
+        // All its clocks rise to its stamp, as that build vouches for all of it. That is all, and it happens once.
+        assert_eq!(again.billing_stamp, Some(clock(6, "b")));
+        assert_eq!(merge_project(&again, &passed_on), again);
+    }
+
+    /// The one case that loses an edit: the older build read a copy from before the merge, at the same stamp as
+    /// the merge, and passes it on. The name set earlier gives way. A whole-record merge lost it the same way.
+    #[test]
+    fn r10_an_older_build_holding_a_copy_from_before_a_merge_can_undo_an_earlier_edit() {
+        let base = plain_project();
+        let rename = renamed(&base, 5);
+        let fee = with_fee_and_budget(&base, 6);
+        let merged = merge_project(&rename, &fee);
+        assert_eq!(merged.name, "renamed");
+        let kept = from_an_older_build(&fee);
+        let m = merge_project(&merged, &kept);
+        assert_eq!(m, merge_project(&kept, &merged));
+        assert_eq!(
+            m.name, "P",
+            "the older copy vouches for its name at its stamp"
+        );
+        assert_eq!(m.fixed_fee_cents, Some(500_000), "the later edit stays");
+        assert_eq!(merge_project(&m, &kept), m, "and it settles");
     }
 
     #[test]

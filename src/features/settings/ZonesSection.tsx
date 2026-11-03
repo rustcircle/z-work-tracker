@@ -1,15 +1,18 @@
 import { useState } from 'react';
 
 import { useApp } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { zoneLabel } from '../../lib/tz';
 import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { ZonePickerDialog } from '../zones';
+import { ReadOnlyNote } from './ReadOnlyNote';
 
 export function ZonesSection() {
   const { snapshot, zones, nowSec } = useApp();
   const { act } = useCommands();
+  const { readOnly } = useReadOnly();
   const [pick, setPick] = useState<'my' | 'client' | null>(null);
   const s = snapshot.settings;
 
@@ -17,6 +20,7 @@ export function ZonesSection() {
 
   return (
     <div className="settings-stack">
+      <ReadOnlyNote />
       <div className="kv">
         <div>
           <p className="kv-label">My zone</p>
@@ -24,11 +28,11 @@ export function ZonesSection() {
           <p className="field-hint">{s.myZone ? 'Chosen by you.' : `Taken from this computer (${snapshot.systemZone}).`}</p>
         </div>
         <div className="inline-actions">
-          <Button small onClick={() => setPick('my')}>
+          <Button small disabled={readOnly} onClick={() => setPick('my')}>
             Change my zone
           </Button>
           {s.myZone && (
-            <Button small variant="ghost" onClick={() => set('myZone', null)}>
+            <Button small variant="ghost" disabled={readOnly} onClick={() => set('myZone', null)}>
               Use this computer's zone
             </Button>
           )}
@@ -41,11 +45,11 @@ export function ZonesSection() {
           <p className="field-hint">Used by "Show both", the client axis and exports. Individual projects can use their own.</p>
         </div>
         <div className="inline-actions">
-          <Button small onClick={() => setPick('client')}>
+          <Button small disabled={readOnly} onClick={() => setPick('client')}>
             {zones.client ? 'Change client zone' : 'Set client zone'}
           </Button>
           {zones.client && (
-            <Button small variant="ghost" onClick={() => set('clientZone', null)}>
+            <Button small variant="ghost" disabled={readOnly} onClick={() => set('clientZone', null)}>
               Clear
             </Button>
           )}
@@ -53,13 +57,13 @@ export function ZonesSection() {
       </div>
       <div className="row-fields">
         <Field label="Client working hours start">
-          {({ id }) => <input id={id} className="input" type="time" value={s.clientWorkStart ?? '09:00'} onChange={(e) => e.target.value && set('clientWorkStart', e.target.value)} />}
+          {({ id }) => <input id={id} className="input" type="time" value={s.clientWorkStart ?? '09:00'} disabled={readOnly} onChange={(e) => e.target.value && set('clientWorkStart', e.target.value)} />}
         </Field>
         <Field label="Client working hours end">
-          {({ id }) => <input id={id} className="input" type="time" value={s.clientWorkEnd ?? '17:00'} onChange={(e) => e.target.value && set('clientWorkEnd', e.target.value)} />}
+          {({ id }) => <input id={id} className="input" type="time" value={s.clientWorkEnd ?? '17:00'} disabled={readOnly} onChange={(e) => e.target.value && set('clientWorkEnd', e.target.value)} />}
         </Field>
       </div>
-      <p className="field-hint">The client's day, in their zone. Show both shades these hours and counts how much of your logged time falls inside them.</p>
+      <p className="field-hint">The client's day, in their zone. Show both shades these hours and counts how much of your logged time falls inside them. The hours count on every day of the week and may run overnight, such as 22:00 to 06:00.</p>
       <ZonePickerDialog
         open={pick !== null}
         title={pick === 'client' ? 'Client zone' : 'My zone'}

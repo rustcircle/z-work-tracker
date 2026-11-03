@@ -20,7 +20,14 @@ const Ctx = createContext<FilterApi>(INERT);
 
 /** Not persisted: a new launch starts unfiltered. */
 export function TaskFilterProvider({ children }: { children: ReactNode }) {
-  const [filter, setFilter] = useState<TaskFilter>(NO_TASK_FILTER);
+  const { snapshot } = useAppState();
+  const [stored, setFilter] = useState<TaskFilter>(NO_TASK_FILTER);
+  // A project or tag deleted while it was the filter is no filter any more: nothing could pass, and nothing on screen would say why.
+  const filter = useMemo<TaskFilter>(() => {
+    const projectGone = stored.projectId !== '' && !snapshot.projects.some((p) => p.id === stored.projectId);
+    const tagIds = stored.tagIds.filter((id) => snapshot.tags.some((t) => t.id === id && !t.deleted));
+    return !projectGone && tagIds.length === stored.tagIds.length ? stored : { ...stored, projectId: projectGone ? '' : stored.projectId, tagIds };
+  }, [stored, snapshot.projects, snapshot.tags]);
   const value = useMemo<FilterApi>(() => ({ filter, setFilter, clear: () => setFilter(NO_TASK_FILTER) }), [filter]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

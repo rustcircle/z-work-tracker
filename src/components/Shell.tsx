@@ -2,21 +2,27 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 
 import { useAppState } from '../app/store';
 import { api, events } from '../lib/api';
+import { RateBook } from '../lib/billing';
 import { AnalysisTab } from '../features/analysis/AnalysisTab';
 import { ExportDialog } from '../features/export/ExportDialog';
 import { BillingTab } from '../features/billing/BillingTab';
 import { ProjectsTab } from '../features/projects/ProjectsTab';
+import { MoveFlowProvider } from '../features/settings/MoveFlow';
 import { SettingsTab } from '../features/settings/SettingsTab';
 import { EditStoreProvider } from '../features/tasks/editStore';
 import { HeldBanner } from '../features/tasks/HeldBanner';
 import { TaskRail } from '../features/tasks/TaskRail';
 import { TaskFilterProvider } from '../features/tasks/TaskFilterBar';
 import { SelectionProvider, useSelection } from '../features/timeline/selection';
+import { entryOf } from '../features/timeline/selectionLogic';
+import { buildClosed, buildOverlay, dayData, timelineSegs } from '../features/timeline/model';
 import { TimelineTab } from '../features/timeline/TimelineTab';
 import { ActiveZoneBar } from '../features/zones';
 import { Banners } from './Banners';
 import { ClientZonePrompt } from './ClientZonePrompt';
+import { DirtyGuardProvider, useLeaveCheck } from './dirtyGuard';
 import { IconDownload, IconEye, IconEyeOff } from './icons';
+import { LeaseBanner } from './LeaseBanner';
 import { NavContext, type Nav, type TabId } from './nav';
 import { Button } from './ui';
 import { useCommands } from './useCommands';
@@ -46,10 +52,41 @@ export function Shell() {
   return (
     <TaskFilterProvider>
       <SelectionProvider zone={zones.active}>
-        <ShellBody />
+        <SelectionFollowsData />
+        <DirtyGuardProvider>
+          <MoveFlowProvider>
+            <ShellBody />
+          </MoveFlowProvider>
+        </DirtyGuardProvider>
       </SelectionProvider>
     </TaskFilterProvider>
   );
+}
+
+/**
+ * Selected entries whose time has gone leave the selection, whichever tab is open: the Export button counts them
+ * everywhere. Works only while something is selected, and once per snapshot.
+ */
+function SelectionFollowsData() {
+  const { snapshot, zones, clock } = useAppState();
+  const sel = useSelection();
+  const keys = sel?.keys;
+  const prune = sel?.prune;
+  const zone = zones.active;
+  useEffect(() => {
+    if (!keys || keys.length === 0) return;
+    const book = new RateBook(snapshot.projects, snapshot.rates);
+    const closed = buildClosed(timelineSegs(snapshot), zone, book, snapshot.rounding);
+    const overlay = buildOverlay(closed, clock.readNow(), book, snapshot.rounding);
+    const present = new Set(
+      keys.filter((key) => {
+        const { taskId, day } = entryOf(key);
+        return dayData(closed, overlay, day).rows.some((r) => r.taskId === taskId);
+      }),
+    );
+    if (present.size !== keys.length) prune?.(present);
+  }, [snapshot, zone, clock, keys, prune]);
+  return null;
 }
 
 function ShellBody() {
@@ -69,20 +106,38 @@ function ShellBody() {
   const tabRefs = useRef(new Map<TabId, HTMLButtonElement>());
   const hide = snapshot.prefs.hideEarnings;
 
+  // Every way of showing another tab goes through here: a form on this tab with unsaved changes is asked about first.
+  const leave = useLeaveCheck();
+  const changeTab = useCallback(
+    (to: TabId, apply: () => void): void => {
+      if (to === tab) apply();
+      else leave(apply);
+    },
+    [tab, leave],
+  );
+  // The tab button a key press moved to takes focus once the tab is shown, after any question has been answered.
+  const focusTab = useRef<TabId | null>(null);
+  useEffect(() => {
+    if (focusTab.current === tab) tabRefs.current.get(tab)?.focus();
+    focusTab.current = null;
+  }, [tab]);
+
   const nav = useMemo<Nav>(
     () => ({
       tab,
-      go: setTab,
+      go: (to) => changeTab(to, () => setTab(to)),
       focusProject,
-      openProject: (id) => {
-        setFocusProject(id);
-        setTab('projects');
-      },
+      openProject: (id) =>
+        changeTab('projects', () => {
+          setFocusProject(id);
+          setTab('projects');
+        }),
       clearFocusProject: () => setFocusProject(null),
-      openSettings: (section) => {
-        setSettingsSection(section);
-        setTab('settings');
-      },
+      openSettings: (section) =>
+        changeTab('settings', () => {
+          setSettingsSection(section);
+          setTab('settings');
+        }),
       settingsSection,
       clearSettingsSection: () => setSettingsSection(null),
       openExport: () => setExporting(true),
@@ -96,37 +151,40 @@ function ShellBody() {
       openContinue: setContinueTaskId,
       clearContinue: () => setContinueTaskId(null),
       colorTarget,
-      chooseColor: (kind, id) => {
-        setColorTarget({ kind, id });
-        if (kind === 'project') {
-          setFocusProject(id);
-          setTab('projects');
-        } else {
-          setSettingsSection('tags');
-          setTab('settings');
-        }
-      },
+      chooseColor: (kind, id) =>
+        changeTab(kind === 'project' ? 'projects' : 'settings', () => {
+          setColorTarget({ kind, id });
+          if (kind === 'project') {
+            setFocusProject(id);
+            setTab('projects');
+          } else {
+            setSettingsSection('tags');
+            setTab('settings');
+          }
+        }),
       clearColorTarget: () => setColorTarget(null),
       tagIntent,
-      startNewTag: (origin) => {
-        setTagIntent({ origin, back: tab, createdId: null });
-        setSettingsSection('tags');
-        setTab('settings');
-      },
+      startNewTag: (origin) =>
+        changeTab('settings', () => {
+          setTagIntent({ origin, back: tab, createdId: null });
+          setSettingsSection('tags');
+          setTab('settings');
+        }),
       tagCreated: (id) => setTagIntent((t) => (t ? { ...t, createdId: id } : t)),
       backToTask: () => {
-        if (tagIntent) {
+        if (!tagIntent) return;
+        changeTab(tagIntent.back, () => {
           setTab(tagIntent.back);
           setReturnFocus(tagIntent.origin);
           // The way back is taken: the tag is ticked already, so the errand is over.
           setTagIntent(null);
-        }
+        });
       },
       returnFocus,
       clearReturnFocus: () => setReturnFocus(null),
       endTagIntent: () => setTagIntent(null),
     }),
-    [tab, focusProject, settingsSection, focusTask, continueTaskId, colorTarget, tagIntent, returnFocus],
+    [tab, changeTab, focusProject, settingsSection, focusTask, continueTaskId, colorTarget, tagIntent, returnFocus],
   );
 
   // A marker only the page can read: scripts/perf-native.mjs times cold start up to here.
@@ -154,11 +212,13 @@ function ShellBody() {
       e.preventDefault();
       const t = TABS[next];
       if (t) {
-        setTab(t.id);
-        tabRefs.current.get(t.id)?.focus();
+        changeTab(t.id, () => {
+          focusTab.current = t.id;
+          setTab(t.id);
+        });
       }
     },
-    [tab],
+    [tab, changeTab],
   );
 
   const current = TABS.find((t) => t.id === tab) ?? (TABS[0] as (typeof TABS)[number]);
@@ -180,6 +240,7 @@ function ShellBody() {
           </Button>
         </header>
         <Banners>
+          <LeaseBanner />
           <HeldBanner />
         </Banners>
         <div className="app-body">
@@ -200,7 +261,7 @@ function ShellBody() {
                   aria-controls={`panel-${t.id}`}
                   tabIndex={tab === t.id ? 0 : -1}
                   className={`tab ${tab === t.id ? 'on' : ''}`}
-                  onClick={() => setTab(t.id)}
+                  onClick={() => nav.go(t.id)}
                   onKeyDown={onKey}
                 >
                   {t.label}

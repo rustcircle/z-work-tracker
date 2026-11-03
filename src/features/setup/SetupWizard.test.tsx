@@ -361,3 +361,54 @@ describe('steps that write as they are chosen', () => {
     expect(s.setupDone).toBe(true);
   });
 });
+
+describe('a step the backend refuses', () => {
+  it('R7: Finish with defaults that fails says so on the wizard, stays there, and works on the second try', async () => {
+    const user = userEvent.setup();
+    const s = fresh();
+    s.failNext = ['finish_setup'];
+    boot(s);
+    await user.click(await screen.findByTestId('finish-defaults'));
+    expect(await within(wizard()).findByRole('alert')).toHaveTextContent('mock: finish_setup failed');
+    expect(screen.getByTestId('setup-wizard')).toBeVisible();
+    expect(s.setupDone).toBe(false);
+    // The button is back, and the second try goes through. Nothing of the refusal is left over.
+    await user.click(screen.getByTestId('finish-defaults'));
+    await screen.findByRole('tab', { name: 'Timeline' });
+    expect(screen.queryAllByRole('alert')).toEqual([]);
+  });
+
+  it('R7: Next on the time rule that fails says so, stays on the step, and moving on leaves no message behind', async () => {
+    const user = userEvent.setup();
+    const s = fresh();
+    s.failNext = ['set_rounding'];
+    boot(s);
+    await screen.findByTestId('setup-wizard');
+    while (step() !== 'rules') await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.selectOptions(within(wizard()).getByRole('combobox', { name: 'Increment' }), '30');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(await within(wizard()).findByRole('alert')).toHaveTextContent('mock: set_rounding failed');
+    expect(step()).toBe('rules');
+    expect(s.rounding).toEqual([]);
+    // The second try goes through, and the message goes with the step.
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await waitFor(() => expect(step()).toBe('project'));
+    expect(screen.queryAllByRole('alert')).toEqual([]);
+    expect(s.rounding.at(-1)).toMatchObject({ incrementMinutes: 30 });
+  });
+
+  it('R7: a message from one step is gone when Back or Skip moves to another', async () => {
+    const user = userEvent.setup();
+    const s = fresh();
+    s.failNext = ['set_rounding'];
+    boot(s);
+    await screen.findByTestId('setup-wizard');
+    while (step() !== 'rules') await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.selectOptions(within(wizard()).getByRole('combobox', { name: 'Increment' }), '30');
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await within(wizard()).findByRole('alert');
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await waitFor(() => expect(step()).toBe('zones'));
+    expect(screen.queryAllByRole('alert')).toEqual([]);
+  });
+});

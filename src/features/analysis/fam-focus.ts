@@ -1,5 +1,5 @@
 // Focus, sessions, pauses and consistency metrics. All use Exact time.
-import { dayOfInstant } from './engine';
+import { dayOfInstant, STREAK_LOOKBACK_DAYS } from './engine';
 import type { Ctx } from './mctx';
 import { activeDayNums } from './mctx';
 import { dayNum, weekdayIndex } from './range';
@@ -160,7 +160,7 @@ export function consistencyOf(ctx: Ctx, weekdayAvgs: readonly (number | null)[])
   let n = endDay;
   if (worked(n) <= 0 && n === ctx.today) n -= 1;
   let current = 0;
-  while (worked(n - current) > 0 && n - current >= first - 400) current += 1;
+  while (worked(n - current) > 0 && n - current >= first - STREAK_LOOKBACK_DAYS) current += 1;
   let longest = 0;
   let run = 0;
   for (let d = first; d <= to; d += 1) {

@@ -13,6 +13,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 
 import { useAppState } from '../../../app/store';
+import { useReadOnly } from '../../../app/useReadOnly';
 import { amountText, formatDuration, listOf, plural } from '../../../components/format';
 import { useNav } from '../../../components/nav';
 import { useToast } from '../../../components/Toasts';
@@ -56,9 +57,10 @@ function useArmed(): boolean {
 const deleteDialogIsOnTop = (): boolean => [...document.querySelectorAll('[role="dialog"]')].at(-1)?.querySelector('[data-delete-step]') != null;
 
 /**
- * While a delete dialog is on top, Enter does nothing and Esc backs out of it, and only it. This sits on the window in
- * the capture phase, ahead of the dialogs' own listeners on the document: otherwise the Details underneath, which is
- * open too, would close on the same Esc, and Enter would press whatever button has focus.
+ * While a delete dialog is on top, Enter does nothing and Esc backs out of it. A Modal that can't be dismissed takes no Esc
+ * of its own and has no say over Enter, so this sits on the window in the capture phase, ahead of the dialogs' own listeners
+ * on the document: otherwise Enter would press whatever button has focus, even one on the Details behind. The Details
+ * underneath is not asked about Esc either way: only the Modal on top is (see `Modal`).
  */
 function useDeleteKeys(active: boolean, back: () => void): void {
   const backRef = useRef(back);
@@ -86,6 +88,7 @@ function namesOf(tasks: readonly Task[]): string {
 
 function ReviewDialog({ task, onKeep, onContinue }: { task: Task; onKeep: () => void; onContinue: () => void }) {
   const { snapshot, zones } = useAppState();
+  const ro = useReadOnly();
   const armed = useArmed();
   const fp = useMemo(() => footprint(snapshot, task, zones.active), [snapshot, task, zones.active]);
   const project = snapshot.projects.find((p) => p.id === task.projectId);
@@ -105,7 +108,7 @@ function ReviewDialog({ task, onKeep, onContinue }: { task: Task; onKeep: () => 
             Keep it
           </Button>
           <Button
-            disabled={!armed}
+            disabled={!armed || ro.readOnly}
             onClick={(e) => {
               if (aClick(e)) onContinue();
             }}
@@ -148,6 +151,7 @@ function ReviewDialog({ task, onKeep, onContinue }: { task: Task; onKeep: () => 
           ? "With sync on, this can't be undone. It reaches your other devices at their next sync. Restoring a backup made before the delete (Settings, Backups) brings the task back only until the next sync merges the delete in again."
           : "This can't be undone in the app. The only way back is to restore a backup made before the delete (Settings, Backups), which rolls back everything else since then too."}
       </p>
+      {ro.readOnly && <p className="delete-text">{ro.why}</p>}
       <p className="muted delete-hint">{CLICK_ONLY}</p>
     </Modal>
   );
@@ -155,6 +159,7 @@ function ReviewDialog({ task, onKeep, onContinue }: { task: Task; onKeep: () => 
 
 function ConfirmDelete({ task, busy, onKeep, onDelete }: { task: Task; busy: boolean; onKeep: () => void; onDelete: () => void }) {
   const { snapshot } = useAppState();
+  const ro = useReadOnly();
   const armed = useArmed();
   const logged = task.billedSecs + task.unbilledSecs;
   const away = runningElsewhere(snapshot, task);
@@ -172,7 +177,7 @@ function ConfirmDelete({ task, busy, onKeep, onDelete }: { task: Task; busy: boo
           <Button
             variant="danger"
             className="delete-btn"
-            disabled={!armed || busy}
+            disabled={!armed || busy || ro.readOnly}
             onClick={(e) => {
               if (aClick(e)) onDelete();
             }}
@@ -186,6 +191,7 @@ function ConfirmDelete({ task, busy, onKeep, onDelete }: { task: Task; busy: boo
         This deletes “{task.name}”{logged > 0 ? ` and the ${formatDuration(logged)} logged on it` : ''} from {snapshot.deviceName} and from synced devices. It can&apos;t be undone.
       </p>
       {away && <p className="delete-text delete-running">{elsewhereText(away.device)}</p>}
+      {ro.readOnly && <p className="delete-text">{ro.why}</p>}
       <p className="muted delete-hint">{CLICK_ONLY}</p>
     </Modal>
   );
@@ -198,6 +204,7 @@ export function DeleteTask({ task, close }: { task: Task; close: () => void }) {
   const edits = useEditStore();
   const selection = useSelection();
   const toast = useToast();
+  const ro = useReadOnly();
   const headId = useId();
   const noteId = useId();
   const [step, setStep] = useState<Step | null>(null);
@@ -252,6 +259,7 @@ export function DeleteTask({ task, close }: { task: Task; close: () => void }) {
       <div className="details-delete-text">
         <h3 id={headId}>Delete this task</h3>
         <div id={noteId} className="details-delete-note">
+          {ro.readOnly && <p data-testid="delete-read-only">{ro.why}</p>}
           {blocked ? (
             blocks.map((b) => (
               <p key={b.kind} data-testid="delete-blocked">
@@ -274,7 +282,7 @@ export function DeleteTask({ task, close }: { task: Task; close: () => void }) {
               </p>
             ))
           ) : (
-            <p>Removes the task and all the time logged on it, here and on synced devices. You are asked twice.</p>
+            !ro.readOnly && <p>Removes the task and all the time logged on it, here and on synced devices. You are asked twice.</p>
           )}
         </div>
         {failure && (
@@ -283,7 +291,7 @@ export function DeleteTask({ task, close }: { task: Task; close: () => void }) {
           </p>
         )}
       </div>
-      <Button variant="danger" className="delete-btn" aria-haspopup="dialog" aria-describedby={noteId} disabled={blocked || busy}
+      <Button variant="danger" className="delete-btn" aria-haspopup="dialog" aria-describedby={noteId} disabled={blocked || busy || ro.readOnly}
         onClick={() => {
           setFailure(null);
           setStep('review');

@@ -12,8 +12,8 @@ use chrono_tz::{OffsetName, Tz};
 use serde_json::{Value, json};
 
 use crate::billing::{
-    TaskDay, cents_from_numerator, day_of, money, split_by_day, split_by_rate, start_of_day,
-    task_days_of,
+    ROUNDED_ROWS_NOTE, TaskDay, cents_from_numerator, day_of, money, split_by_day, split_by_rate,
+    start_of_day, task_days_of,
 };
 use crate::error::CoreError;
 use crate::model::{BillingType, Shared, ShiftVersion, TaskState};
@@ -848,7 +848,9 @@ impl ShiftText {
     }
 }
 
-/// Seconds of logged time inside the client's working hours, Monday to Friday in the client's zone.
+/// Seconds of logged time inside the client's working hours, by the rule of `src/lib/clientHours.ts`: every
+/// day of the week counts, hours that end at or before they start run overnight into the next day, and the
+/// same start and end cover the whole day.
 fn client_overlap(data: &Shared, spans: &[Span], client: Tz, from: i64, to: i64) -> i64 {
     let setting = |key: &str, default: &str| {
         data.settings
@@ -859,18 +861,14 @@ fn client_overlap(data: &Shared, spans: &[Span], client: Tz, from: i64, to: i64)
     };
     let start = hhmm_minutes(&setting("clientWorkStart", "09:00"));
     let end = hhmm_minutes(&setting("clientWorkEnd", "17:00"));
-    if end <= start {
-        return 0;
-    }
     let mut work = Vec::new();
+    // One date back, for hours that began the evening before and run past midnight into the period.
     for n in (day_of_instant(from, client) - 1)..=(day_of_instant(to, client) + 1) {
-        let day = day_from(n);
-        if weekday_index(n) < 5 {
-            work.push((
-                instant_of_wall(day, start, client),
-                instant_of_wall(day, end, client),
-            ));
-        }
+        let finish = if end <= start { n + 1 } else { n };
+        work.push((
+            instant_of_wall(day_from(n), start, client),
+            instant_of_wall(day_from(finish), end, client),
+        ));
     }
     let mut total = 0;
     for sp in spans {
@@ -1923,7 +1921,7 @@ impl Metrics<'_> {
         AnalyticsSheet {
             name: "Earnings by period".into(),
             title: format!(
-                "Earnings by period (Billable time, rate in force when logged): {}",
+                "Earnings by period (Billable time, rate in force when logged). {ROUNDED_ROWS_NOTE} {}",
                 self.place
             ),
             columns: columns(&[
@@ -2751,6 +2749,39 @@ mod tests {
         plain.tags.clear();
         plain.settings.remove("clientZone");
         let plain = source(plain, "2027-02-01T00:00:00Z");
+        // Client hours hold on every day of the week, and run overnight when they end before they start.
+        let mut weekend = world();
+        seg(
+            &mut weekend,
+            "write",
+            "sat",
+            "2026-03-07T11:00:00Z",
+            "2026-03-07T12:30:00Z",
+        );
+        seg(
+            &mut weekend,
+            "review",
+            "sun",
+            "2026-03-15T15:00:00Z",
+            "2026-03-15T17:00:00Z",
+        );
+        let weekend = source(weekend, "2027-02-01T00:00:00Z");
+        let client_hours = |start: &str, end: &str| {
+            let mut data = world();
+            setting(&mut data, "clientWorkStart", json!(start));
+            setting(&mut data, "clientWorkEnd", json!(end));
+            // Saturday night into Sunday, over the clock change in Lisbon.
+            seg(
+                &mut data,
+                "review",
+                "night",
+                "2026-03-28T20:00:00Z",
+                "2026-03-29T06:00:00Z",
+            );
+            source(data, "2027-02-01T00:00:00Z")
+        };
+        let overnight = client_hours("22:00", "06:00");
+        let all_day = client_hours("00:00", "00:00");
         let got = json!({
             "comment": "Written by the Rust test in analytics.rs, and read by that test and by analyticsParity.test.ts, so both sides give these figures.",
             "cases": [
@@ -2762,6 +2793,11 @@ mod tests {
                 case("a month still running", &running, "2026-03-01", "2026-03-31"),
                 case("no shifts, tags or client zone", &plain, "2026-03-01", "2026-03-31"),
                 case("a selection", &selected(&full), "2026-03-02", "2026-03-04"),
+                case("client hours on a weekend", &weekend, "2026-03-01", "2026-03-31"),
+                case("client hours overnight", &overnight, "2026-03-01", "2026-03-31"),
+                case("client hours overnight, one day", &overnight, "2026-03-03", "2026-03-03"),
+                case("client hours all day", &all_day, "2026-03-02", "2026-03-08"),
+                case("a selection with client hours overnight", &selected(&overnight), "2026-03-02", "2026-03-04"),
             ],
         });
         let body = serde_json::to_string_pretty(&got).unwrap() + "\n";
@@ -2786,6 +2822,19 @@ mod tests {
             .find(|r| r[0].as_str() == Some(metric))
             .unwrap()[column]
             .clone()
+    }
+
+    #[test]
+    fn r7_the_earnings_by_period_sheet_says_its_rows_can_differ_from_its_total() {
+        let full = source(world(), "2027-02-01T00:00:00Z");
+        let sheets = selection_sheets(&selected(&full), ZONE).unwrap();
+        let title = &sheet(&sheets, "Earnings by period").title;
+        assert!(
+            title.contains(
+                "Row amounts are rounded; the total is worked out from the exact amounts."
+            ),
+            "{title}"
+        );
     }
 
     #[test]
@@ -3040,6 +3089,98 @@ mod tests {
         assert_eq!(
             instant_of_wall(date("2026-06-01"), 540, ny),
             at("2026-06-01T13:00:00Z").secs()
+        );
+    }
+
+    /// The rule is `src/lib/clientHours.ts`, and these are the cases its own tests name.
+    #[test]
+    fn client_hours_hold_every_day_and_run_overnight_as_the_ui_says() {
+        let lisbon = parse_zone("Europe/Lisbon").unwrap();
+        let inside = |start: &str, end: &str, from: &str, to: &str| {
+            let mut data = Shared::default();
+            setting(&mut data, "clientWorkStart", json!(start));
+            setting(&mut data, "clientWorkEnd", json!(end));
+            let (from, to) = (at(from).secs(), at(to).secs());
+            let span = Span {
+                task: String::new(),
+                project: String::new(),
+                start: from,
+                end: to,
+                own_start: from,
+                own_end: to,
+                day: 0,
+            };
+            client_overlap(&data, &[span], lisbon, from, to)
+        };
+        // Lisbon is on UTC until 29 March 2026. 7 March is a Saturday, 8 March a Sunday, 9 March a Monday.
+        for (day, secs) in [
+            ("2026-03-07", 6 * 3600),
+            ("2026-03-08", 6 * 3600),
+            ("2026-03-09", 6 * 3600),
+        ] {
+            let (from, to) = (format!("{day}T00:00:00Z"), format!("{day}T23:59:59Z"));
+            assert_eq!(inside("10:00", "16:00", &from, &to), secs, "{day}");
+        }
+        // From 22:00 to 06:00: the night before the range counts, and so does the one starting in it.
+        assert_eq!(
+            inside(
+                "22:00",
+                "06:00",
+                "2026-03-03T04:30:00Z",
+                "2026-03-03T07:00:00Z"
+            ),
+            5400,
+            "the end of the night before"
+        );
+        assert_eq!(
+            inside(
+                "22:00",
+                "06:00",
+                "2026-03-03T21:00:00Z",
+                "2026-03-04T01:00:00Z"
+            ),
+            3 * 3600,
+            "over midnight"
+        );
+        // A weekend night is a night like any other.
+        assert_eq!(
+            inside(
+                "22:00",
+                "06:00",
+                "2026-03-07T21:00:00Z",
+                "2026-03-08T07:00:00Z"
+            ),
+            8 * 3600,
+            "Saturday into Sunday"
+        );
+        // The same start and end cover the whole day, which is how to say round the clock.
+        for (start, end) in [("00:00", "00:00"), ("09:00", "09:00")] {
+            assert_eq!(
+                inside(start, end, "2026-03-06T21:00:00Z", "2026-03-08T03:00:00Z"),
+                30 * 3600,
+                "{start} to {end}"
+            );
+        }
+        // The night the clocks go forward is an hour short, and the night they go back an hour long.
+        assert_eq!(
+            inside(
+                "22:00",
+                "06:00",
+                "2026-03-28T20:00:00Z",
+                "2026-03-29T12:00:00Z"
+            ),
+            7 * 3600,
+            "clocks forward"
+        );
+        assert_eq!(
+            inside(
+                "22:00",
+                "06:00",
+                "2026-10-24T19:00:00Z",
+                "2026-10-25T12:00:00Z"
+            ),
+            9 * 3600,
+            "clocks back"
         );
     }
 

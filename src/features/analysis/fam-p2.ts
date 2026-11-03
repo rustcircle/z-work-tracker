@@ -1,6 +1,8 @@
 // Phase 2 metrics: billable pauses, thinking and unconfirmed time, time by tag, fixed fees and budget status.
 // Pauses and thinking come from the task-day rows (a billable pause is in no aggregate of worked time);
 // tags, fixed fees and budgets come from the tasks and projects themselves.
+import { MASK } from '../../lib/billing';
+import { projectsAt } from '../../lib/liveFigures';
 import { parseIso } from '../../lib/tz';
 import type { BudgetStatus, Currency, Tag } from '../../lib/types';
 import { bucketsOf, type Bucket, type Series } from './fam-volume';
@@ -209,7 +211,7 @@ export interface FixedFeeStat {
 export function fixedFeeOf(ctx: Ctx): FixedFeeStat[] {
   const proj = ctx.params.filters.projectIds.length ? new Set(ctx.params.filters.projectIds) : null;
   const out: FixedFeeStat[] = [];
-  for (const p of ctx.snapshot.projects) {
+  for (const p of projectsAt(ctx.snapshot, ctx.nowSec)) {
     if (p.billingType !== 'fixedFee' || (proj && !proj.has(p.id))) continue;
     const used = (ctx.cur.agg.byProject.get(p.id) ?? 0) > 0;
     if (p.archived && !used) continue;
@@ -239,11 +241,17 @@ export interface BudgetAlert extends BudgetStatus {
   currency: Currency | null;
 }
 
+/**
+ * The percent of a budget used, as text. The percent of a fixed fee is money (time at the rates against the fee),
+ * so it hides with the fee while earnings are hidden, as it does on the Projects tab. A percent of hours is not money.
+ */
+export const budgetPercentText = (hide: boolean, b: Pick<BudgetStatus, 'basis' | 'percent'>): string => (hide && b.basis === 'fee' ? MASK : `${b.percent}%`);
+
 /** Budget status as the project reports it: 80% warns, 100% is over. All-time, so no date range applies. */
 export function budgetAlertsOf(ctx: Ctx): BudgetAlert[] {
   const proj = ctx.params.filters.projectIds.length ? new Set(ctx.params.filters.projectIds) : null;
   const out: BudgetAlert[] = [];
-  for (const p of ctx.snapshot.projects) {
+  for (const p of projectsAt(ctx.snapshot, ctx.nowSec)) {
     const b = p.figures.budget;
     if (!b || p.archived || (proj && !proj.has(p.id))) continue;
     out.push({ ...b, projectId: p.id, name: p.name, color: p.color, billingType: p.billingType, budgetHours: p.budgetHours, feeCents: p.fixedFeeCents, currency: p.feeCurrency });

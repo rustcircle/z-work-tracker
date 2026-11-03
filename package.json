@@ -2,13 +2,13 @@
   "name": "z-work-tracker",
   "private": true,
   "license": "MIT",
-  "author": "Pedro Jorge <p@rustcircle.com>",
+  "author": "Pedro Jorge <pmrj@rustcircle.com>",
   "repository": "https://github.com/rustcircle/z-work-tracker",
-  "version": "0.2.0",
+  "version": "1.3.1",
   "type": "module",
-  "packageManager": "pnpm@12.9.0",
+  "packageManager": "pnpm@12.16.1",
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "scripts": {
     "dev": "vite --port 1420 --strictPort",
@@ -22,7 +22,9 @@
     "tauri": "tauri",
     "smoke:native": "node scripts/native-smoke.mjs",
     "gen:tz": "cargo run --manifest-path src-tauri/Cargo.toml -p z-work-core --example gen_tzdata -- src/generated/tzdata.json",
-    "package:windows": "node scripts/package-windows.mjs"
+    "package:windows": "node scripts/package-windows.mjs",
+    "package:msix": "node scripts/package-msix.mjs",
+    "check:readme": "node scripts/check-readme-toc.mjs"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

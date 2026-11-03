@@ -3,22 +3,35 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { errorCode, errorMessage } from '../../lib/errorMessage';
 import type { RichDoc, Template } from '../../lib/types';
+import { useDirtyGuard } from '../../components/dirtyGuard';
 import { IconEdit, IconPlus, IconTrash } from '../../components/icons';
 import { RichEditor } from '../../components/RichText';
 import { Button, ConfirmDialog, Field, ProjectChip } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
+import { ReadOnlyNote } from './ReadOnlyNote';
 import { MAX_TEMPLATE_NAME, MAX_TEMPLATE_TAGS, liveTagIds, templatePreview, validateTemplateName } from './templateLogic';
 import './catalog.css';
 
 function TemplateEditor({ template, onDone }: { template: Template | null; onDone: () => void }) {
   const { snapshot, adopt } = useAppState();
+  const { readOnly } = useReadOnly();
   const [name, setName] = useState(template?.name ?? '');
   const [projectId, setProjectId] = useState<string | null>(template?.projectId ?? null);
   const [tags, setTags] = useState<string[]>(() => liveTagIds(template ?? { tags: [] }, new Set(snapshot.tags.map((t) => t.id))));
   const [text, setText] = useState<RichDoc>(template?.description ?? null);
+  // What the editor opened with: leaving the tab asks first only if something differs from it.
+  const [opened] = useState({ name, projectId, tags, text });
+  useDirtyGuard(
+    name !== opened.name ||
+      projectId !== opened.projectId ||
+      tags.length !== opened.tags.length ||
+      tags.some((id) => !opened.tags.includes(id)) ||
+      (text !== opened.text && JSON.stringify(text) !== JSON.stringify(opened.text)),
+  );
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<{ code: string; message: string } | null>(null);
@@ -38,7 +51,7 @@ function TemplateEditor({ template, onDone }: { template: Template | null; onDon
   async function submit(e: FormEvent): Promise<void> {
     e.preventDefault();
     setTouched(true);
-    if (nameError || tooManyTags) return;
+    if (nameError || tooManyTags || readOnly) return;
     setBusy(true);
     try {
       const r = await api.saveTemplate({ id: template?.id ?? null, name: name.trim(), projectId, description: text, tags });
@@ -111,7 +124,7 @@ function TemplateEditor({ template, onDone }: { template: Template | null; onDon
         </p>
       )}
       <div className="form-actions">
-        <Button variant="primary" type="submit" disabled={busy}>
+        <Button variant="primary" type="submit" disabled={busy || readOnly}>
           {template ? 'Save template' : 'Create template'}
         </Button>
         <Button variant="ghost" onClick={onDone}>
@@ -125,6 +138,7 @@ function TemplateEditor({ template, onDone }: { template: Template | null; onDon
 export function TemplatesSection() {
   const { snapshot } = useAppState();
   const { act } = useCommands();
+  const { readOnly } = useReadOnly();
   const [editing, setEditing] = useState<string | 'new' | null>(null);
   const [deleting, setDeleting] = useState<Template | null>(null);
 
@@ -137,6 +151,7 @@ export function TemplatesSection() {
 
   return (
     <div className="settings-stack">
+      <ReadOnlyNote />
       <p className="muted">A template is a starting point for a task: a name, an optional project, tags and text, including a task list. Use one from “From template” on the new-task form. Items in a task list are always saved unticked.</p>
       {snapshot.templates.length === 0 && <p className="muted">No templates yet.</p>}
       <ul className="template-list" aria-label="Templates">
@@ -166,10 +181,10 @@ export function TemplatesSection() {
                     {preview.firstLine && <p className="muted template-text">{preview.firstLine}</p>}
                   </div>
                   <span className="template-actions">
-                    <Button small id={`template-edit-${tpl.id}`} icon={<IconEdit />} onClick={() => setEditing(tpl.id)}>
+                    <Button small id={`template-edit-${tpl.id}`} icon={<IconEdit />} disabled={readOnly} onClick={() => setEditing(tpl.id)}>
                       Edit <span className="visually-hidden">template {tpl.name}</span>
                     </Button>
-                    <Button small variant="danger" icon={<IconTrash />} onClick={() => setDeleting(tpl)}>
+                    <Button small variant="danger" icon={<IconTrash />} disabled={readOnly} onClick={() => setDeleting(tpl)}>
                       Delete <span className="visually-hidden">template {tpl.name}</span>
                     </Button>
                   </span>
@@ -183,7 +198,7 @@ export function TemplatesSection() {
         <TemplateEditor template={null} onDone={() => closeEditor('template-add')} />
       ) : (
         <div>
-          <Button id="template-add" icon={<IconPlus />} onClick={() => setEditing('new')}>
+          <Button id="template-add" icon={<IconPlus />} disabled={readOnly} onClick={() => setEditing('new')}>
             New template
           </Button>
         </div>

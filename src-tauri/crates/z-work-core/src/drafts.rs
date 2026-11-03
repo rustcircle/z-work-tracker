@@ -74,6 +74,8 @@ pub enum KeptBecause {
     ChangedElsewhere,
     /// Their task no longer exists.
     TaskGone,
+    /// With an id on each list item they are longer than a description can be.
+    TooLong,
 }
 
 /// Words shown in a notice until it is dismissed, as plain text.

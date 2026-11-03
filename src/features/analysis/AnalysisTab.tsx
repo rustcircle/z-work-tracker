@@ -44,7 +44,10 @@ type Computed = { ok: true; m: Metrics } | { ok: false; error: string };
 /** Reads the clock only when a step of billable time, a minute of the running stretch or midnight falls due. */
 export function AnalysisTab() {
   const { snapshot, nowSec, zones } = useApp();
-  const [range, setRange] = useState<RangeSpec>(() => defaultRange(dayOf(nowSec, zones.active)));
+  // Null until a period is chosen: the period around today until then, and today moves with the clock and the zone.
+  const [chosen, setRange] = useState<RangeSpec | null>(null);
+  const today = dayOf(nowSec, zones.active);
+  const range = useMemo(() => chosen ?? defaultRange(today), [chosen, today]);
   const live = useMemo(() => snapshot.segments.some((s) => s.end === null && s.provisionalEnd === null), [snapshot]);
   const zone = zones.active;
   // New data (the snapshot carries the zone and the rounding too) can change when the next wake is.
@@ -70,9 +73,14 @@ const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, 
   const [drill, setDrill] = useState<DrillSel | null>(null);
   const [glossary, setGlossary] = useState<{ open: boolean; focus: string | null }>({ open: false, focus: null });
 
-  // A task deleted while it was the filter is no filter any more: with none left to filter by, the screen would show no time at all.
-  const present = useMemo(() => new Set(snapshot.tasks.map((t) => t.id)), [snapshot.tasks]);
-  const filters = useMemo<Filters>(() => (stored.taskIds.every((id) => present.has(id)) ? stored : { ...stored, taskIds: stored.taskIds.filter((id) => present.has(id)) }), [stored, present]);
+  // A task, project or tag deleted while it was the filter is no filter any more: with none left to filter by, the screen would show no time at all.
+  const filters = useMemo<Filters>(() => {
+    const tasks = new Set(snapshot.tasks.map((t) => t.id));
+    const projects = new Set(snapshot.projects.map((p) => p.id));
+    const tags = new Set(snapshot.tags.filter((t) => !t.deleted).map((t) => t.id));
+    if (stored.taskIds.every((id) => tasks.has(id)) && stored.projectIds.every((id) => projects.has(id)) && stored.tagIds.every((id) => tags.has(id))) return stored;
+    return { ...stored, taskIds: stored.taskIds.filter((id) => tasks.has(id)), projectIds: stored.projectIds.filter((id) => projects.has(id)), tagIds: stored.tagIds.filter((id) => tags.has(id)) };
+  }, [stored, snapshot.tasks, snapshot.projects, snapshot.tags]);
 
   // The name and description search becomes a set of task ids, so every figure, chart and exported sheet follows it.
   const projectMap = useMemo(() => new Map(snapshot.projects.map((p) => [p.id, p])), [snapshot.projects]);
@@ -95,8 +103,10 @@ const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, 
   }, [snapshot, params, clock, basis]);
 
   useEffect(() => {
-    publishAnalysisView({ range, filters: effective, basis, compare });
-  }, [range, effective, basis, compare]);
+    publishAnalysisView({ range, filters: effective, shown: filters, basis, compare });
+  }, [range, effective, filters, basis, compare]);
+  // The tab is the only place its filters can be seen, so an export reads them only while it is open.
+  useEffect(() => () => publishAnalysisView(null), []);
 
   const jumps = useJumps();
   const openGlossary = useCallback((id: string) => setGlossary({ open: true, focus: id }), []);

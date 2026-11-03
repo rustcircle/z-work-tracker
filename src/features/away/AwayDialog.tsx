@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 
 import { useApp, useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { IconWarn } from '../../components/icons';
 import { useToast } from '../../components/Toasts';
 import { Badge, Button, Modal, ProjectChip } from '../../components/ui';
@@ -62,6 +63,7 @@ function GapRow({ gap, task, project, zone, today, busy, onDecide }: { gap: Idle
  */
 export function AwayDialog() {
   const { snapshot, adopt, zones, nowSec } = useApp();
+  const ro = useReadOnly();
   const toast = useToast();
   const requests = useAwayRequests();
   const [handled, setHandled] = useState(getAwayRequests);
@@ -75,15 +77,17 @@ export function AwayDialog() {
   const projects = useMemo(() => new Map(snapshot.projects.map((p) => [p.id, p])), [snapshot.projects]);
 
   // Adjusting state while rendering: a manual request, or a pending id never asked about, opens it.
+  // While another computer holds the lease no answer can be saved, so it stays closed: a request is taken and forgotten, and
+  // what was never asked about is asked once this computer can write.
   if (requests !== handled) {
     setHandled(requests);
-    setOpen(true);
+    if (!ro.readOnly) setOpen(true);
   }
-  if (pending.some((g) => !asked.has(g.id))) {
+  if (!ro.readOnly && pending.some((g) => !asked.has(g.id))) {
     setAsked(new Set(pending.map((g) => g.id)));
     setOpen(true);
   }
-  if (open && pending.length === 0) setOpen(false);
+  if (open && (pending.length === 0 || ro.readOnly)) setOpen(false);
 
   const today = dayOf(nowSec, zones.active);
 
@@ -153,6 +157,7 @@ export function AwayDialog() {
 /** Stays at the top while any time away is unanswered, with a way back into the dialog. */
 export function AwayBanner() {
   const { snapshot } = useAppState();
+  const ro = useReadOnly();
   const pending = useMemo(() => pendingGaps(snapshot.gaps), [snapshot.gaps]);
   const tasks = useMemo(() => new Map(snapshot.tasks.map((t) => [t.id, t])), [snapshot.tasks]);
   if (pending.length === 0) return null;
@@ -162,7 +167,7 @@ export function AwayBanner() {
       <span>
         <strong>{UNCONFIRMED}.</strong> {formatDuration(totalSecs(pending))} of time away on {taskNames(pending, tasks)} is waiting for your answer.
       </span>
-      <Button small onClick={openAway}>
+      <Button small disabled={ro.readOnly} title={ro.why ?? undefined} onClick={openAway}>
         Review time away
       </Button>
     </div>

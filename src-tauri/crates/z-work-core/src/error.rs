@@ -25,6 +25,8 @@ pub enum CoreError {
     ColdStartRequired,
     #[error("could not save data: {0}")]
     Io(#[from] std::io::Error),
+    #[error("could not read data: {0}")]
+    Read(#[source] std::io::Error),
     #[error("could not encode data: {0}")]
     Json(#[from] serde_json::Error),
     #[error(
@@ -37,6 +39,10 @@ pub enum CoreError {
     Pdf(String),
     #[error("data store is not available: {0}")]
     StoreUnavailable(String),
+    #[error(
+        "{holder} is using zWorkTracker, so this computer is read-only. Take over from the banner to work here."
+    )]
+    ReadOnly { holder: String },
 }
 
 impl CoreError {
@@ -50,9 +56,16 @@ impl CoreError {
             Self::Conflict(_) => "conflict",
             Self::Overlap(_) => "overlap",
             Self::ColdStartRequired => "cold_start_required",
-            Self::Io(_) | Self::Json(_) | Self::Xlsx(_) | Self::Pdf(_) => "io",
+            Self::Io(_) | Self::Read(_) | Self::Json(_) | Self::Xlsx(_) | Self::Pdf(_) => "io",
             Self::FutureVersion { .. } => "future_version",
             Self::StoreUnavailable(_) => "store_unavailable",
+            Self::ReadOnly { .. } => "read_only",
         }
+    }
+
+    /// Something else has the file open for now, so trying again can help.
+    #[must_use]
+    pub fn is_held(&self) -> bool {
+        matches!(self, Self::Io(e) | Self::Read(e) if crate::sync::is_transient(e))
     }
 }

@@ -1,15 +1,19 @@
 [package]
 name = "z-work-session"
-version = "0.2.0"
+version = "1.3.1"
 edition.workspace = true
 rust-version.workspace = true
-description = "Whether the Windows session is locked. The workspace's only unsafe code, one audited FFI call"
+description = "Whether the Windows session is locked, and the app's package identity. The workspace's only unsafe code, audited FFI calls"
 license = "MIT"
-authors = ["Pedro Jorge <p@rustcircle.com>"]
+authors = ["Pedro Jorge <pmrj@rustcircle.com>"]
 repository = "https://github.com/rustcircle/z-work-tracker"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_RemoteDesktop"] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_RemoteDesktop",
+] }
 
 # Not the workspace's lints: its `forbid` could not be relaxed for the one module that needs it.
 [lints.rust]

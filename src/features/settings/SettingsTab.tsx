@@ -15,6 +15,7 @@ import { RoundingSection } from './RoundingSection';
 import { ShiftsSection } from './ShiftsSection';
 import { SyncSection } from './SyncSection';
 import { ThemeSection } from './ThemeSection';
+import { VersionsSection } from './VersionsSection';
 import { ZonesSection } from './ZonesSection';
 
 const SECTIONS: { id: string; title: string; render: () => ReactNode }[] = [
@@ -23,13 +24,14 @@ const SECTIONS: { id: string; title: string; render: () => ReactNode }[] = [
   { id: 'rounding', title: 'Rounding', render: () => <RoundingSection /> },
   { id: 'targets', title: 'Targets', render: () => <TargetsSection /> },
   { id: 'shifts', title: 'Shifts', render: () => <ShiftsSection /> },
-  { id: 'startup', title: 'Startup', render: () => <AutostartSection /> },
+  { id: 'startup', title: 'Start with Windows', render: () => <AutostartSection /> },
   { id: 'tags', title: 'Tags', render: () => <TagsSection /> },
   { id: 'templates', title: 'Templates', render: () => <TemplatesSection /> },
   { id: 'billing', title: 'Billing references', render: () => <BillingPrefixSection /> },
   { id: 'reminders', title: 'Time away and reminders', render: () => <RemindersSection /> },
   { id: 'sync', title: 'Sync between devices', render: () => <SyncSection /> },
   { id: 'backups', title: 'Backups', render: () => <BackupsSection /> },
+  { id: 'versions', title: 'Versions', render: () => <VersionsSection /> },
   { id: 'audit', title: 'History of changes', render: () => <AuditSection /> },
   { id: 'setup', title: 'Setup', render: () => <RerunSetup /> },
   { id: 'about', title: 'About', render: () => <AboutSection /> },

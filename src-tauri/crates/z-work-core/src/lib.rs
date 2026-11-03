@@ -14,12 +14,17 @@ pub mod analytics;
 pub mod backup;
 pub mod billing;
 pub mod catalog;
+pub mod changes;
 pub mod colors;
 pub mod csv;
 pub mod detect;
 pub mod drafts;
+pub mod epoch;
 pub mod error;
+pub mod gz;
 pub mod idle;
+pub mod lease;
+pub mod lease_io;
 pub mod machine;
 pub mod merge;
 pub mod model;
@@ -36,8 +41,19 @@ pub mod sync;
 pub mod time;
 pub mod tray;
 pub mod validate;
+pub mod versions;
 pub mod view;
+pub mod webview;
 pub mod xlsx;
+
+#[cfg(test)]
+mod scenario_folders_tests;
+#[cfg(test)]
+mod scenario_tests;
+#[cfg(test)]
+mod scenario_versions_tests;
+#[cfg(test)]
+pub(crate) mod testkit;
 
 pub use error::CoreError;
 pub use time::{Clock, ManualClock, SystemClock, Ts};

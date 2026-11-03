@@ -1,21 +1,33 @@
 import { useState } from 'react';
 
 import { useApp } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { PROJECT_PALETTE } from '../../lib/color';
 import { cityOf, dayOf, zoneLabel } from '../../lib/tz';
 import type { ShiftVersion } from '../../lib/types';
+import { useDirtyGuard } from '../../components/dirtyGuard';
 import { WEEKDAY_NAMES } from '../../components/format';
 import { Badge, Button, ConfirmDialog, Field, Swatch, onRadioKeyDown } from '../../components/ui';
 import { IconPlus } from '../../components/icons';
 import { useCommands } from '../../components/useCommands';
 import { ZonePickerDialog } from '../zones';
+import { ReadOnlyNote } from './ReadOnlyNote';
 import { PRESETS, WEEKDAYS_ALL, checkShift, runsOvernight, shiftGroups, summary, type ShiftDraft } from './shiftLogic';
+
+/** Whether a draft differs from the one the form opened with. The order the weekdays were ticked in is not a difference. */
+function changed(d: ShiftDraft, was: ShiftDraft): boolean {
+  const days = (v: ShiftDraft): string => [...v.weekdays].sort().join();
+  return d.name !== was.name || d.color.toLowerCase() !== was.color.toLowerCase() || d.start !== was.start || d.end !== was.end || d.zone !== was.zone || d.breakMinutes !== was.breakMinutes || d.effectiveFrom !== was.effectiveFrom || days(d) !== days(was);
+}
 
 function ShiftForm({ initial, onDone }: { initial: ShiftDraft; onDone: () => void }) {
   const { zones, nowSec } = useApp();
   const { act } = useCommands();
+  const { readOnly } = useReadOnly();
   const [d, setD] = useState(initial);
+  // Leaving the tab asks first only if something differs from what the form opened with.
+  useDirtyGuard(changed(d, initial));
   const [touched, setTouched] = useState(false);
   const [pick, setPick] = useState(false);
   const check = checkShift(d);
@@ -31,7 +43,7 @@ function ShiftForm({ initial, onDone }: { initial: ShiftDraft; onDone: () => voi
       onSubmit={(e) => {
         e.preventDefault();
         setTouched(true);
-        if (!check.ok) return;
+        if (!check.ok || readOnly) return;
         void act(async () => (await api.saveShift(check.input)).snapshot).then((ok) => ok && onDone());
       }}
     >
@@ -101,7 +113,7 @@ function ShiftForm({ initial, onDone }: { initial: ShiftDraft; onDone: () => voi
         {({ id, describedBy }) => <input id={id} className="input" type="date" value={d.effectiveFrom} onChange={(e) => e.target.value && set('effectiveFrom', e.target.value)} aria-describedby={describedBy} />}
       </Field>
       <div className="form-actions">
-        <Button variant="primary" type="submit">
+        <Button variant="primary" type="submit" disabled={readOnly}>
           Save shift
         </Button>
         <Button variant="ghost" onClick={onDone}>
@@ -116,6 +128,7 @@ function ShiftForm({ initial, onDone }: { initial: ShiftDraft; onDone: () => voi
 export function ShiftsSection() {
   const { snapshot, nowSec, zones } = useApp();
   const { act } = useCommands();
+  const { readOnly } = useReadOnly();
   const today = dayOf(nowSec, zones.active);
   const [form, setForm] = useState<ShiftDraft | null>(null);
   const [formKey, setFormKey] = useState(0);
@@ -147,13 +160,14 @@ export function ShiftsSection() {
 
   return (
     <div className="settings-stack">
+      <ReadOnlyNote />
       <p>Shifts draw as shaded bands on the timeline and feed the shift analysis. Overlapping shifts never count time twice: each moment goes to the shift that started first.</p>
       <div className="inline-actions" role="group" aria-label="Add a shift">
-        <Button icon={<IconPlus />} onClick={() => open(blank())}>
+        <Button icon={<IconPlus />} disabled={readOnly} onClick={() => open(blank())}>
           New shift
         </Button>
         {PRESETS.map((p) => (
-          <Button key={p.name} small onClick={() => open(blank({ name: p.name, start: p.start, end: p.end, color: p.color }))}>
+          <Button key={p.name} small disabled={readOnly} onClick={() => open(blank({ name: p.name, start: p.start, end: p.end, color: p.color }))}>
             Add {p.name} preset
           </Button>
         ))}
@@ -172,19 +186,19 @@ export function ShiftsSection() {
                 <p className="muted">{summary(g.current)}</p>
               </div>
               <div className="project-actions">
-                <Button small onClick={() => edit(g.current)}>
+                <Button small disabled={readOnly} onClick={() => edit(g.current)}>
                   Edit <span className="visually-hidden">{g.current.name}</span>
                 </Button>
                 {g.retired ? (
-                  <Button small onClick={() => setRetired(g.current, false)}>
+                  <Button small disabled={readOnly} onClick={() => setRetired(g.current, false)}>
                     Reactivate <span className="visually-hidden">{g.current.name}</span>
                   </Button>
                 ) : (
-                  <Button small onClick={() => setRetired(g.current, true)}>
+                  <Button small disabled={readOnly} onClick={() => setRetired(g.current, true)}>
                     Retire <span className="visually-hidden">{g.current.name}</span>
                   </Button>
                 )}
-                <Button small variant="danger" onClick={() => setDeleting(g.shiftId)}>
+                <Button small variant="danger" disabled={readOnly} onClick={() => setDeleting(g.shiftId)}>
                   Delete <span className="visually-hidden">{g.current.name}</span>
                 </Button>
               </div>
@@ -200,7 +214,7 @@ export function ShiftsSection() {
                         <span>
                           From <strong>{v.effectiveFrom}</strong>: {v.retired ? 'retired' : summary(v)}
                         </span>
-                        <Button small onClick={() => setReverting({ version: v, before: sorted[i - 1] ?? null, name: g.current.name })}>
+                        <Button small disabled={readOnly} onClick={() => setReverting({ version: v, before: sorted[i - 1] ?? null, name: g.current.name })}>
                           Revert this version <span className="visually-hidden">of {g.current.name} from {v.effectiveFrom}</span>
                         </Button>
                       </li>

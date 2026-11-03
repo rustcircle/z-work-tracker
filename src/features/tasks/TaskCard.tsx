@@ -3,6 +3,7 @@ import { memo, useEffect, useRef, useState, type ReactElement } from 'react';
 import { api } from '../../lib/api';
 import type { LaunchState, Project, Task } from '../../lib/types';
 import { useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { useNav } from '../../components/nav';
 import { RichView, hasDescription } from '../../components/RichText';
 import { Badge, Button, IconButton, Modal, ProjectChip } from '../../components/ui';
@@ -14,7 +15,7 @@ import { LiveTicker } from './LiveTicker';
 import { TaskDetailsButton } from './TaskDetails';
 import { TaskEditor } from './TaskEditor';
 import { RemotePause, TaskTags, TaskTimeParts } from './TaskCardExtras';
-import { STATE_LABEL, controlsFor, pauseReasonText } from './taskLogic';
+import { STATE_LABEL, controlsFor, pauseReasonText, type Control } from './taskLogic';
 
 interface Props {
   task: Task;
@@ -34,12 +35,17 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
   const { act, transition } = useCommands();
   const nav = useNav();
   const store = useEditStore();
+  const ro = useReadOnly();
   const [open, setOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const articleRef = useRef<HTMLElement | null>(null);
   const handledSeq = useRef(0);
   const editing = store.editing.has(task.id);
-  const c = controlsFor(task, project, launch, snapshot.tags);
+  const allowed = controlsFor(task, project, launch, snapshot.tags);
+  // What the state of the task allows is not enough while another computer holds the lease: the backend refuses all four.
+  // A control that is off for its own reason keeps that reason.
+  const gate = (ctl: Control): Control => (ro.readOnly && ctl.enabled ? { enabled: false, why: ro.why } : ctl);
+  const c = { start: gate(allowed.start), pause: gate(allowed.pause), resume: gate(allowed.resume), stop: gate(allowed.stop) };
   const reason = task.state === 'paused' ? pauseReasonText(task.pauseReason, tasks) : null;
   const detail = hasDescription(task.description);
   const titleId = `task-${task.id}`;
@@ -126,7 +132,7 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
       <div className="task-tools">
         <IconButton label={`Edit ${task.name}`} icon={<IconEdit />} onClick={() => (editing ? store.close(task.id) : store.open(task.id))} aria-expanded={editing} />
         {task.state !== 'draft' && <TaskDetailsButton task={task} />}
-        {task.state === 'draft' && <IconButton label={`Delete draft ${task.name}`} icon={<IconTrash />} onClick={() => setConfirmDelete(true)} />}
+        {task.state === 'draft' && <IconButton label={`Delete draft ${task.name}`} icon={<IconTrash />} disabled={ro.readOnly} title={ro.readOnly ? (ro.why ?? undefined) : `Delete draft ${task.name}`} onClick={() => setConfirmDelete(true)} />}
         {detail && !editing && (
           <button type="button" className="link task-details" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
             Description <IconChevron open={open} />
@@ -148,6 +154,7 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
             <Button onClick={() => setConfirmDelete(false)}>Keep it</Button>
             <Button
               variant="danger"
+              disabled={ro.readOnly}
               onClick={() => {
                 setConfirmDelete(false);
                 void act(() => api.deleteDraft(task.id));
@@ -161,6 +168,7 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
         <p>
           “{task.name}” has no logged time. Deleting removes it from {snapshot.deviceName} and from synced devices.
         </p>
+        {ro.readOnly && <p className="muted">{ro.why}</p>}
       </Modal>
     </article>
   );

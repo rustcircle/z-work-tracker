@@ -40,7 +40,8 @@ export function AuditSection() {
     return () => {
       alive = false;
     };
-  }, [fetchAll]);
+    // Every change writes an entry, here or arriving from elsewhere, and a new snapshot is how it is heard of.
+  }, [fetchAll, snapshot]);
 
   const reload = async (): Promise<void> => {
     setRefreshing(true);
@@ -93,7 +94,7 @@ export function AuditSection() {
           </p>
           <ol className="audit-list" aria-label="History of changes">
             {shown.slice(0, count).map((e) => {
-              const line = auditLine(e, zones.active, snapshot.deviceId, snapshot.deviceName);
+              const line = auditLine(e, zones.active, snapshot.deviceId, snapshot.deviceName, snapshot.prefs.hideEarnings);
               return (
                 <li key={e.id} className="audit-entry" data-testid="audit-entry" data-entity={e.entity}>
                   <p className="audit-head">

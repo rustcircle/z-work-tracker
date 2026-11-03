@@ -214,6 +214,8 @@ test.describe('keyboard', () => {
     await expect(colours.getByRole('radio').last()).toHaveAttribute('aria-checked', 'true');
     await page.keyboard.press('Home');
     await expect(colours.getByRole('radio').first()).toHaveAttribute('aria-checked', 'true');
+    // The colour was changed, so the form has changes that are not saved and leaving the tab would ask first (R10).
+    await page.getByRole('form', { name: 'New project' }).getByRole('button', { name: 'Cancel' }).click();
 
     await page.getByRole('tab', { name: 'Analysis' }).click();
     const range = page.getByRole('radiogroup', { name: 'Range' });

@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useEffectEvent, useId, useRef, useState } from 'react';
 
 import { useAppState } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import type { PatchReply, RichDoc, Task, TaskExpected, TaskPatch, TemplateInput } from '../../lib/types';
 import { TagPicker } from './TagPicker';
@@ -23,6 +24,9 @@ import { Button, Field } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { MAX_RETRIES, SAVED_FIELDS, hasUnsaved, heldFields, newSession, readHeldFields, sameValue, settle, storedFields, useEditStore, type EditField, type SaveStatus, type SavedField } from './editStore';
 import { errorCode, errorMessage } from '../../lib/errorMessage';
+
+/** A fieldset that only carries `disabled` for what is inside it. */
+const NO_FRAME = { border: 0, margin: 0, padding: 0, minWidth: 0 } as const;
 
 export const AUTOSAVE_MS = 600;
 /** How soon typed description text is stashed on disk, so a Windows shutdown in the next second loses nothing. */
@@ -63,10 +67,19 @@ export function unsentAwayNotice(name: string, unsent: readonly SavedField[], re
   return `${state} If the app closes first, ${end}.`;
 }
 
-/** Why the backend won't take a save, when the failure is in the edit and not in the writing. */
+/**
+ * Why the backend won't take a save, when the failure is in the edit and not in the writing. Another computer holding the lease is
+ * one: sending again can't help until this one takes over, and the words stay where they are meanwhile.
+ */
 function refusal(e: unknown): string | null {
   const code = errorCode(e);
+  if (code === 'read_only') return errorMessage(e).replace(/\.$/, '');
   return code === 'validation' || code === 'not_found' ? errorMessage(e) : null;
+}
+
+/** What the status line says of a save the lease refused. */
+function notSavedReadOnly(holder: string | null): string {
+  return `Not saved: ${holder ?? 'Another computer'} is using zWorkTracker. Take over to save.`;
 }
 
 /** What the status line says while unsaved values wait for the user to choose. The editor shows one value per field, so it can't show the newer one beside them. */
@@ -81,6 +94,7 @@ function conflictNotice(held: readonly SavedField[], stashFailed: boolean): stri
 
 export function TaskEditor({ task }: { task: Task }) {
   const { snapshot, adopt, showError } = useAppState();
+  const ro = useReadOnly();
   const { act } = useCommands();
   const store = useEditStore();
   const { saved: savedInStore, taskGone, noteAway } = store;
@@ -270,6 +284,7 @@ export function TaskEditor({ task }: { task: Task }) {
       }
       s.failures += 1;
       s.refused = refusal(out.error);
+      s.refusedByLease = errorCode(out.error) === 'read_only';
       if (s.dirty.description) stashAgain();
       const willRetry = s.refused === null && s.failures <= MAX_RETRIES && SAVED_FIELDS.some((f) => s.dirty[f] && !s.conflict[f]);
       s.report({ kind: 'failed', willRetry });
@@ -278,6 +293,7 @@ export function TaskEditor({ task }: { task: Task }) {
     }
     s.failures = 0;
     s.refused = null;
+    s.refusedByLease = false;
     if (out.reply) latest.current = { ...latest.current, ...out.reply.stored };
     if (send.description && s.conflict.description) stashAgain();
     // A sent field not changed since is done with. What was held stays unsaved, and so does anything typed meanwhile.
@@ -320,8 +336,22 @@ export function TaskEditor({ task }: { task: Task }) {
     session.edits[field] += 1;
     session.failures = 0;
     session.refused = null;
+    session.refusedByLease = false;
     setStatus((prev) => (prev.kind === 'saving' ? prev : { kind: 'idle' }));
   }
+
+  // A save the lease refused goes out again once this computer can write: taking over is all that was missing. A field the other
+  // computer changed meanwhile is still held for the user to choose, as for any save. With the editor closed, the store does this.
+  const writable = !ro.readOnly;
+  useEffect(() => {
+    if (!writable || !session.refusedByLease) return;
+    session.refusedByLease = false;
+    session.refused = null;
+    session.failures = 0;
+    schedule();
+    // `schedule` only reads the session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [writable, session]);
 
   // While this editor is on screen it says what is held. When it goes, a notice elsewhere takes that over.
   useEffect(() => {
@@ -507,6 +537,7 @@ export function TaskEditor({ task }: { task: Task }) {
             ref={nameRef}
             className="input"
             value={name}
+            readOnly={ro.readOnly}
             autoComplete="off"
             aria-required="true"
             aria-invalid={nameError ? true : undefined}
@@ -542,12 +573,14 @@ export function TaskEditor({ task }: { task: Task }) {
             ref={projectRef}
             className="input"
             value={projectId}
+            disabled={ro.readOnly}
             {...track('project')}
             onChange={(e) => {
               setProjectId(e.target.value);
               session.projectId = e.target.value;
               touch('project');
-              schedule();
+              // A choice is complete as it is made. Only typing waits to see if more is coming.
+              void flush();
             }}
             onBlur={(e) => {
               leave(e.currentTarget, 'project');
@@ -567,6 +600,7 @@ export function TaskEditor({ task }: { task: Task }) {
         ref={descRef}
         label="Description"
         value={session.description}
+        editable={!ro.readOnly}
         onChange={(doc: RichDoc) => {
           session.description = doc;
           touch('description');
@@ -581,23 +615,28 @@ export function TaskEditor({ task }: { task: Task }) {
           void flush();
         }}
       />
-      <TagPicker
-        tags={snapshot.tags}
-        value={tags}
-        onChange={(ids) => {
-          setTags(ids);
-          session.tags = ids;
-          touch('tags');
-          schedule();
-        }}
-      />
+      {/* A disabled fieldset disables every box and button in the picker, and shows them as they are. */}
+      <fieldset disabled={ro.readOnly} style={NO_FRAME}>
+        <TagPicker
+          tags={snapshot.tags}
+          value={tags}
+          onChange={(ids) => {
+            setTags(ids);
+            session.tags = ids;
+            touch('tags');
+            void flush();
+          }}
+        />
+      </fieldset>
       <div className="editor-foot">
         <span id={statusId} className="save-state" role="status" aria-live="polite" data-testid="save-state" data-kind={shown.kind}>
           {shown.kind === 'saving' && 'Saving…'}
           {shown.kind === 'saved' && 'Saved'}
           {shown.kind === 'rejected' && shown.message}
           {shown.kind === 'discarded' && 'Discarded. What is stored now is shown.'}
-          {shown.kind === 'failed' && (shown.willRetry ? 'Not saved. Your changes are still here and will be sent again.' : 'Not saved. Your changes are still here. Edit or press Done to try again.')}
+          {shown.kind === 'idle' && ro.why}
+          {shown.kind === 'failed' && session.refusedByLease && notSavedReadOnly(snapshot.lease.holder?.deviceName ?? null)}
+          {shown.kind === 'failed' && !session.refusedByLease && (shown.willRetry ? 'Not saved. Your changes are still here and will be sent again.' : 'Not saved. Your changes are still here. Edit or press Done to try again.')}
           {shown.kind !== 'conflict' && held.length > 0 && ' '}
           {held.length > 0 && conflictNotice(held, stashFailed)}
         </span>
@@ -607,7 +646,7 @@ export function TaskEditor({ task }: { task: Task }) {
               Discard my words
             </Button>
           )}
-          <Button small disabled={templateBusy} onClick={() => void saveAsTemplate()}>
+          <Button small disabled={templateBusy || ro.readOnly} title={ro.why ?? undefined} onClick={() => void saveAsTemplate()}>
             Save as template
           </Button>
           <Button

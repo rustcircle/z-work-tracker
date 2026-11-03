@@ -1,10 +1,21 @@
 // Readable lines for the audit log. The backend stores `before` and `after` as free JSON, so every
 // reader here checks the shape it expects and falls back to plain key/value text.
 import { clock } from '../../components/format';
+import { isCurrency, money } from '../../lib/billing';
 import { dayOf, parseIso } from '../../lib/tz';
 import type { AuditEntry } from '../../lib/types';
+import { parseVersionName, versionReasonWords } from './versionText';
 
-const ENTITY: Record<string, string> = { segment: 'Time entry', gap: 'Time away', pause: 'Billable pause', summary: 'Billing summary', backup: 'Backup' };
+const ENTITY: Record<string, string> = {
+  segment: 'Time entry',
+  gap: 'Time away',
+  pause: 'Billable pause',
+  summary: 'Billing summary',
+  backup: 'Backup',
+  version: 'Saved version',
+  lease: 'Use of the app',
+  price: 'Price',
+};
 const GAP_KIND: Record<string, string> = { sleep: 'sleep', idle: 'idle', lock: 'screen locked' };
 const ACTION: Record<string, string> = {
   manualEntry: 'added by hand',
@@ -18,6 +29,16 @@ const ACTION: Record<string, string> = {
   create: 'created',
   requestPause: 'pause requested from this computer for a task running elsewhere',
   delete: 'deleted, with all its time',
+  removed: 'removed',
+  // Another computer stopped responding, so a running entry of it was closed at the last moment it was known to be running.
+  settleLost: 'closed for a computer that stopped responding',
+  // That computer came back: its own record of the end replaces the closing that was made for it.
+  reclaimAfterReturn: 'set back to the end its own computer recorded',
+  // The same, but the time is on a billing summary, so the closing stays.
+  reclaimOnSummary: 'kept as billed, though its own computer recorded another end',
+  // Written by the computer that lost the turn to change data, so it reads as what that computer saw.
+  leaseLost: 'went to another computer, as recorded',
+  clockPutBack: "closed because its computer's clock was put back",
 };
 const DECISION: Record<string, string> = { pending: 'waiting for an answer', keep: 'kept as work', drop: 'dropped', thinking: 'marked as thinking' };
 
@@ -60,8 +81,31 @@ function pairs(o: Record<string, unknown>, zone: string): string {
   return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }
 
-/** One short phrase for a stored value. */
-export function summarize(value: unknown, zone: string): string {
+/** "the version of 2026-11-02 14:25 (automatic hourly copy)", for a version's file name; any other text is shown as it is. */
+export function versionLabel(name: string, zone: string): string {
+  const parsed = parseVersionName(name);
+  return parsed === null ? name : `the version of ${whenText(parsed.iso, zone)} (${versionReasonWords(parsed.reason)})`;
+}
+
+/** The computer a record names: its name, or "another computer" when all it holds is a device id. */
+function computerNamed(by: unknown): string {
+  const name = str(by);
+  return name === null || name.trim() === '' || /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(name) ? 'another computer' : name;
+}
+
+/** "€70.00/h from 2026-04-01". Amounts are masked while earnings are hidden, as everywhere else. */
+function priceText(value: Record<string, unknown>, from: string, zone: string, hide: boolean): string {
+  const since = isIso(from) ? dayOf(parseIso(from), zone) : from;
+  const cents = value.rateCents;
+  const currency = str(value.currency);
+  if (typeof cents !== 'number') return `no rate from ${since}`;
+  if (hide) return `rate hidden from ${since}`;
+  const amount = currency !== null && isCurrency(currency) ? money(currency, cents) : `${(cents / 100).toFixed(2)}${currency === null ? '' : ` ${currency}`}`;
+  return `${amount}/h from ${since}`;
+}
+
+/** One short phrase for a stored value. `hide` masks amounts of money, like the rest of the window does while earnings are hidden. */
+export function summarize(value: unknown, zone: string, hide = false): string {
   if (value === null || value === undefined) return 'nothing';
   if (!isRecord(value)) return typeof value === 'string' && isIso(value) ? whenText(value, zone) : String(value);
   const rawStart = str(value.rawStart);
@@ -71,7 +115,8 @@ export function summarize(value: unknown, zone: string): string {
     if (isRecord(edit)) {
       const start = str(edit.start);
       if (edit.voided === true) return `voided (recorded ${recorded})`;
-      if (start !== null) return `${spanText(start, str(edit.end), zone)} (recorded ${recorded})`;
+      // A closing made for a computer that stopped responding says so: its own computer never recorded that end.
+      if (start !== null) return `${spanText(start, str(edit.end), zone)} (${edit.settled === true ? `closed at its last known moment; recorded ${recorded}` : `recorded ${recorded}`})`;
     }
     return `recorded ${recorded}`;
   }
@@ -80,7 +125,11 @@ export function summarize(value: unknown, zone: string): string {
   const reference = str(value.reference);
   if (reference !== null) return reference;
   const safetyCopy = str(value.safetyCopy);
-  if (safetyCopy !== null) return `the data from just before is kept as ${safetyCopy}`;
+  if (safetyCopy !== null) {
+    // A restored version also leaves a copy of the data before it in the sync folders.
+    const before = str(value.preRestore);
+    return `the data from just before is kept as ${safetyCopy}${before === null ? '' : ` and as ${versionLabel(before, zone)}`}`;
+  }
   const start = str(value.start);
   if (start !== null && 'end' in value) {
     const kind = str(value.kind);
@@ -98,6 +147,14 @@ export function summarize(value: unknown, zone: string): string {
   // A pause request: the other computer's segment, and when it was asked for.
   const requestedAt = str(value.at);
   if (str(value.segmentId) !== null && requestedAt !== null && Object.keys(value).length === 2) return `asked at ${whenText(requestedAt, zone)}`;
+  // A price taken away: what it was and from when it applied.
+  const priceFrom = str(value.effectiveFrom);
+  if (str(value.projectId) !== null && priceFrom !== null && 'rateCents' in value) return priceText(value, priceFrom, zone, hide);
+  // The turn to change data went to another computer, and the entries of this one that were closed because of it.
+  if (typeof value.generation === 'number' && Array.isArray(value.closed)) {
+    const closed = value.closed.length;
+    return `${computerNamed(value.by)} took over${closed === 0 ? '' : `; ${closed} running ${closed === 1 ? 'entry' : 'entries'} stopped here`}`;
+  }
   return pairs(value, zone);
 }
 
@@ -108,13 +165,16 @@ export interface AuditLine {
   after: string;
 }
 
-export function auditLine(e: AuditEntry, zone: string, deviceId: string, deviceName: string): AuditLine {
-  // A restore names the backup in its entity id; its before and after are not about that backup.
-  const restore = e.entity === 'backup' && e.action === 'restore';
-  return {
-    when: whenText(e.at, zone),
-    by: e.by === deviceId ? (deviceName ? `this computer (${deviceName})` : 'this computer') : 'another computer',
-    before: restore ? 'the data in use' : summarize(e.before, zone),
-    after: restore ? `${e.entityId}; ${summarize(e.after, zone)}` : summarize(e.after, zone),
-  };
+export function auditLine(e: AuditEntry, zone: string, deviceId: string, deviceName: string, hide = false): AuditLine {
+  const mine = e.by === deviceId;
+  const by = mine ? (deviceName ? `this computer (${deviceName})` : 'this computer') : 'another computer';
+  const when = whenText(e.at, zone);
+  // A restore names the backup or the version in its entity id; its before and after are not about that.
+  if (e.action === 'restore' && (e.entity === 'backup' || e.entity === 'version')) {
+    const restored = e.entity === 'version' ? versionLabel(e.entityId, zone) : e.entityId;
+    return { when, by, before: 'the data in use', after: `${restored}; ${summarize(e.after, zone, hide)}` };
+  }
+  // Written by the computer that lost its turn: it could change data before, and the other one did after.
+  if (e.entity === 'lease') return { when, by, before: mine ? 'this computer could change data' : 'that computer could change data', after: summarize(e.after, zone, hide) };
+  return { when, by, before: summarize(e.before, zone, hide), after: summarize(e.after, zone, hide) };
 }

@@ -14,7 +14,7 @@ If SignPath Foundation accepts the project: free code signing provided by [SignP
 
 The project lives in the GitHub organization `rustcircle` and has one maintainer, who holds all three roles. SignPath has not confirmed that one person may hold them all.
 
-Contact: p@rustcircle.com
+Contact: pmrj@rustcircle.com
 
 ## Rules
 

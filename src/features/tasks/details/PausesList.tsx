@@ -3,6 +3,7 @@
 import { useId, useMemo, useState, type FormEvent } from 'react';
 
 import { useAppState } from '../../../app/store';
+import { useReadOnly } from '../../../app/useReadOnly';
 import { formatDuration } from '../../../components/format';
 import { Badge, Button } from '../../../components/ui';
 import { api } from '../../../lib/api';
@@ -17,6 +18,7 @@ const FIRST = 10;
 
 export function PausesList({ task }: { task: Task }) {
   const { snapshot, zones } = useAppState();
+  const ro = useReadOnly();
   const zone = zones.active;
   const [all, setAll] = useState(false);
   const [betweenDays, setBetweenDays] = useState(false);
@@ -36,6 +38,11 @@ export function PausesList({ task }: { task: Task }) {
       <p className="details-lead">
         Billable pause time on this task: <strong className="tabular">{formatDuration(task.pauseSecs)}</strong>. A billable pause counts in Billable but not in Exact, so a wait you were paid for can be billed without claiming you worked it.
       </p>
+      {ro.readOnly && (
+        <p className="details-note" role="status">
+          {ro.why}
+        </p>
+      )}
       <div aria-live="polite" className="details-live">
         {notice && <p className="details-success">{notice}</p>}
       </div>
@@ -94,12 +101,14 @@ function PauseItem({ span, marked, billed, zone, taskId, onNotice }: { span: Spa
 
 function BillForm({ span, taskId, describedBy, zone, onNotice }: { span: Span; taskId: string; describedBy: string; zone: string; onNotice: (t: string | null) => void }) {
   const { adopt } = useAppState();
+  const ro = useReadOnly();
   const noteId = useId();
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
   const submit = async () => {
+    if (ro.readOnly) return;
     setBusy(true);
     const r = await attempt(() => api.markBillablePause({ taskId, start: toIso(span.start), end: toIso(span.end), note: note.trim() }));
     setBusy(false);
@@ -136,7 +145,7 @@ function BillForm({ span, taskId, describedBy, zone, onNotice }: { span: Span; t
         aria-describedby={describedBy}
         autoComplete="off"
       />
-      <Button type="submit" small disabled={busy} aria-describedby={describedBy}>
+      <Button type="submit" small disabled={busy || ro.readOnly} title={ro.why ?? undefined} aria-describedby={describedBy}>
         Bill this pause
       </Button>
       {problem && (
@@ -150,6 +159,7 @@ function BillForm({ span, taskId, describedBy, zone, onNotice }: { span: Span; t
 
 function MarkedPause({ pause, billed, zone, describedBy, onNotice }: { pause: BillablePause; billed: boolean; zone: string; describedBy: string; onNotice: (t: string | null) => void }) {
   const { adopt } = useAppState();
+  const ro = useReadOnly();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const span = { start: parseIso(pause.start), end: parseIso(pause.end) };
@@ -176,7 +186,7 @@ function MarkedPause({ pause, billed, zone, describedBy, onNotice }: { pause: Bi
       {billed ? (
         <p className="details-note">{BILLED_REASON}.</p>
       ) : (
-        <Button small disabled={busy} aria-describedby={describedBy} onClick={() => void undo()}>
+        <Button small disabled={busy || ro.readOnly} title={ro.why ?? undefined} aria-describedby={describedBy} onClick={() => void undo()}>
           Undo
         </Button>
       )}

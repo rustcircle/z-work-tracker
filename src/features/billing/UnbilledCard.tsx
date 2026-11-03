@@ -1,7 +1,8 @@
 // Preview of the unbilled time of one project and period, with Copy and Create summary.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import { useApp } from '../../app/store';
+import { useReadOnly } from '../../app/useReadOnly';
 import { formatDuration } from '../../components/format';
 import { Button, Card, Field } from '../../components/ui';
 import { api } from '../../lib/api';
@@ -10,7 +11,7 @@ import { dayOf } from '../../lib/tz';
 import type { Snapshot, SummaryPreview } from '../../lib/types';
 import { spanDays, type RangeSpec } from '../analysis/range';
 import { FIXED_FEE_TEXT, centsText, feeText, hasCents, noAmountReason, periodText, summaryText } from './billingText';
-import { CopyButton, GuidanceLabel, PeriodPicker, RowsTable, defaultPeriod, zoneChoices } from './parts';
+import { CopyButton, GuidanceLabel, PeriodPicker, RowsTable, chosenZone, defaultPeriod, zoneChoices } from './parts';
 import { errorMessage } from '../../lib/errorMessage';
 
 interface Loaded {
@@ -24,10 +25,14 @@ type Outcome = { key: string; kind: 'created'; reference: string; rows: number }
 
 export function UnbilledCard() {
   const { snapshot, nowSec, zones, adopt } = useApp();
+  const ro = useReadOnly();
+  const readOnlyId = useId();
   const hide = snapshot.prefs.hideEarnings;
   const [projectChoice, setProjectChoice] = useState<string | null>(null);
   const [zoneChoice, setZoneChoice] = useState<string | null>(null);
-  const [range, setRange] = useState<RangeSpec>(() => defaultPeriod(dayOf(nowSec, zones.active)));
+  // Null until a period is chosen: the one around today until then, and today moves with the clock and the zone.
+  const [rangeChoice, setRange] = useState<RangeSpec | null>(null);
+  const range = rangeChoice ?? defaultPeriod(dayOf(nowSec, zones.active));
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [busy, setBusy] = useState(false);
@@ -61,7 +66,8 @@ export function UnbilledCard() {
 
   const project = projects.find((p) => p.id === (projectChoice ?? '')) ?? projects.find((p) => p.id === auto) ?? null;
   const projectId = project?.id ?? null;
-  const zone = zoneChoice ?? project?.clientZone ?? zones.active;
+  const zoneOptions = zoneChoices(zones, nowSec, project?.clientZone ?? null);
+  const zone = chosenZone(zoneChoice, zoneOptions, project?.clientZone ?? zones.active);
   const span = spanDays(range);
   const key = `${projectId}|${span.fromDay}|${span.toDay}|${zone}`;
   const today = dayOf(nowSec, zone);
@@ -103,7 +109,7 @@ export function UnbilledCard() {
       : '';
 
   async function create(): Promise<void> {
-    if (!projectId || creating.current) return;
+    if (!projectId || creating.current || ro.readOnly) return;
     creating.current = true;
     // Pin what is being billed. Left on its default, the project would move on to whichever has the most
     // unbilled time once this one has none, and the message below would be lost with it.
@@ -163,7 +169,7 @@ export function UnbilledCard() {
         <Field label="Days are cut in" hint="The zone decides which day a segment belongs to. It defaults to the project's client zone.">
           {({ id, describedBy }) => (
             <select id={id} className="input" value={zone} onChange={(e) => setZoneChoice(e.target.value)} aria-describedby={describedBy}>
-              {zoneChoices(zones, nowSec, project?.clientZone ?? null).map((o) => (
+              {zoneOptions.map((o) => (
                 <option key={o.z} value={o.z}>
                   {o.text}
                 </option>
@@ -196,6 +202,19 @@ export function UnbilledCard() {
             <strong>A running segment is not included.</strong> Pause or stop the task to include that time in a later summary.
           </p>
         )}
+        {data && data.partlyBilledRows > 0 && (
+          <p className="bl-notice" role="status" data-testid="billing-partly-billed">
+            {data.partlyBilledRows === 1 ? (
+              <>
+                <strong>Part of this day&apos;s time is already on a summary.</strong> A task&apos;s time on a day rounds once as a whole, so this row bills only the difference.
+              </>
+            ) : (
+              <>
+                <strong>Part of these days&apos; time is already on a summary.</strong> A task&apos;s time on a day rounds once as a whole, so these rows bill only the difference.
+              </>
+            )}
+          </p>
+        )}
         {data && data.rows.length === 0 && <p className="bl-empty">There is no unbilled time in that period.</p>}
         {data && data.rows.length > 0 && project && (
           <>
@@ -210,10 +229,15 @@ export function UnbilledCard() {
 
       <div className="form-actions" aria-label="Summary actions" role="group">
         <CopyButton key={key} label="Copy" getText={text} disabled={!hasRows} />
-        <Button variant="primary" disabled={!hasRows || busy || settling} onClick={() => void create()}>
+        <Button variant="primary" disabled={!hasRows || busy || settling || ro.readOnly} title={ro.why ?? undefined} aria-describedby={ro.readOnly ? readOnlyId : undefined} onClick={() => void create()}>
           {busy ? 'Creating…' : 'Create summary'}
         </Button>
       </div>
+      {ro.readOnly && (
+        <p className="field-hint" id={readOnlyId} role="status">
+          {ro.why} Copy still works.
+        </p>
+      )}
       {hide && hasRows && <p className="field-hint">Hide earnings is on: the copied text leaves out amounts.</p>}
       {mine?.kind === 'created' && (
         <p ref={outcomeRef} tabIndex={-1} className="bl-created" role="status" data-testid="billing-created">

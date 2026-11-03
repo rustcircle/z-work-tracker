@@ -2,7 +2,8 @@
 // segment is re-split every second, and only the days it touches are rebuilt (see `dayData`).
 import { exactNumeratorsOf, numeratorsOf, taskDays, type Numerators, type RateBook, type SpanLike, type TaskDay } from '../../lib/billing';
 import { effectiveEnd, splitAll, type BandIndex, type Piece, type Seg } from '../../lib/split';
-import { addDays, dayOf, hhmmToMinutes, instantOfWall, parseIso, weekdayOf } from '../../lib/tz';
+import { clientHoursWindows } from '../../lib/clientHours';
+import { addDays, dayOf, parseIso, weekdayOf } from '../../lib/tz';
 import type { GapKind, PieceKind, RawSegment, RoundingVersion, Snapshot } from '../../lib/types';
 import { assignLanes } from './axisGeometry';
 
@@ -388,19 +389,9 @@ export interface Window {
   end: number;
 }
 
-/** The client's working hours on every client-zone date that touches `[start, end)`, clipped to it. */
+/** The client's working hours on every client-zone date that touches `[start, end)`, clipped to it. Analysis builds its windows the same way (lib/clientHours.ts). */
 export function workWindows(start: number, end: number, zone: string, workStart: string, workEnd: string): Window[] {
-  const s = hhmmToMinutes(workStart);
-  const e = hhmmToMinutes(workEnd);
-  const out: Window[] = [];
-  for (let d = addDays(dayOf(start, zone), -1); d <= dayOf(Math.max(start, end - 1), zone); d = addDays(d, 1)) {
-    const a = instantOfWall(d, s, zone);
-    const b = instantOfWall(e <= s ? addDays(d, 1) : d, e, zone);
-    const lo = Math.max(a, start);
-    const hi = Math.min(b, end);
-    if (hi > lo) out.push({ start: lo, end: hi });
-  }
-  return out;
+  return clientHoursWindows(start, end, zone, workStart, workEnd);
 }
 
 export function overlapSecs(pieces: readonly { start: number; end: number }[], windows: readonly Window[]): number {

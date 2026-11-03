@@ -8,7 +8,7 @@ import { api } from '../../lib/api';
 import { dayOf, zoneLabel } from '../../lib/tz';
 import type { PdfRequest, SelectedEntry } from '../../lib/types';
 import { spanDays, type RangeSpec } from '../analysis/range';
-import { PeriodPicker, defaultPeriod, zoneChoices } from '../billing/parts';
+import { PeriodPicker, chosenZone, defaultPeriod, zoneChoices } from '../billing/parts';
 import '../billing/billing.css';
 import { errorMessage } from '../../lib/errorMessage';
 
@@ -51,7 +51,9 @@ export function usePdfForm(selected: PdfSelection | null = null): PdfForm {
   const hidden = snapshot.prefs.hideEarnings;
   const [projectId, setProjectIdRaw] = useState('');
   const [zoneChoice, setZoneChoice] = useState<string | null>(null);
-  const [range, setRange] = useState<RangeSpec>(() => defaultPeriod(dayOf(nowSec, zones.active)));
+  // Null until a period is chosen: the one around today until then. This form is there from the launch on, however long that was ago.
+  const [rangeChoice, setRange] = useState<RangeSpec | null>(null);
+  const range = rangeChoice ?? defaultPeriod(dayOf(nowSec, zones.active));
   const [titleChoice, setTitleChoice] = useState<string | null>(null);
   // Hide earnings means no prices unless the user turns them on here.
   const [pricesChoice, setPricesChoice] = useState<boolean | null>(null);
@@ -63,7 +65,7 @@ export function usePdfForm(selected: PdfSelection | null = null): PdfForm {
   const [logoError, setLogoError] = useState<string | null>(null);
 
   const project = snapshot.projects.find((p) => p.id === projectId) ?? null;
-  const zone = zoneChoice ?? project?.clientZone ?? zones.client ?? zones.active;
+  const zone = chosenZone(zoneChoice, zoneChoices(zones, nowSec, project?.clientZone ?? null), project?.clientZone ?? zones.client ?? zones.active);
   const title = titleChoice ?? (project ? `Timesheet: ${project.name}` : 'Timesheet');
   const includePrices = pricesChoice ?? !hidden;
   const useLogo = snapshot.hasPdfLogo && (logoChoice ?? true);
