@@ -4,9 +4,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { onRadioKeyDown } from '../../components/ui';
 import { BANDS } from '../../lib/split';
 import { OUTSIDE, NO_FILTERS, type Filters } from './engine';
+import { UNTAGGED_COLOR } from './fam-p2';
 import type { Basis } from './mctx';
 import { DayInput } from './DayInput';
 import { MAX_CUSTOM_DAYS, defaultRange, shiftRange, spanDays, withCustomEnd, type RangeKind, type RangeSpec } from './range';
+import { NO_TAG, tagFilterHint } from './tagFilter';
 import { groupVersions } from '../../lib/shifts';
 import type { Snapshot } from '../../lib/types';
 
@@ -201,7 +203,12 @@ export function Controls(p: ControlsProps) {
               <span>{t.name}</span>
             </label>
           ))}
-          <span className="muted a-tag-hint">{filters.tagIds.length === 0 ? 'All tasks' : 'Tasks with any selected tag'}; whole tasks are kept, so Billable stays available.</span>
+          <label className="a-check">
+            <input type="checkbox" checked={filters.tagIds.includes(NO_TAG)} onChange={() => toggleTag(NO_TAG)} />
+            <span className="a-dot-sw" style={{ background: UNTAGGED_COLOR }} aria-hidden="true" />
+            <span>No tag</span>
+          </label>
+          <span className="muted a-tag-hint">{tagFilterHint(filters.tagIds)}; whole tasks are kept, so Billable stays available.</span>
         </div>
       ) : null}
     </div>

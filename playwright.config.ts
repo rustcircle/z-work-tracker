@@ -7,8 +7,8 @@ const port = Number(process.env.PW_PORT ?? 4173);
 export default defineConfig({
   testDir: 'e2e',
   timeout: 60_000,
-  fullyParallel: false,
-  workers: 1,
+  fullyParallel: true,
+  workers: 32,
   reporter: [['list']],
   use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${port}`, viewport: { width: 1360, height: 900 } },
   webServer: {

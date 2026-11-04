@@ -950,22 +950,8 @@ fn finish_setup(app: AppHandle, core: CoreState<'_>) -> CmdResult<Snapshot> {
     Ok(core.change(&app, |s| s.finish_setup())?.1)
 }
 
-#[tauri::command(async)]
-fn set_mica(app: AppHandle, core: CoreState<'_>, on: bool) -> CmdResult<Snapshot> {
-    let snapshot = core.change(&app, |s| s.set_mica(on))?.1;
-    if apply_mica(&app, on && snapshot.prefs.mica_available) {
-        return Ok(snapshot);
-    }
-    // The page is opaque unless the backdrop is really there.
-    Ok(core
-        .change(&app, |s| {
-            s.set_mica_available(false);
-            Ok(())
-        })?
-        .1)
-}
-
-/// Shows the window once, after the page has painted, so a transparent window never appears empty.
+/// Shows the window once, after the page has first painted, so it does not appear as an empty frame. The first frame can
+/// still be the light loading page: the theme is applied when the snapshot arrives, after that.
 static WINDOW_SHOWN: AtomicBool = AtomicBool::new(false);
 
 fn show_main_once(app: &AppHandle) {
@@ -979,73 +965,6 @@ fn show_main_once(app: &AppHandle) {
 #[tauri::command]
 fn window_ready(app: AppHandle) {
     show_main_once(&app);
-}
-
-/// Windows 11's backdrop. The page turns transparent only for the themes it suits.
-/// Returns false when the backdrop was asked for and Windows refused it, so the caller can keep the
-/// page opaque. This calls window-vibrancy itself because tauri's `set_effects` runs the same call on
-/// the UI thread and discards its result.
-///
-/// What a true can't promise: Windows also accepts the request when it then draws a plain fill instead
-/// of the material, for example with Transparency effects off. The page's 10% then shows that fill, or,
-/// if nothing paints behind the window at all, whatever Windows leaves there. Panels with text stay opaque,
-/// and the page's colours keep their contrast over black and white.
-#[cfg(windows)]
-fn apply_mica(app: &AppHandle, on: bool) -> bool {
-    /// The UI thread is busy for longer than this only if something is badly wrong. Opaque is safe.
-    const WAIT: Duration = Duration::from_secs(2);
-    let Some(w) = app.get_webview_window("main") else {
-        return !on;
-    };
-    let (tx, rx) = mpsc::channel();
-    let window = w.clone();
-    // On the UI thread, as tauri does it. Called from there, as at launch, this runs before it returns.
-    let asked = w.run_on_main_thread(move || {
-        let result = if on {
-            window_vibrancy::apply_mica(&window, None)
-        } else {
-            // Windows too old to have Mica has nothing to clear.
-            let _ = window_vibrancy::clear_mica(&window);
-            Ok(())
-        };
-        let _ = tx.send(result);
-    });
-    if let Err(e) = asked {
-        eprintln!("Mica could not be applied: {e}");
-        return !on;
-    }
-    match rx.recv_timeout(WAIT) {
-        Ok(Ok(())) => true,
-        Ok(Err(e)) => {
-            eprintln!("Mica could not be applied: {e}");
-            !on
-        }
-        Err(e) => {
-            eprintln!("Mica did not answer: {e}");
-            !on
-        }
-    }
-}
-
-#[cfg(not(windows))]
-const fn apply_mica(_: &AppHandle, on: bool) -> bool {
-    !on
-}
-
-/// Mica needs Windows 11, build 22000 or later.
-#[cfg(windows)]
-fn mica_available() -> bool {
-    winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
-        .open_subkey("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion")
-        .ok()
-        .and_then(|k| k.get_value::<String, _>("CurrentBuildNumber").ok())
-        .and_then(|b| b.parse::<u32>().ok())
-        .is_some_and(|b| b >= 22_000)
-}
-
-#[cfg(not(windows))]
-const fn mica_available() -> bool {
-    false
 }
 
 #[tauri::command(async)]
@@ -2056,7 +1975,6 @@ pub fn run() {
                         iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_owned()),
                     );
                     s.set_detected(detect(&RealEnv, host_os()));
-                    s.set_mica_available(mica_available());
                     s.set_packaged(packaged());
                     Arc::new(Mutex::new(s))
                 }),
@@ -2077,10 +1995,6 @@ pub fn run() {
                 spawn_lease(handle.clone(), Arc::clone(&core), Arc::clone(svc));
                 let theme = guard(svc).file().prefs.theme;
                 apply_native_theme(&handle, theme);
-                let mica = guard(svc).file().prefs.mica && mica_available();
-                if !apply_mica(&handle, mica) {
-                    guard(svc).set_mica_available(false);
-                }
             }
             // The page says when it has painted. If it never does, the window still has to appear.
             let late = handle.clone();
@@ -2157,7 +2071,6 @@ pub fn run() {
         keep_unsaved_words,
         set_setup_step,
         finish_setup,
-        set_mica,
         window_ready,
         add_manual_entry,
         correct_segment,
@@ -2246,7 +2159,6 @@ pub fn run() {
         keep_unsaved_words,
         set_setup_step,
         finish_setup,
-        set_mica,
         window_ready,
         add_manual_entry,
         correct_segment,

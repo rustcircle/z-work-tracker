@@ -9,6 +9,7 @@ import { api } from '../../lib/api';
 import { parseIso } from '../../lib/tz';
 import type { Segment, Task } from '../../lib/types';
 import { clockWithAbbr, formatDuration } from '../../components/format';
+import { TimerButton } from '../../components/TimerButton';
 import { Badge, Button } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { TagChips } from './TagPicker';
@@ -185,9 +186,9 @@ export function RemotePause({ task }: { task: Task }) {
           <Badge tone="warning">Pause requested</Badge> at {clockWithAbbr(Math.floor(Date.parse(waiting.at) / 1000), zones.my)}. It takes effect when <strong>{device}</strong> next syncs.
         </p>
       ) : (
-        <Button small onClick={() => void act(() => api.requestRemotePause(task.id))}>
+        <TimerButton small onClick={() => void act(() => api.requestRemotePause(task.id))}>
           Pause it from here <span className="visually-hidden">({task.name})</span>
-        </Button>
+        </TimerButton>
       )}
       <p className="field-hint">
         {device}'s own record is not changed. Time on this task is counted only up to the moment of your request, and the task closes there the next time {device} syncs. Everything is kept in the history of changes.

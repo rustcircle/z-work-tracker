@@ -68,7 +68,7 @@ function contrastOf(el: Locator): Promise<number> {
 
 test.describe('Discard my words', () => {
   test('gives the newer text back from the keyboard, and the held words are gone for good', async ({ page }) => {
-    const found = await open(page, 'seed=demo');
+    const found = await open(page, 'seed=demo', true, true);
     const form = await holdWords(page);
     const discard = form.getByRole('button', { name: 'Discard my words' });
     await expect(form.getByTestId('save-state')).toContainText('changed elsewhere');
@@ -87,7 +87,7 @@ test.describe('Discard my words', () => {
 
   for (const [theme, file] of THEMES) {
     test(`is visible, legible and focusable in ${theme}`, async ({ page }) => {
-      await open(page, `seed=demo&theme=${theme}`);
+      await open(page, `seed=demo&theme=${theme}`, true, true);
       const form = await holdWords(page);
       const discard = form.getByRole('button', { name: 'Discard my words' });
       await expect(discard).toBeVisible();
@@ -151,7 +151,7 @@ test.describe('words that meet newer text', () => {
   };
 
   test('a clean editor shows newer text, and typing goes on from it', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
     const form = editor(page);
     const box = form.getByRole('textbox', { name: 'Description' });
@@ -167,7 +167,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('a real click on Done whose blur meets them keeps the editor open', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     const form = await typedThenNewer(page);
     await form.getByRole('button', { name: 'Done' }).click();
     await settled(page);
@@ -175,7 +175,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('the same when the reply lands after the mouse is up', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     const form = await typedThenNewer(page);
     await page.evaluate(() => {
       const w = window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a: unknown, o: unknown) => Promise<unknown> }; __release?: () => void };
@@ -204,7 +204,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('typing on keeps them held and the newer text stored', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     const form = await typedThenNewer(page);
     await settled(page);
     await page.keyboard.type(' more');
@@ -215,7 +215,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('Done after the notice saves over the newer text', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     const form = await typedThenNewer(page);
     await settled(page);
     await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
@@ -227,7 +227,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('a press of Done in the first second of the notice saves nothing, and one after it does', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     const form = await typedThenNewer(page);
     const done = form.getByRole('button', { name: 'Done' });
     await done.focus();
@@ -251,7 +251,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('a press of Done whose own blur brings the notice, then a press after its second, saves and closes', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
     const form = editor(page);
     await form.getByRole('textbox', { name: 'Description' }).click();
@@ -272,7 +272,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('an Enter held down on Done across the second is one press, and chose nothing', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     const form = await typedThenNewer(page);
     await form.getByRole('button', { name: 'Done' }).focus();
     // The first Enter comes with the notice, inside its first second.
@@ -292,7 +292,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('a Space held down on Done across the second is one press, and chose nothing', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     const form = await typedThenNewer(page);
     await form.getByRole('button', { name: 'Done' }).focus();
     // Space clicks when it comes up, not when it goes down. This one went down with the notice, inside its first second.
@@ -311,7 +311,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('a double click on Done across the second of an autosave hold chooses nothing, and a click on its own after it does', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     // The page's own clock notes when the notice first shows, so that the clicks can be placed by its age.
     await page.evaluate(() => {
       const w = window as unknown as { __notice?: number };
@@ -330,8 +330,12 @@ test.describe('words that meet newer text', () => {
       await page.clock.runFor(ms - age);
     };
     const form = await typedThenNewer(page);
-    // The autosave meets the newer text, with focus still in the description.
-    await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict');
+    // The autosave meets the newer text, with focus still in the description. The clock is frozen, so the test brings the
+    // autosave on by moving it, 50 ms at a time, until the notice is up; the notice's age is told by the page's own clock.
+    await expect(async () => {
+      await page.clock.runFor(50);
+      await expect(form.getByTestId('save-state')).toHaveAttribute('data-kind', 'conflict', { timeout: 250 });
+    }).toPass({ timeout: 15_000 });
     const done = form.getByRole('button', { name: 'Done' });
     await done.scrollIntoViewIfNeeded();
     const box = await done.boundingBox();
@@ -356,7 +360,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('quick clicks on Done, each one more of a run to the browser, count once the notice has had its second', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     const form = await typedThenNewer(page);
     const done = form.getByRole('button', { name: 'Done' });
     await done.click();
@@ -383,7 +387,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('a press dragged off Done speaks for no later key', async ({ page }) => {
-    await open(page, 'seed=demo');
+    await open(page, 'seed=demo', true, true);
     await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
     const form = editor(page);
     const done = form.getByRole('button', { name: 'Done' });
@@ -410,7 +414,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('an edit to a task deleted elsewhere goes in a notice with its words', async ({ page }) => {
-    const found = await open(page, 'seed=demo');
+    const found = await open(page, 'seed=demo', true, true);
     await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
     await editor(page).getByRole('textbox', { name: 'Description' }).click();
     await page.keyboard.type(' mine');
@@ -429,7 +433,7 @@ test.describe('words that meet newer text', () => {
   });
 
   test('a closed editor whose saves keep failing has a banner until a later success sends the words', async ({ page }) => {
-    const found = await open(page, 'seed=demo');
+    const found = await open(page, 'seed=demo', true, true);
     await page.evaluate(() => {
       const w = window as unknown as { __TAURI_INTERNALS__: { invoke: (c: string, a: unknown, o: unknown) => Promise<unknown> }; __down?: boolean };
       const real = w.__TAURI_INTERNALS__.invoke;
@@ -460,7 +464,7 @@ test.describe('words that meet newer text', () => {
 
   test('Discard on several held fields restores them all, and puts the cursor on the first', async ({ page }) => {
     await page.setViewportSize({ width: 980, height: 660 });
-    await open(page, 'seed=demo&theme=dark');
+    await open(page, 'seed=demo&theme=dark', true, true);
     await page.getByRole('button', { name: 'Edit Brand guidelines' }).click();
     const form = page.getByRole('form', { name: /^Editing / });
     await form.getByRole('textbox', { name: 'Task name' }).fill('Brand guidelines v2');

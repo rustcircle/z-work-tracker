@@ -2023,6 +2023,53 @@ mod tests {
         }
     }
 
+    /// Compat: up to 1.3.2 the device row also held `prefs.mica`, the Windows 11 backdrop 1.3.3 removed. Such a
+    /// database opens as it is with nothing lost, the key is ignored, and the next write of the row leaves it out.
+    #[test]
+    fn a_device_row_from_1_3_2_with_the_mica_preference_opens_and_loses_nothing() {
+        let device_row = |dir: &Path| -> Value {
+            let text: String = raw(dir)
+                .query_row("SELECT value FROM meta WHERE key = 'local'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            serde_json::from_str(&text).unwrap()
+        };
+        let mut f = with_project("One");
+        f.prefs.theme = crate::model::Theme::Dark;
+        f.prefs.hide_earnings = true;
+        f.prefs.setup_done = true;
+        let dir = seeded(&f);
+        raw(dir.path())
+            .execute(
+                "UPDATE meta SET value = json_set(value, '$.prefs.mica', json('true')) WHERE key = 'local'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(device_row(dir.path())["prefs"]["mica"], Value::Bool(true));
+
+        let mut opened = open(dir.path());
+        assert_eq!(opened.origin, Origin::Existing);
+        assert!(opened.notices.is_empty(), "{:?}", opened.notices);
+        assert_eq!(opened.file.prefs, f.prefs);
+        assert_eq!(opened.file.data, f.data);
+        assert_eq!(
+            serde_json::to_value(&opened.file.prefs)
+                .unwrap()
+                .get("mica"),
+            None
+        );
+
+        let mut next = opened.file.clone();
+        next.prefs.hide_earnings = false;
+        opened.store.save(&opened.file, &next).unwrap();
+        drop(opened);
+        let written = device_row(dir.path());
+        assert_eq!(written["prefs"].get("mica"), None, "{written}");
+        assert_eq!(written["prefs"]["theme"], "dark");
+        assert_eq!(open(dir.path()).file.prefs, next.prefs);
+    }
+
     /// 9: was `a_heartbeat_touches_only_its_own_file_and_is_read_back_on_load`.
     #[test]
     fn a_heartbeat_writes_one_meta_row_and_is_read_back_on_load() {

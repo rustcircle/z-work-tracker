@@ -233,9 +233,6 @@ pub struct PrefsView {
     pub hide_earnings: bool,
     pub last_currency: Option<String>,
     pub client_zone_prompt_done: bool,
-    pub mica: bool,
-    /// This system can show Mica. False everywhere except Windows 11.
-    pub mica_available: bool,
 }
 
 /// The first-run setup.

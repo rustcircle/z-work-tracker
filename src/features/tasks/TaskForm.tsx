@@ -9,6 +9,7 @@ import type { RichDoc, Tag, Task, TaskInput } from '../../lib/types';
 import { dayLabel } from '../../components/format';
 import { RichEditor, type RichEditorHandle } from '../../components/RichText';
 import { Button, Field } from '../../components/ui';
+import { TimerButton } from '../../components/TimerButton';
 import { IconPlay } from '../../components/icons';
 import { useCommands } from '../../components/useCommands';
 import { missingText, requiredToStart, validateTask, type TaskErrors } from './taskLogic';
@@ -238,9 +239,9 @@ export function TaskForm({ continueFrom, onDone }: { continueFrom?: Task; onDone
       <div className="form-actions">
         {continueFrom ? (
           <>
-            <Button variant="primary" type="submit" icon={<IconPlay />} disabled={!errors.ok || busy || ro.readOnly} title={ro.why ?? undefined} aria-describedby={ro.readOnly ? readOnlyId : undefined}>
+            <TimerButton variant="primary" type="submit" icon={<IconPlay />} disabled={!errors.ok || busy || ro.readOnly} title={ro.why ?? undefined} aria-describedby={ro.readOnly ? readOnlyId : undefined}>
               Start
-            </Button>
+            </TimerButton>
             <Button variant="ghost" onClick={() => void cancel()}>
               Cancel
             </Button>
@@ -250,7 +251,7 @@ export function TaskForm({ continueFrom, onDone }: { continueFrom?: Task; onDone
             <Button type="submit" disabled={busy || ro.readOnly} title={ro.why ?? undefined} aria-describedby={ro.readOnly ? readOnlyId : undefined}>
               Save draft
             </Button>
-            <Button
+            <TimerButton
               variant="primary"
               icon={<IconPlay />}
               disabled={!errors.ok || busy || ro.readOnly}
@@ -259,7 +260,7 @@ export function TaskForm({ continueFrom, onDone }: { continueFrom?: Task; onDone
               onClick={() => void save(true)}
             >
               Start
-            </Button>
+            </TimerButton>
             <Button variant="ghost" onClick={() => void cancel()}>
               Cancel
             </Button>

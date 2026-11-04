@@ -79,40 +79,6 @@ test.describe('replaced colours', () => {
   }
 });
 
-test.describe('Mica setting', () => {
-  test('is disabled with its reason where Mica cannot show, and works where it can', async ({ page }) => {
-    const found = await open(page, 'seed=demo');
-    await page.getByRole('tab', { name: 'Settings' }).click();
-    const toggle = page.getByRole('switch', { name: 'Windows 11 Mica backdrop' });
-    await expect(toggle).toBeDisabled();
-    await expect(page.getByTestId('mica-setting')).toContainText('needs Windows 11');
-    await expectClean(page, found);
-
-    const second = await open(page, 'seed=demo&mica=1');
-    await page.getByRole('tab', { name: 'Settings' }).click();
-    await page.getByRole('switch', { name: 'Windows 11 Mica backdrop' }).check();
-    await expect(page.locator('html')).toHaveAttribute('data-mica', 'on');
-    expect(await page.evaluate(() => window.__mock.mica)).toBe(true);
-    // Solarized stays opaque even with the switch on.
-    await page.getByRole('radio', { name: 'Solarized Dark' }).click();
-    await expect(page.locator('html')).not.toHaveAttribute('data-mica', 'on');
-    await page.getByRole('radio', { name: 'Dark', exact: true }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-mica', 'on');
-    await page.getByRole('switch', { name: 'Windows 11 Mica backdrop' }).uncheck();
-    await expect(page.locator('html')).not.toHaveAttribute('data-mica', 'on');
-    await expectClean(page, second);
-  });
-
-  for (const [theme, file] of THEMES) {
-    test(`setting in ${theme}`, async ({ page }) => {
-      await open(page, `seed=demo&mica=1&theme=${theme}`);
-      await page.getByRole('tab', { name: 'Settings' }).click();
-      await page.getByTestId('mica-setting').scrollIntoViewIfNeeded();
-      await page.screenshot({ path: path.join(SHOTS, `gapfill-mica-setting-${file}.png`) });
-    });
-  }
-});
-
 test.describe('filter screenshots', () => {
   for (const [theme, file] of THEMES) {
     test(`task rail and Timeline filters in ${theme}`, async ({ page }) => {

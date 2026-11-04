@@ -110,7 +110,6 @@ pub struct Service {
     /// Where a replacement colour's randomness comes from. Injected in tests.
     random: Box<dyn FnMut() -> u64 + Send>,
     color_replaced: Option<String>,
-    mica_available: bool,
     /// Running from an MSIX package, whose files Windows removes with the app.
     packaged: bool,
     /// Whether this computer may change replicated data, as far as can be known.
@@ -305,7 +304,6 @@ impl Service {
             clock_alerts: Vec::new(),
             random: Box::new(default_random),
             color_replaced: None,
-            mica_available: false,
             kept_out: BTreeMap::new(),
             kept_file_stuck: false,
             kept_at_risk_notice: None,
@@ -1329,16 +1327,6 @@ impl Service {
         })
     }
 
-    pub fn set_mica(&mut self, on: bool) -> Result<(), CoreError> {
-        self.mutate(|f, _| {
-            f.prefs.mica = on;
-            Ok(())
-        })
-    }
-
-    pub fn set_mica_available(&mut self, available: bool) {
-        self.mica_available = available;
-    }
     pub fn delete_tag(&mut self, id: &str) -> Result<(), CoreError> {
         self.mutate(|f, c| f.data.delete_tag(c, id))
     }
@@ -2727,8 +2715,6 @@ impl Service {
                 hide_earnings: self.file.prefs.hide_earnings,
                 last_currency: self.file.prefs.last_currency.clone(),
                 client_zone_prompt_done: self.file.prefs.client_zone_prompt_done,
-                mica: self.file.prefs.mica,
-                mica_available: self.mica_available,
             },
             setup: SetupView {
                 pending: self.setup_pending(),

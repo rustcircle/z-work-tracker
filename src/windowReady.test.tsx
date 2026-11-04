@@ -1,4 +1,4 @@
-// The Windows window is transparent and hidden until the page says it has painted: once, after first paint,
+// The window is hidden until the page says it has painted: once, after first paint,
 // and a failure must change nothing because the backend shows the window by itself after a few seconds.
 import { clearMocks } from '@tauri-apps/api/mocks';
 import { screen, waitFor } from '@testing-library/react';

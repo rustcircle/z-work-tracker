@@ -18,7 +18,7 @@ export interface Spec {
   now: string;
   zone?: string;
   projects?: Partial<Project>[] & { id: string }[];
-  tasks?: { id: string; projectId: string; state?: TaskState; stoppedAt?: string | null; tags?: string[] }[];
+  tasks?: { id: string; projectId: string; name?: string; state?: TaskState; stoppedAt?: string | null; tags?: string[]; /** The items of the task's list, which time can be logged on (a segment's `subtaskId`). */ subtasks?: { id: string; text: string }[] }[];
   /**
    * [taskId, start, end | null] with ISO UTC times. An optional fourth element makes it a piece:
    * its kind (a missing kind is work), the recorded segment it came from, and its subtask.
@@ -58,7 +58,7 @@ export function mkSnapshot(spec: Spec): Snapshot {
     tasks: (spec.tasks ?? []).map(
       (t): Task => fullTask({
         id: t.id,
-        name: `Task ${t.id}`,
+        name: t.name ?? `Task ${t.id}`,
         projectId: t.projectId,
         description: null,
         state: t.state ?? 'stopped',
@@ -68,6 +68,7 @@ export function mkSnapshot(spec: Spec): Snapshot {
         runningElsewhere: null,
         continuedFrom: null,
         tags: t.tags ?? [],
+        subtasks: (t.subtasks ?? []).map((i) => ({ id: i.id, text: i.text, checked: false, secs: 0 })),
       }),
     ),
     segments: (spec.segs ?? []).map(([taskId, start, end, o]): Segment => {
@@ -101,7 +102,7 @@ export function mkSnapshot(spec: Spec): Snapshot {
       (r, i): RoundingVersion => ({ id: `ro${i}`, projectId: null, effectiveFrom: '2026-01-01', incrementMinutes: 15, method: 'up', deleted: false, stamp, ...r }),
     ),
     settings: spec.settings ?? {},
-    prefs: { theme: 'light', hideEarnings: false, lastCurrency: null, clientZonePromptDone: true, mica: false, micaAvailable: false },
+    prefs: { theme: 'light', hideEarnings: false, lastCurrency: null, clientZonePromptDone: true },
     notices: [],
     warnings: [],
     sync: { targets: [], detected: [], promptPending: false, pendingCopy: null },

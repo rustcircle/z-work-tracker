@@ -556,6 +556,9 @@ pub enum Theme {
 }
 
 /// Device-local preferences, never replicated.
+///
+/// Compat note: a key this version doesn't know is skipped, not refused. Up to 1.3.2 these also held `mica` (Windows
+/// 11's backdrop, removed in 1.3.3), so a store or backup of theirs still loads, and the next write leaves it out.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalPrefs {
@@ -596,9 +599,6 @@ pub struct LocalPrefs {
     /// The step to resume the first-run setup at.
     #[serde(default)]
     pub setup_step: u32,
-    /// Windows 11's Mica backdrop, in the Light and Dark themes.
-    #[serde(default)]
-    pub mica: bool,
     /// A sync folder move whose previous folder couldn't be read, to retry later.
     #[serde(default)]
     pub pending_copy: Option<PendingCopy>,

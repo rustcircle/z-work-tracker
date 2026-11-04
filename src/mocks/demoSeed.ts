@@ -97,7 +97,7 @@ export function demoState(): MockState {
 export const demoNowSec = (): number => parseIso(DEMO_NOW);
 export const demoIso = (sec: number): string => toIso(sec);
 
-const subtaskDoc = (items: { id?: string; text: string; checked?: boolean }[], intro?: string): RichDoc => ({
+export const subtaskDoc = (items: { id?: string; text: string; checked?: boolean }[], intro?: string): RichDoc => ({
   type: 'doc',
   content: [
     ...(intro ? [{ type: 'paragraph', content: [{ type: 'text', text: intro }] }] : []),

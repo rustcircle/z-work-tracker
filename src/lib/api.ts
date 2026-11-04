@@ -135,7 +135,6 @@ export const api = {
   finishSetup: () => invoke<Snapshot>('finish_setup'),
   /** The page has painted: the native window may be shown. Errors are ignored by the caller. */
   windowReady: () => invoke<void>('window_ready'),
-  setMica: (on: boolean) => invoke<Snapshot>('set_mica', { on }),
 
   // Who may change the data (one computer at a time, best effort). While another computer holds the lease, every
   // command that changes shared data fails with the `read_only` code.

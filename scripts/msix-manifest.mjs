@@ -1,14 +1,43 @@
 // The parts of the MSIX packages for the Microsoft Store that come from values, not from files: the version the Store
 // takes, the two identities one run packs (the Store's and a test one), their package family names and file names,
-// AppxManifest.xml, where the licenses go, and which version an exe carries.
-// All pure, so a test can check them on any OS without makemsix. scripts/package-msix.mjs does the files.
+// AppxManifest.xml, the list of images in Assets and how to read a PNG header, where the licenses go, which version
+// an exe carries, and where the prebuilt resource index (resources.pri) of a package is looked for and what it must be.
+// All pure, so a test can check them on any OS without makemsix: even the lookup of the resource index is handed the function that reads
+// a file. scripts/package-msix.mjs does the files, and scripts/msix-stage.mjs the staging that it shares with scripts/make-pri.mjs.
 import { createHash } from 'node:crypto';
-import { posix, resolve } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 
 /** The exe the package starts. package-msix.mjs puts it beside AppxManifest.xml. */
 export const EXECUTABLE = 'zWorkTracker.exe';
-/** The images the manifest names, as Assets\<name>.png, and the size in pixels each is cut to from the app icon. */
-export const ASSETS = { StoreLogo: 50, Square44x44Logo: 44, Square150x150Logo: 150 };
+/**
+ * The file at the root of a package through which Windows finds the images whose names carry a qualifier (`.scale-200`,
+ * `.targetsize-24`, `_altform-unplated`). makepri, a Windows program, makes it: so it is made there, once for each package
+ * (`pnpm msix:pri`, scripts/make-pri.mjs, has a Windows VM do it), and kept in the repo at `packaging/msix/<package>/resources.pri`
+ * or named by ZWT_MSIX_PRI_<PACKAGE>.
+ */
+export const RESOURCE_INDEX = 'resources.pri';
+/**
+ * The images the manifest names, as Assets\<name>.png, and the size in pixels each is cut to from the app icon. These are
+ * the base sizes: `assetImages` adds the files Windows picks from at each display scale and the taskbar icons.
+ */
+export const ASSETS = Object.freeze({ StoreLogo: 50, Square44x44Logo: 44, Square150x150Logo: 150 });
+/** The manifest entry that is the app's icon in the taskbar, Start and the app list. */
+const APP_LIST = 'Square44x44Logo';
+/**
+ * The sides in pixels at which Windows asks for the app list icon: the taskbar, Start, the title bar and the menus draw it at
+ * these, from 16 at 100% scale to 256 for a Start pin at 400%.
+ * https://learn.microsoft.com/en-us/windows/apps/design/style/iconography/app-icon-construction
+ */
+export const TARGET_SIZES = Object.freeze([16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256]);
+/** The display scales, in percent, at which each logo is cut. Windows picks the nearest one for the scales in between. */
+export const SCALES = Object.freeze([100, 125, 150, 200, 400]);
+/**
+ * The three forms of each target-size icon, as the end of the name before `.png`: the plain one, the unplated one for the dark
+ * shell theme and the light-unplated one for the light theme. Microsoft asks for all three. Without the unplated forms the
+ * taskbar and Start put a backplate behind the icon, as the 1.3.2 package, which had only the plain Square44x44Logo.png, did
+ * on Windows 11 even though the logo is transparent.
+ */
+export const TARGET_FORMS = Object.freeze(['', '_altform-unplated', '_altform-lightunplated']);
 
 /**
  * The two packages one run makes from the same build, in the order they are made. Neither is signed here.
@@ -137,7 +166,7 @@ export function identityOf(kind) {
   return checkIdentity({ ...PACKAGES[kind].identity });
 }
 
-/** The file name of a package: `zWorkTracker_1.3.2.0_x64_store.msix`. The version may be given with or without its fourth part. */
+/** The file name of a package: `zWorkTracker_1.3.3.0_x64_store.msix`. The version may be given with or without its fourth part. */
 export function msixFileName(productName, version, kind) {
   identityOf(kind);
   return `${productName}_${msixVersion(version)}_x64_${PACKAGES[kind].suffix}.msix`;
@@ -190,6 +219,187 @@ export function resourceCopies(resources, tauriDir) {
     }
     return { from: resolve(tauriDir, from), to: inside };
   });
+}
+
+/**
+ * The side in pixels of a logo whose base size is `base`, at a display scale of `scale` percent. A half rounds up, as in
+ * Microsoft's table: Square150x150Logo is 188 px at 125%, and StoreLogo 63 px.
+ */
+export function scaledSize(base, scale) {
+  return Math.round((base * scale) / 100);
+}
+
+/**
+ * Every image the packages carry in Assets, as `{ name, size }`: `name` is the path inside the package, with forward slashes,
+ * and `size` the side in pixels it is cut to from the app icon. Both packages get all of them:
+ * - the plain `<logo>.png` that the manifest names, for each of the logos in ASSETS, at its base size;
+ * - `<logo>.scale-<percent>.png` for each logo at each of SCALES, which Windows picks from by display scale;
+ * - `Square44x44Logo.targetsize-<side>.png` for each of TARGET_SIZES, in each of TARGET_FORMS, which the taskbar and Start use.
+ * Windows finds the qualified names (`.scale-`, `.targetsize-`, `_altform-`) through the package's resource index, resources.pri,
+ * and falls back to the plain file the manifest names; that is why the plain files stay.
+ */
+export function assetImages() {
+  const images = Object.entries(ASSETS).map(([logo, size]) => ({ name: `Assets/${logo}.png`, size }));
+  for (const [logo, base] of Object.entries(ASSETS)) {
+    for (const scale of SCALES) images.push({ name: `Assets/${logo}.scale-${scale}.png`, size: scaledSize(base, scale) });
+  }
+  for (const form of TARGET_FORMS) {
+    for (const size of TARGET_SIZES) images.push({ name: `Assets/${APP_LIST}.targetsize-${size}${form}.png`, size });
+  }
+  return images;
+}
+
+/** The images of `assetImages` that `entries`, the names of the files inside a package, lack. None means the package carries them all. */
+export function lackingAssets(entries) {
+  const have = new Set(entries);
+  return assetImages()
+    .map(({ name }) => name)
+    .filter((name) => !have.has(name));
+}
+
+// How a PRI file starts. Microsoft does not document the format, so this is read off files: the two resources.pri of Microsoft's own test
+// packages (github.com/microsoft/msix-packaging: src/test/testData/pack/input and tools/pipelines-tasks/test/assets/PrebuiltBinaries),
+// made by makepri for Windows 10, and the index of Windows Terminal dumped in github.com/awakecoding/pri-format. All three start with the
+// eight bytes of mrm_pri2, and end with them. mrm_pri3 and mrm_prif turned up in none of them nor in Microsoft's documentation, so they
+// are not taken: if a makepri is found to write another, add it here.
+const PRI_MAGICS = Object.freeze(['mrm_pri2']);
+
+function reason(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The first bytes of a file as text for a message: printable ASCII as it is, any other byte as \xNN. */
+function printable(bytes) {
+  return bytes.toString('latin1').replace(/[^ -~]/g, (char) => `\\x${char.charCodeAt(0).toString(16).padStart(2, '0')}`);
+}
+
+/** The variable that names the resource index of the `store` or `test` package, ahead of the usual place: ZWT_MSIX_PRI_STORE or ZWT_MSIX_PRI_TEST. */
+export function resourceIndexVariable(kind) {
+  identityOf(kind);
+  return `ZWT_MSIX_PRI_${kind.toUpperCase()}`;
+}
+
+/**
+ * Checks `bytes`, a prebuilt resources.pri, as the resource index of the `store` or `test` package. It returns them, or throws what
+ * is wrong, as a clause that ends the sentence "<file> cannot be the resource index of the <package> package: ...". It must:
+ * - not be empty, and start like a PRI file that makepri made for Windows 10 (PRI_MAGICS);
+ * - name the Identity Name of this package, and not the one of the other. makepri writes the name of the resource map, which is the
+ *   Identity Name of the AppxManifest.xml it is given, into the index, as UTF-16LE: in the three files above both as ms-appx://<name>/ and
+ *   on its own. Windows reads an index as the index of the package whose name it holds, so one made for the test package, put in the Store
+ *   package, would pass for it here and not work there.
+ */
+export function checkResourceIndex(kind, bytes) {
+  const { name } = identityOf(kind);
+  if (bytes.length === 0) throw new Error('it is empty.');
+  if (!PRI_MAGICS.some((magic) => bytes.subarray(0, magic.length).equals(Buffer.from(magic, 'latin1')))) {
+    throw new Error(`it is not a PRI file: it starts with "${printable(bytes.subarray(0, 8))}", and one that makepri made for Windows 10 starts with ${PRI_MAGICS.join(' or ')}.`);
+  }
+  const names = (identity) => bytes.includes(Buffer.from(identity, 'utf16le'));
+  const other = Object.keys(PACKAGES).find((one) => one !== kind && names(PACKAGES[one].identity.name));
+  if (other !== undefined) {
+    throw new Error(`it names the identity of the ${other} package, ${PACKAGES[other].identity.name}, and the ${kind} package's is ${name}. Windows uses an index only for the package whose name it holds.`);
+  }
+  if (!names(name)) {
+    throw new Error(`it does not name the identity of the ${kind} package, ${name}. makepri writes into the index the Identity Name of the AppxManifest.xml it is given, so this one was made from another manifest.`);
+  }
+  return bytes;
+}
+
+/**
+ * How makepri writes the path of an image into a resource index: with the backslash Windows uses, and as 8-bit text. The index keeps the
+ * path of every image file, to open the one Windows picks for a size or a scale. A path that is plain ASCII is written as it is, one byte to a
+ * letter, and only names (the Identity Name, ms-appx://<name>/) are UTF-16LE. Read off the same two files of Microsoft's as PRI_MAGICS: each
+ * holds Assets\Square44x44Logo.targetsize-24_altform-unplated.png, and the path of every other file of its Assets folder, in that form.
+ */
+export function indexPathOf(name) {
+  return name.replaceAll('/', '\\');
+}
+
+/**
+ * Whether `bytes`, a resources.pri, holds the path of the image `name` (such as `Assets/StoreLogo.png`): as `indexPathOf` writes it, or in UTF-16LE,
+ * which is how makepri would write a path with a character outside ASCII. The paths of the images are all ASCII, so the second form is the
+ * unlikely one; it is accepted so that the check cannot turn away an index only because of how its strings are stored.
+ */
+export function indexHoldsImage(bytes, name) {
+  const path = indexPathOf(name);
+  return bytes.includes(Buffer.from(path, 'latin1')) || bytes.includes(Buffer.from(path, 'utf16le'));
+}
+
+/** The images of `assetImages` whose paths `bytes`, a resources.pri, does not hold. None means the index lists all of them. */
+export function imagesLackingInIndex(bytes) {
+  return assetImages()
+    .map(({ name }) => name)
+    .filter((name) => !indexHoldsImage(bytes, name));
+}
+
+/**
+ * Checks that `bytes`, a resources.pri, lists every image of `assetImages`, and returns them, or throws what is wrong as a clause that ends the
+ * sentence "<file> cannot be the resource index of the <package> package: ...". An index lists the images that were in the folder it was made
+ * from, so one made before the set of images changed, or from a folder that lacked some, would still pass `checkResourceIndex` and leave
+ * Windows without the images it lacks: the unplated ones, which are what takes the plate away.
+ */
+export function checkIndexImages(bytes) {
+  const lacking = imagesLackingInIndex(bytes);
+  if (lacking.length > 0) {
+    const shown = lacking.length > 3 ? `${lacking.slice(0, 3).join(', ')} and ${lacking.length - 3} more` : lacking.join(', ');
+    throw new Error(
+      `it does not list ${lacking.length} of the ${assetImages().length} images of a package (${shown}). An index lists the images that were there when it was made, so ` +
+        'this one was made for another set of images, and Windows would not find those through it. Make it again with pnpm msix:pri.',
+    );
+  }
+  return bytes;
+}
+
+/**
+ * The prebuilt resource index of the `store` or `test` package, found and checked: `{ file, bytes, variable }`, or null if there is none.
+ * It is the file the variable of `resourceIndexVariable` names in `env`, or, if that is not set or blank, `packaging/msix/<package>/resources.pri`
+ * under `root`, the repo. `read` is handed a path and returns the file's bytes, or null if there is no such file. Nothing at the usual place
+ * is no index and no error; a variable that names a file that is not there is an error, since it cannot mean "no index". `variable` is the
+ * one that named the file, or null if it was the usual place. A file that `checkResourceIndex` refuses, or that `checkIndexImages` does for
+ * lacking images of the package, throws, saying which.
+ */
+export function resourceIndexFor(kind, { env, root, read }) {
+  const variable = resourceIndexVariable(kind);
+  const chosen = (env[variable] ?? '').trim();
+  const file = chosen === '' ? join(root, 'packaging', 'msix', kind, RESOURCE_INDEX) : resolve(chosen);
+  let bytes;
+  try {
+    bytes = read(file);
+  } catch (error) {
+    throw new Error(`Could not read ${file}: ${reason(error)}`);
+  }
+  if (bytes === null) {
+    if (chosen !== '') throw new Error(`${variable} names ${file}, which is not there.`);
+    return null;
+  }
+  try {
+    checkResourceIndex(kind, bytes);
+    checkIndexImages(bytes);
+  } catch (error) {
+    throw new Error(`${file} cannot be the resource index of the ${kind} package: ${reason(error)}`);
+  }
+  return { file, bytes, variable: chosen === '' ? null : variable };
+}
+
+/**
+ * What the header of a PNG says, read from the file's `bytes`: `{ width, height, alpha }`, where `alpha` is true if the image can be
+ * transparent, that is if it has an alpha channel or a tRNS chunk. It is null if `bytes` do not start like a PNG. No pixel is read.
+ * The cut logos are checked with it, since an image with no transparency is drawn as a solid square.
+ */
+export function pngInfo(bytes) {
+  const SIGNATURE = Buffer.from('89504e470d0a1a0a', 'hex');
+  // The signature, then the header chunk: its length, its name, 13 bytes of data (width, height, bit depth, colour type, ...) and a checksum.
+  if (bytes.length < 33 || !bytes.subarray(0, 8).equals(SIGNATURE) || bytes.toString('latin1', 12, 16) !== 'IHDR') return null;
+  const colourType = bytes[25];
+  // Colour types 4 (grey and alpha) and 6 (RGBA) carry alpha. The others can declare a transparent colour in a tRNS chunk before the pixels.
+  let alpha = colourType === 4 || colourType === 6;
+  for (let at = 33; !alpha && at + 8 <= bytes.length; ) {
+    const type = bytes.toString('latin1', at + 4, at + 8);
+    if (type === 'tRNS') alpha = true;
+    if (type === 'IDAT' || type === 'IEND') break;
+    at += 12 + bytes.readUInt32BE(at);
+  }
+  return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20), alpha };
 }
 
 /**

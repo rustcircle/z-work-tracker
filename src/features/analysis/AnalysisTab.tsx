@@ -23,6 +23,7 @@ import { Overview, Projects, Tasks, TimeOfDay } from './SectionsA';
 import { TagsSection } from './SectionsP2';
 import { ShiftsSection, ZonesSection } from './SectionsC';
 import type { SecEnv } from './secenv';
+import { NO_TAG } from './tagFilter';
 import { Card, DrillPanel, GlossaryDialog, InfoButton, Invite } from './ui';
 import { publishAnalysisView } from './view';
 
@@ -77,7 +78,8 @@ const AnalysisView = memo(function AnalysisView({ snapshot, zones, live, clock, 
   const filters = useMemo<Filters>(() => {
     const tasks = new Set(snapshot.tasks.map((t) => t.id));
     const projects = new Set(snapshot.projects.map((p) => p.id));
-    const tags = new Set(snapshot.tags.filter((t) => !t.deleted).map((t) => t.id));
+    // "No tag" is a choice, not a tag that can be deleted.
+    const tags = new Set([NO_TAG, ...snapshot.tags.filter((t) => !t.deleted).map((t) => t.id)]);
     if (stored.taskIds.every((id) => tasks.has(id)) && stored.projectIds.every((id) => projects.has(id)) && stored.tagIds.every((id) => tags.has(id))) return stored;
     return { ...stored, taskIds: stored.taskIds.filter((id) => tasks.has(id)), projectIds: stored.projectIds.filter((id) => projects.has(id)), tagIds: stored.tagIds.filter((id) => tags.has(id)) };
   }, [stored, snapshot.tasks, snapshot.projects, snapshot.tags]);

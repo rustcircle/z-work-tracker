@@ -2,7 +2,7 @@
 // from classes in analysis.css (theme variables), so every chart follows the active theme and the
 // bundle stays CSP clean. Project marks use the project's exact colour; marks for concepts that
 // belong to no project use one vivid colour plus one pattern per concept, in every chart.
-import { useEffect, useId, useLayoutEffect, useState, type FocusEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useState, type FocusEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
 import { readableText } from '../../lib/color';
 import { dayCellMove, hourCellMove, isActivateKey } from './heatKeys';
@@ -535,65 +535,79 @@ export function HBars({ rows, max, ariaLabel, empty }: { rows: readonly HRow[]; 
   );
 }
 
-// ------------------------------------------------------------------ donut with direct labels
+// ------------------------------------------------------------------ donut and its legend
+
+/** The width of one colour's stripe, in pixels: the swatch in the legend (analysis.css, `.a-share-swatch.is-stripes`) uses the same. */
+const STRIPE = 4;
+
+/** Diagonal stripes of `colors`, equal in width, one after the other: how a combination of tags is drawn, apart from a single tag by its pattern as well as by its colours. */
+function StripePattern({ id, colors }: { id: string; colors: readonly string[] }) {
+  const size = STRIPE * colors.length;
+  return (
+    <pattern id={id} width={size} height={size} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      {colors.map((c, i) => (
+        <rect key={`${c}-${i}`} x={i * STRIPE} y={0} width={STRIPE} height={size} fill={c} />
+      ))}
+    </pattern>
+  );
+}
 
 export interface Slice {
   key: string;
-  label: string;
   value: number;
   color: string;
+  /** Two colours or more: the slice is drawn as stripes of them, in this order (a combination of tags). `color` is the first. */
+  stripes?: readonly string[];
   tip: string[];
+  /** What a screen reader says for the slice: the name and the figure the legend shows. */
+  aria: string;
   onSelect?: () => void;
 }
 
-export function Donut({ slices, centerTop, centerBottom, ariaLabel, empty }: { slices: readonly Slice[]; centerTop: string; centerBottom: string; ariaLabel: string; empty?: string }) {
+/**
+ * A ring of slices with the total in the middle. The slices carry no text of their own: the legend beside the ring
+ * names each one with its hours and percentage as real text, and a slice's tooltip and label say the same figures.
+ */
+export function Donut({ slices, centerTop, centerBottom, ariaLabel }: { slices: readonly Slice[]; centerTop: string; centerBottom: string; ariaLabel: string }) {
   const total = slices.reduce((n, s) => n + s.value, 0);
-  if (total <= 0) return empty ? <EmptyChart message={empty} /> : null;
+  // Ids are unique to this donut, so two of them on one page never draw each other's stripes.
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  if (total <= 0) return null;
   return (
     <ChartBox>
       {(width, tip) => {
-        const R = clamp(Math.min(width / 2 - 120, 120), 56, 120);
-        const height = Math.round(2 * R + 56);
+        const R = clamp(width / 2 - 6, 56, 120);
+        const height = Math.round(2 * R + 12);
         const cx = width / 2;
         const cy = height / 2;
         const r = R * 0.64;
         let a0 = -Math.PI / 2;
-        const labels: { key: string; x: number; y: number; right: boolean; text: string; lx: number; ly: number }[] = [];
         const arcs = slices.map((s) => {
           const frac = s.value / total;
           const a1 = a0 + frac * Math.PI * 2;
           const large = a1 - a0 > Math.PI ? 1 : 0;
           const p = (rad: number, a: number): string => `${(cx + rad * Math.cos(a)).toFixed(1)} ${(cy + rad * Math.sin(a)).toFixed(1)}`;
           const d = frac >= 0.9999 ? `M${p(R, a0)}A${R} ${R} 0 1 1 ${p(R, a0 + Math.PI)}A${R} ${R} 0 1 1 ${p(R, a0)}ZM${p(r, a0)}A${r} ${r} 0 1 0 ${p(r, a0 + Math.PI)}A${r} ${r} 0 1 0 ${p(r, a0)}Z` : `M${p(R, a0)}A${R} ${R} 0 ${large} 1 ${p(R, a1)}L${p(r, a1)}A${r} ${r} 0 ${large} 0 ${p(r, a0)}Z`;
-          const mid = (a0 + a1) / 2;
-          if (frac >= 0.035) {
-            const right = Math.cos(mid) >= 0;
-            labels.push({ key: s.key, x: cx + (R + 14) * Math.cos(mid), y: cy + (R + 14) * Math.sin(mid), right, text: `${s.label.length > 18 ? `${s.label.slice(0, 17)}…` : s.label} ${Math.round(frac * 100)}%`, lx: cx + (R + 2) * Math.cos(mid), ly: cy + (R + 2) * Math.sin(mid) });
-          }
           a0 = a1;
           return { s, d };
         });
-        // Push labels apart on each side so they never overlap.
-        for (const side of [true, false]) {
-          const group = labels.filter((l) => l.right === side).sort((a, b) => a.y - b.y);
-          for (let i = 1; i < group.length; i += 1) {
-            const prev = group[i - 1] as (typeof group)[number];
-            const cur = group[i] as (typeof group)[number];
-            if (cur.y - prev.y < 15) cur.y = prev.y + 15;
-          }
-        }
         return (
           <svg width={width} height={height} role="img" aria-label={ariaLabel} className="a-svg">
-            {arcs.map(({ s, d }) => (
-              <path key={s.key} d={d} fill={s.color} fillRule="evenodd" className={`a-slice ${s.onSelect ? 'a-hit' : ''}`} onPointerMove={(e) => tip.show(e, s.tip)} {...(s.onSelect ? onActivate(s.onSelect) : {})} aria-label={`${s.label}: ${s.tip.slice(1).join(', ')}`} />
-            ))}
-            {labels.map((l) => (
-              <g key={l.key}>
-                <polyline points={`${l.lx},${l.ly} ${l.x},${l.y} ${l.x + (l.right ? 8 : -8)},${l.y}`} fill="none" className="a-leader" />
-                <text x={l.x + (l.right ? 11 : -11)} y={l.y + 4} textAnchor={l.right ? 'start' : 'end'} className="a-label">
-                  {l.text}
-                </text>
-              </g>
+            <defs>
+              {arcs.map(({ s }, i) => (s.stripes ? <StripePattern key={s.key} id={`${uid}-stripes-${i}`} colors={s.stripes} /> : null))}
+            </defs>
+            {arcs.map(({ s, d }, i) => (
+              // A slice can be clicked, but the legend rows are the keyboard way in, so the slices are not tab stops.
+              <path
+                key={s.key}
+                d={d}
+                fill={s.stripes ? `url(#${uid}-stripes-${i})` : s.color}
+                fillRule="evenodd"
+                className={`a-slice ${s.stripes ? 'is-stripes' : ''} ${s.onSelect ? 'a-hit' : ''}`}
+                onPointerMove={(e) => tip.show(e, s.tip)}
+                {...(s.onSelect ? { ...onActivate(s.onSelect), tabIndex: -1 } : {})}
+                aria-label={s.aria}
+              />
             ))}
             <text x={cx} y={cy - 2} textAnchor="middle" className="a-donut-total" fontSize={R < 80 ? 14 : 18}>
               {centerTop}
@@ -605,6 +619,94 @@ export function Donut({ slices, centerTop, centerBottom, ariaLabel, empty }: { s
         );
       }}
     </ChartBox>
+  );
+}
+
+export interface ShareLegendItem {
+  key: string;
+  /** The row's own name: a project, a task, a subtask, a combination of tags, or "Other (N tasks)". */
+  label: string;
+  /** Names written after the label in muted text, each after a dot: a task's project, a subtask's task and project. Only what the filter leaves open. */
+  context?: readonly string[];
+  /** The whole path as one text ("Brand refresh > Logo concepts"): the hover title of the name, whatever the line leaves out. */
+  title: string;
+  /** What a screen reader says for the button when it is more than the line: the name with the rest of its path. */
+  ariaLabel?: string;
+  /** A hex colour or a CSS variable: the colour of the slice. */
+  color: string;
+  /** Two colours or more: the swatch is striped with them, as the slice is. */
+  stripes?: readonly string[];
+  /** "16h 50m" and "(47%)", written apart so the columns line up; a row reads `${hm} ${pct}`. */
+  hm: string;
+  pct: string;
+  /** A row without it is plain text that cannot be opened. */
+  onSelect?: () => void;
+}
+
+/** Between a row's name and the names after it. It is for the eye: a screen reader skips it. */
+const PROJECT_SEPARATOR = '·';
+
+/** The swatch of a striped row: the same stripes as the slice, as a gradient with hard edges (3px a colour at this size). */
+function stripesBackground(colors: readonly string[]): string {
+  const width = 3;
+  return `repeating-linear-gradient(135deg, ${colors.map((c, i) => `${c} ${i * width}px ${(i + 1) * width}px`).join(', ')})`;
+}
+
+/**
+ * The legend of the share donut: one row per slice, the name on the left and the hours and percentage on the right,
+ * all of it text a screen reader reads. A name can be followed by the names the filter leaves open (a task's project),
+ * in one line with it, so a row too narrow for all of it cuts those first. A row that can be opened holds a button, and
+ * a click anywhere on the row opens it. The button is named after the name and its path only: the figure is the row's
+ * own text after it, and naming it in the button too would have a screen reader say it twice.
+ */
+export function ShareLegend({ items, ariaLabel }: { items: readonly ShareLegendItem[]; ariaLabel: string }) {
+  return (
+    <ul className="a-share-legend" aria-label={ariaLabel}>
+      {items.map((it) => {
+        const context = it.context ?? [];
+        const name =
+          context.length === 0 ? (
+            it.label
+          ) : (
+            <>
+              <span className="a-share-task">{it.label}</span>
+              {context.map((c, i) => (
+                <Fragment key={`${c}-${i}`}>
+                  {' '}
+                  <span className="a-share-sep" aria-hidden="true">
+                    {PROJECT_SEPARATOR}
+                  </span>{' '}
+                  <span className="a-share-project">{c}</span>
+                </Fragment>
+              ))}
+            </>
+          );
+        return (
+          <li key={it.key} className={it.onSelect ? 'is-open' : undefined} onClick={it.onSelect}>
+            <span
+              className={`a-share-swatch ${it.stripes ? 'is-stripes' : ''}`}
+              style={{ backgroundColor: it.color, ...(it.stripes ? { backgroundImage: stripesBackground(it.stripes) } : {}) }}
+              {...(it.stripes ? { 'data-stripes': it.stripes.length } : {})}
+              aria-hidden="true"
+            />
+            <span className="a-share-name" title={it.title}>
+              {it.onSelect ? (
+                <button type="button" aria-label={it.ariaLabel}>
+                  {name}
+                </button>
+              ) : (
+                name
+              )}
+            </span>{' '}
+            {/* The space is for text that is read or copied without the grid: "Alpha 1h 30m (60%)", not "Alpha1h 30m (60%)". Between grid items it takes no room. */}
+            <span className="a-share-fig">
+              <span className="a-share-hm">{it.hm}</span>{' '}
+              <span className="a-share-pct">{it.pct}</span>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -993,8 +1095,9 @@ export function DataTable({ caption, columns, rows }: { caption: string; columns
             <caption className="visually-hidden">{caption}</caption>
             <thead>
               <tr>
-                {columns.map((c) => (
-                  <th key={c} scope="col">
+                {columns.map((c, i) => (
+                  // Two columns can share a name (the basis column and Exact), and the columns change when a card switches view.
+                  <th key={`${i}:${c}`} scope="col">
                     {c}
                   </th>
                 ))}

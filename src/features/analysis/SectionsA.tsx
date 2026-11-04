@@ -1,8 +1,14 @@
 // Overview, time of day, projects and tasks.
-import { Columns, CalendarHeat, Donut, HBars, HeatLegend, Legend, StackedArea, WeekdayHourHeat, timeScale, type Col, type HRow, type LegendEntry, type Slice } from './charts';
+import { useReducer } from 'react';
+
+import { onRadioKeyDown } from '../../components/ui';
+import { Columns, CalendarHeat, Donut, EmptyChart, HBars, HeatLegend, Legend, ShareLegend, StackedArea, WeekdayHourHeat, timeScale, type Col, type HRow, type LegendEntry, type ShareLegendItem, type Slice } from './charts';
 import { fmtHM, fmtHMS, fmtLong, fmtPct, fmtSignedPct } from './format';
 import { projectLegend, projectTipLines, segsOf, tipTime, basisWord, type SecEnv } from './secenv';
 import { PiecesCard, feeLine } from './SectionsP2';
+import { LEVEL_NOUN, NO_SUBTASK_TIME, SHARE_LEVELS, availabilityOf, defaultLevel, reduceLevel, shownLevel, startLevel, type ShareLevel } from './shareLevels';
+import { COMBINATION_NOTE, NO_SUBTASK_LABEL, hoursMinutes, otherNote, otherTip, projectShares, spokenName, subtaskShares, tagShares, taskShares, type ShareModel, type ShareRow } from './shareSlices';
+import { ratio } from './stats';
 import { Card, Section, Stat, dayText } from './ui';
 import { WEEKDAY_NAMES, WEEKDAY_SHORT, dayStr, weekdayIndex } from './range';
 
@@ -204,20 +210,211 @@ function fixedLine(env: SecEnv, projectId: string): string[] {
   return f ? [feeLine(env, f)] : [];
 }
 
+/** The time of the basis that is not in use, for a tooltip. Nothing while a band or shift filter has switched Billable off. */
+function otherBasisLine(env: SecEnv, exact: number, billable: number): string[] {
+  if (!env.m.billableAvailable) return [];
+  return [env.m.basis === 'billable' ? `Exact ${fmtHM(exact)}` : `Billable ${fmtHM(billable)}`];
+}
+
+/** The model of a level: the rows of the donut and the legend, worked out from the metrics. */
+function shareModelOf(level: ShareLevel, env: SecEnv): ShareModel {
+  const { m, snapshot } = env;
+  switch (level) {
+    case 'projects':
+      return projectShares(m.projects.map((p) => ({ id: p.id, name: p.name, color: p.color, secs: p.secs })));
+    case 'tasks':
+      return taskShares(
+        m.tasks.list.map((t) => ({ id: t.id, name: t.name, projectId: t.projectId, projectName: env.pname(t.projectId), secs: t.secs })),
+        env.pcolor,
+      );
+    case 'subtasks': {
+      const projectOf = new Map(m.tasks.list.map((t) => [t.id, t.projectId]));
+      return subtaskShares(
+        m.subtasks.map((s) => {
+          const projectId = projectOf.get(s.taskId) ?? '';
+          return { taskId: s.taskId, taskName: env.tname(s.taskId), projectId, projectName: env.pname(projectId), id: s.id, name: s.name, secs: s.secs };
+        }),
+        env.pcolor,
+      );
+    }
+    case 'tags': {
+      const tagsOf = new Map(snapshot.tasks.map((t) => [t.id, t.tags]));
+      return tagShares(
+        m.tasks.list.map((t) => ({ id: t.id, secs: t.secs, exact: t.exact, billableSecs: t.billableSecs, tagIds: tagsOf.get(t.id) ?? [] })),
+        snapshot.tags.filter((t) => !t.deleted).map((t) => ({ id: t.id, name: t.name, color: t.color })),
+      );
+    }
+  }
+}
+
+/**
+ * The donut of how the time divides, by project, task, subtask or tag, with a legend that writes every slice's hours
+ * and percentage as text. Hours are not earnings, so Hide earnings leaves this card as it is.
+ *
+ * The level it starts on, and moves to when the filter changes, is the one the filter leaves open (shareLevels.ts); a
+ * level chosen by hand is kept through the next filter change that moves the default and gives way at the one after
+ * (reduceLevel). Subtasks is switched off while there
+ * is no time on a subtask, and the card falls back to a level that has something to show.
+ */
+function ShareOfTime({ env }: { env: SecEnv }) {
+  const { m } = env;
+  const basis = basisWord(env);
+  const auto = defaultLevel(m.filters);
+  const [state, dispatch] = useReducer(reduceLevel, auto, startLevel);
+  // The filter moved the default: apply it (or keep the pick) before anything is drawn.
+  if (state.auto !== auto) dispatch({ type: 'filters', auto });
+  const available = availabilityOf(m.subtasks);
+  const level = shownLevel(state.level, auto, available);
+  const model = shareModelOf(level, env);
+  const projectById = new Map(m.projects.map((p) => [p.id, p]));
+  const taskById = new Map(m.tasks.list.map((t) => [t.id, t]));
+  const subtaskById = new Map(m.subtasks.map((s) => [`${s.taskId}\u0000${s.id ?? ''}`, s]));
+  const lineByKey = new Map(model.lines.map((l) => [l.key, l]));
+  /** The tooltip and what a click opens, for one row. */
+  const about = (row: ShareRow): { tip: string[]; select: (() => void) | undefined } => {
+    const time = [`${basis}: ${row.figure}`, `To the second: ${fmtHMS(row.secs)}`];
+    switch (row.kind) {
+      case 'project': {
+        const p = projectById.get(row.id);
+        return {
+          tip: [row.label, ...time, ...(p ? otherBasisLine(env, p.exact, p.billableSecs) : [])],
+          select: p ? () => env.drill({ title: p.name, projectId: p.id }) : undefined,
+        };
+      }
+      case 'task': {
+        const t = taskById.get(row.id);
+        return {
+          tip: [row.label, `Project: ${env.pname(row.projectId)}`, ...time, ...(t ? otherBasisLine(env, t.exact, t.billableSecs) : [])],
+          select: t ? () => env.drill({ title: t.name, taskId: t.id }) : undefined,
+        };
+      }
+      case 'subtask': {
+        const s = subtaskById.get(`${row.taskId}\u0000${row.id ?? ''}`);
+        return {
+          // A row for time on no subtask already has its task in its name.
+          tip: [row.label, ...(row.id === null ? [] : [`Task: ${env.tname(row.taskId)}`]), `Project: ${env.pname(row.projectId)}`, ...time, ...(s ? otherBasisLine(env, s.exact, s.billableSecs) : [])],
+          select: () => env.drill({ title: row.label, taskId: row.taskId, subtaskId: row.id }),
+        };
+      }
+      case 'tag': {
+        const line = lineByKey.get(row.key);
+        const n = row.taskIds.length;
+        return {
+          tip: [row.label, `${n} task${n === 1 ? '' : 's'}`, ...time, ...(line ? otherBasisLine(env, line.exact, line.billableSecs) : [])],
+          select: () => env.drill({ title: row.label, taskIds: row.taskIds }),
+        };
+      }
+      case 'other':
+        // The grouped rest has no single project, task or tag to open; View data lists every row.
+        return { tip: [row.label, ...time, otherTip(row.grouped, row.unit)], select: undefined };
+    }
+  };
+  const described = model.rows.map((row) => ({ row, ...about(row) }));
+  const slices: Slice[] = described.map(({ row, tip, select }) => ({
+    key: row.key,
+    value: row.secs,
+    color: row.color,
+    ...(row.stripes ? { stripes: row.stripes } : {}),
+    tip,
+    aria: `${row.title}: ${row.figure}`,
+    onSelect: select,
+  }));
+  // A row names only what the filter leaves open after its own name; the title, the slice and the button carry the whole path.
+  const legend: ShareLegendItem[] = described.map(({ row, select }) => ({
+    key: row.key,
+    label: row.label,
+    context: row.context,
+    title: row.title,
+    ariaLabel: spokenName(row),
+    color: row.color,
+    ...(row.stripes ? { stripes: row.stripes } : {}),
+    hm: row.hm,
+    pct: row.pct,
+    onSelect: select,
+  }));
+  const tasksTotal = m.tasks.list.reduce((n, x) => n + x.secs, 0);
+  const subtasksTotal = m.subtasks.reduce((n, x) => n + x.secs, 0);
+  const share = (secs: number, total: number): string => {
+    const r = ratio(secs, total);
+    return r === null ? '' : fmtPct(r, 1);
+  };
+  const data = ((): { caption: string; columns: string[]; rows: (string | number)[][] } => {
+    switch (level) {
+      case 'projects':
+        return {
+          caption: 'Project time',
+          columns: ['Project', basis, 'Share', 'Exact', 'Billable', 'Tasks', 'Average per task', 'Change vs previous', 'Pricing'],
+          rows: m.projects.map((p) => [p.name, fmtHMS(p.secs), p.share === null ? '' : fmtPct(p.share, 1), fmtHMS(p.exact), fmtHMS(p.billableSecs), p.taskCount, p.avgPerTask === null ? '' : fmtHMS(p.avgPerTask), p.delta?.pct == null ? '' : fmtSignedPct(p.delta.pct), pricingText(env, p.id, p.rate)]),
+        };
+      case 'tasks':
+        return {
+          caption: 'Task time',
+          columns: ['Task', 'Project', basis, 'Share', 'Exact', 'Billable'],
+          rows: m.tasks.list.map((x) => [x.name, env.pname(x.projectId), fmtHMS(x.secs), share(x.secs, tasksTotal), fmtHMS(x.exact), fmtHMS(x.billableSecs)]),
+        };
+      case 'subtasks':
+        // The whole path in three columns, and every subtask: the legend groups the smallest into Other.
+        return {
+          caption: 'Subtask time',
+          columns: ['Subtask', 'Task', 'Project', basis, 'Share', 'Exact', 'Billable'],
+          rows: [...m.subtasks]
+            .filter((x) => x.secs > 0)
+            .sort((a, b) => b.secs - a.secs || env.tname(a.taskId).localeCompare(env.tname(b.taskId)))
+            .map((x) => [x.id === null ? NO_SUBTASK_LABEL : x.name, env.tname(x.taskId), env.pname(taskById.get(x.taskId)?.projectId ?? ''), fmtHMS(x.secs), share(x.secs, subtasksTotal), fmtHMS(x.exact), fmtHMS(x.billableSecs)]),
+        };
+      case 'tags':
+        return {
+          caption: 'Time by tag combination',
+          columns: ['Tags', basis, 'Share', 'Exact', 'Billable', 'Tasks'],
+          rows: model.lines.map((l) => [l.label, fmtHMS(l.secs), share(l.secs, model.totalSecs), fmtHMS(l.exact), fmtHMS(l.billableSecs), l.taskIds.length]),
+        };
+    }
+  })();
+  const other = model.rows.find((r) => r.kind === 'other');
+  return (
+    <Card title="Share of time" info="projects.share" openGlossary={env.openGlossary} data={data} note={other?.kind === 'other' ? otherNote(other.grouped, other.unit) : undefined}>
+      <div className="a-share-switch">
+        <div className="a-seg" role="radiogroup" aria-label="Share of time by" onKeyDown={onRadioKeyDown}>
+          {SHARE_LEVELS.map((o) => {
+            const off = !available[o.level];
+            return (
+              <button
+                key={o.level}
+                type="button"
+                role="radio"
+                aria-checked={level === o.level}
+                tabIndex={level === o.level ? 0 : -1}
+                disabled={off}
+                title={off ? NO_SUBTASK_TIME : undefined}
+                className={`a-seg-btn ${level === o.level ? 'is-on' : ''}`}
+                onClick={() => dispatch({ type: 'pick', level: o.level })}
+              >
+                {o.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {model.rows.length === 0 ? (
+        <EmptyChart message={EMPTY} />
+      ) : (
+        <div className="a-share">
+          <div className="a-share-chart">
+            <Donut slices={slices} centerTop={hoursMinutes(model.totalMinutes)} centerBottom={basis} ariaLabel={`Share of time per ${LEVEL_NOUN[level]}`} />
+          </div>
+          <div className="a-share-side">
+            <ShareLegend items={legend} ariaLabel={`Share of time legend, ${level}`} />
+            {model.combinations > 0 ? <p className="a-share-footnote muted">{COMBINATION_NOTE}</p> : null}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export function Projects({ env }: { env: SecEnv }) {
   const { m } = env;
   const list = m.projects;
-  const total = list.reduce((n, p) => n + p.secs, 0);
-  const slices: Slice[] = list
-    .filter((p) => p.secs > 0)
-    .map((p) => ({
-      key: p.id,
-      label: p.name,
-      value: p.secs,
-      color: p.color,
-      tip: [p.name, tipTime(basisWord(env), p.secs), `Share: ${p.share === null ? 'n/a' : fmtPct(p.share, 1)}`, `Exact ${fmtHM(p.exact)} · Billable ${fmtHM(p.billableSecs)}`],
-      onSelect: () => env.drill({ title: p.name, projectId: p.id }),
-    }));
   const rows: HRow[] = list.map((p) => ({
     key: p.id,
     label: p.name,
@@ -242,14 +439,7 @@ export function Projects({ env }: { env: SecEnv }) {
   const noRate = list.filter((p) => p.rate === 'none');
   return (
     <Section id="projects" title="Projects" lede="Project colours are exact; names are always shown in labels, tooltips and tables.">
-      <Card
-        title="Share of time"
-        info="projects.share"
-        openGlossary={env.openGlossary}
-        data={{ caption: 'Project time', columns: ['Project', basisWord(env), 'Share', 'Exact', 'Billable', 'Tasks', 'Average per task', 'Change vs previous', 'Pricing'], rows: list.map((p) => [p.name, fmtHMS(p.secs), p.share === null ? '' : fmtPct(p.share, 1), fmtHMS(p.exact), fmtHMS(p.billableSecs), p.taskCount, p.avgPerTask === null ? '' : fmtHMS(p.avgPerTask), p.delta?.pct == null ? '' : fmtSignedPct(p.delta.pct), pricingText(env, p.id, p.rate)]) }}
-      >
-        <Donut slices={slices} centerTop={fmtHM(total)} centerBottom={basisWord(env)} ariaLabel="Share of time per project" empty={EMPTY} />
-      </Card>
+      <ShareOfTime env={env} />
       <Card
         title="Ranked projects"
         info="projects.hours"
