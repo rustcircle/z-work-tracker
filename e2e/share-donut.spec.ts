@@ -158,6 +158,9 @@ async function chooseProject(page: Page, name: string): Promise<void> {
 async function chooseTask(page: Page, name: string): Promise<void> {
   await controls(page).getByRole('combobox', { name: 'Task', exact: true }).selectOption({ label: name });
 }
+async function clearFilters(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+}
 const tagFilter = (page: Page): Locator => controls(page).getByRole('group', { name: 'Tag filter' });
 async function chooseTag(page: Page, name: string): Promise<void> {
   await tagFilter(page).getByRole('checkbox', { name, exact: true }).check();
@@ -808,13 +811,57 @@ test.describe('the level follows the filter', () => {
     await expectClean(page, found);
   });
 
-  test('a level picked by hand survives the next change of the default, and the default applies again after that', async ({ page }) => {
+  test('the level follows every change of the filter until the user picks one', async ({ page }) => {
+    const found = await openAnalysis(page, 'seed=many-tasks');
+    await expectView(page, 'Projects');
+    await chooseProject(page, 'Website');
+    await expectView(page, 'Tasks');
+    await chooseProject(page, 'Packaging');
+    await expectView(page, 'Projects');
+    await clearFilters(page);
+    await chooseTask(page, 'Logo concepts');
+    await expectView(page, 'Subtasks');
+    await clearFilters(page);
+    await expectView(page, 'Projects');
+    await chooseProject(page, 'Brand refresh');
+    await expectView(page, 'Tasks');
+    await expectClean(page, found);
+  });
+
+  test('a level picked by hand never changes on its own: two or more changes of the default leave it where it is', async ({ page }) => {
     const found = await openAnalysis(page, 'seed=many-tasks');
     await setView(page, 'Tags');
     await chooseProject(page, 'Website');
-    await expectView(page, 'Tags'); // the pick survives the change to one project
+    await expectView(page, 'Tags'); // the default moves to Tasks
     await chooseProject(page, 'Packaging');
-    await expectView(page, 'Projects'); // the next change of the default applies it again
+    await expectView(page, 'Tags'); // back to Projects: the pick used to give way here
+    await clearFilters(page);
+    await chooseTask(page, 'Logo concepts');
+    await expectView(page, 'Tags'); // to Subtasks
+    await clearFilters(page);
+    await expectView(page, 'Tags');
+    // Only the user moves it, and that pick holds in the same way.
+    await setView(page, 'Projects');
+    await chooseProject(page, 'Website');
+    await expectView(page, 'Projects');
+    await expectClean(page, found);
+  });
+
+  test('a picked level with no time to show gives way to another while it is empty, and is drawn again with its time', async ({ page }) => {
+    const found = await openAnalysis(page, 'seed=many-tasks');
+    await setView(page, 'Subtasks');
+    // Homepage layout has no subtask time: Subtasks is switched off and Tasks is drawn, but the pick is not given up.
+    await chooseTask(page, 'Homepage layout');
+    await expectView(page, 'Tasks');
+    const subtasks = share(page).getByRole('radio', { name: 'Subtasks', exact: true });
+    await expect(subtasks).toBeDisabled();
+    await expect(subtasks).toHaveAttribute('title', 'No subtask time in this period');
+    // The filter asks for Projects now, and the pick is what comes back when its time does.
+    await clearFilters(page);
+    await expectView(page, 'Subtasks');
+    await expect(subtasks).toBeEnabled();
+    await chooseProject(page, 'Brand refresh'); // the filter asks for Tasks; the pick still stands
+    await expectView(page, 'Subtasks');
     await expectClean(page, found);
   });
 

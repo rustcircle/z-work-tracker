@@ -4,6 +4,9 @@
 // The owner: "it depends on the filtering, it should be more accurate regarding the filter applied (per project, per
 // project and task, per project task and subtask)". So the level the card starts on, and moves to when the filter
 // changes, is the one that divides what the filter has left open. Tags is never that level: it is chosen by hand.
+//
+// And: "Once you pick a level, it never changes on its own." So that default applies only until the user picks a level.
+// After a pick no change of the filter moves the level, however many times it moves the default; only the user does.
 import type { Filters } from './engine';
 
 export type ShareLevel = 'projects' | 'tasks' | 'subtasks' | 'tags';
@@ -43,7 +46,8 @@ export function availabilityOf(subtasks: readonly { id: string | null; secs: num
 
 /**
  * The level to draw: the one asked for, or when it has nothing to show (a filter or period took its time away) the
- * default of the filter, or the nearest level above it that has something. Never an empty chart.
+ * default of the filter, or the nearest level above it that has something. Never an empty chart. This only decides what
+ * is drawn: a level the user picked stays picked in the `LevelState`, and is drawn again as soon as it has time.
  */
 export function shownLevel(level: ShareLevel, auto: ShareLevel, available: Availability): ShareLevel {
   if (available[level]) return level;
@@ -52,8 +56,9 @@ export function shownLevel(level: ShareLevel, auto: ShareLevel, available: Avail
 }
 
 /**
- * What the card remembers. `auto` is the default of the filters it last saw. `picked` says the user chose a level by
- * hand since that default last changed.
+ * What the card remembers. `auto` is the default of the filters it last saw, kept up to date after a pick too so that
+ * the card can tell when the filters have moved it. `picked` says the user has chosen a level by hand: once true it
+ * stays true, and `level` is theirs from then on. Until then `level` is `auto`.
  */
 export interface LevelState {
   level: ShareLevel;
@@ -70,13 +75,13 @@ export type LevelEvent =
 export const startLevel = (auto: ShareLevel): LevelState => ({ level: auto, auto, picked: false });
 
 /**
- * A filter change that moves the default applies the new default, unless the user has picked a level since the last
- * time the default moved: then their pick stays for this change, and the next change that moves the default applies
- * the default again. A change that leaves the default where it was (a tag, a band, another period) does nothing, so a
- * level picked by hand is not lost to a tag being ticked.
+ * Until the user picks a level, a filter change that moves the default applies the new default. A pick ends that for
+ * good: the level stays what they chose through every later change of the filters, however often they move the
+ * default, and only another pick changes it. A change that leaves the default where it was (a tag, a band, another
+ * period) does nothing.
  */
 export function reduceLevel(state: LevelState, event: LevelEvent): LevelState {
   if (event.type === 'pick') return { level: event.level, auto: state.auto, picked: true };
   if (event.auto === state.auto) return state;
-  return { level: state.picked ? state.level : event.auto, auto: event.auto, picked: false };
+  return state.picked ? { ...state, auto: event.auto } : startLevel(event.auto);
 }
