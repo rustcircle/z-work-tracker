@@ -765,14 +765,49 @@ describe('the level the filter asks for', () => {
     expect(checkedRadio()).toBe('Projects');
   });
 
-  it('keeps a level the user picked through the next change of the default, and follows the filter again after that', async () => {
+  it('keeps a level the user picked through every later change of the default, however many there are', async () => {
     const user = userEvent.setup();
     const { rerender } = render(<Projects env={at({})} />);
     await user.click(radio('Tags'));
+    // The default goes to Tasks, Subtasks, Tasks, Projects and Projects again. The pick used to give way at the second change.
+    const steps: Partial<Filters>[] = [{ projectIds: ['p-a'] }, { projectIds: ['p-a'], taskIds: ['a1'] }, { projectIds: ['p-a'] }, {}, { projectIds: ['p-a', 'p-b'] }];
+    for (const filters of steps) {
+      rerender(<Projects env={at(filters)} />);
+      expect(checkedRadio()).toBe('Tags');
+    }
+  });
+
+  it('follows the filter until the first pick, and stops following it from then on', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<Projects env={at({})} />);
+    expect(checkedRadio()).toBe('Projects');
     rerender(<Projects env={at({ projectIds: ['p-a'] })} />);
-    expect(checkedRadio()).toBe('Tags');
+    expect(checkedRadio()).toBe('Tasks');
     rerender(<Projects env={at({ projectIds: ['p-a'], taskIds: ['a1'] })} />);
     expect(checkedRadio()).toBe('Subtasks');
+    rerender(<Projects env={at({ projectIds: ['p-a'] })} />);
+    expect(checkedRadio()).toBe('Tasks');
+    await user.click(radio('Projects'));
+    const later: Partial<Filters>[] = [{ taskIds: ['a1'] }, { projectIds: ['p-b'] }, { projectIds: ['p-b'], taskIds: ['b1'] }, {}];
+    for (const filters of later) {
+      rerender(<Projects env={at(filters)} />);
+      expect(checkedRadio()).toBe('Projects');
+    }
+    // Only the user moves it, and that pick holds in the same way.
+    await user.click(radio('Tasks'));
+    rerender(<Projects env={at({ projectIds: ['p-a', 'p-b'] })} />);
+    expect(checkedRadio()).toBe('Tasks');
+  });
+
+  it('holds a pick of the level the filter already asked for, like a pick of any other', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<Projects env={at({ projectIds: ['p-a'] })} />);
+    expect(checkedRadio()).toBe('Tasks');
+    await user.click(radio('Tasks'));
+    rerender(<Projects env={at({})} />);
+    expect(checkedRadio()).toBe('Tasks');
+    rerender(<Projects env={at({ taskIds: ['a1'] })} />);
+    expect(checkedRadio()).toBe('Tasks');
   });
 
   it('does not lose a picked level to a change that leaves the default where it was', async () => {
@@ -797,6 +832,22 @@ describe('the level the filter asks for', () => {
     expect(radio('Subtasks')).toHaveAttribute('title', 'No subtask time in this period');
     expect(names('tasks')).toEqual(['Pitch']);
     expect(screen.queryByRole('list', { name: 'Share of time legend, subtasks' })).toBeNull();
+  });
+
+  it('draws another level while the picked one has nothing to show, and goes back to the pick when its time returns', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<Projects env={at({})} />);
+    await user.click(radio('Subtasks'));
+    // Pitch has no subtask time: Subtasks is switched off and Tasks is drawn instead, but the pick is not given up.
+    rerender(<Projects env={at({ taskIds: ['a2'] })} />);
+    expect(checkedRadio()).toBe('Tasks');
+    expect(radio('Subtasks')).toBeDisabled();
+    expect(radio('Subtasks')).toHaveAttribute('title', 'No subtask time in this period');
+    // Beta's Site has time on a subtask. The filter now asks for Tasks, and still the pick is what is drawn.
+    rerender(<Projects env={at({ projectIds: ['p-b'] })} />);
+    expect(checkedRadio()).toBe('Subtasks');
+    expect(radio('Subtasks')).toBeEnabled();
+    expect(names('subtasks')).toEqual(['Copy', 'Site (no subtask)']);
   });
 
   it('shows Subtasks again when the time comes back, if that is still the level asked for', () => {

@@ -251,10 +251,11 @@ function shareModelOf(level: ShareLevel, env: SecEnv): ShareModel {
  * The donut of how the time divides, by project, task, subtask or tag, with a legend that writes every slice's hours
  * and percentage as text. Hours are not earnings, so Hide earnings leaves this card as it is.
  *
- * The level it starts on, and moves to when the filter changes, is the one the filter leaves open (shareLevels.ts); a
- * level chosen by hand is kept through the next filter change that moves the default and gives way at the one after
- * (reduceLevel). Subtasks is switched off while there
- * is no time on a subtask, and the card falls back to a level that has something to show.
+ * Until the user picks a level, the card shows the one the filter leaves open and moves with the filter (shareLevels.ts).
+ * A level chosen by hand stays: no filter change moves it, however often the default moves, and only the user does
+ * (reduceLevel). The pick is held in this card's own state, so it lasts as long as the card does and is stored nowhere.
+ * Subtasks is switched off while there is no time on a subtask; the card then draws a level that has something to show,
+ * and goes back to the pick when its time returns.
  */
 function ShareOfTime({ env }: { env: SecEnv }) {
   const { m } = env;

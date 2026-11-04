@@ -115,21 +115,31 @@ describe('the level the card remembers', () => {
     expect(fold(s, filters('subtasks'), filters('projects')).level).toBe('projects');
   });
 
-  it('keeps a level the user picked when the filter next moves the default', () => {
+  it('keeps following the default through any number of changes before the first pick', () => {
+    let s = startLevel('projects');
+    for (const auto of ['tasks', 'subtasks', 'tasks', 'projects', 'subtasks', 'projects'] as const) {
+      s = reduceLevel(s, filters(auto));
+      expect(s).toEqual({ level: auto, auto, picked: false });
+    }
+  });
+
+  it('keeps a level the user picked when the filter moves the default', () => {
     const s = fold(startLevel('projects'), pick('tags'), filters('tasks'));
-    expect(s.level).toBe('tags');
-    expect(s.auto).toBe('tasks');
+    expect(s).toEqual({ level: 'tags', auto: 'tasks', picked: true });
   });
 
-  it('applies the default again on the change after that: a pick protects one change only', () => {
-    const s = fold(startLevel('projects'), pick('tags'), filters('tasks'), filters('subtasks'));
-    expect(s).toEqual({ level: 'subtasks', auto: 'subtasks', picked: false });
+  it('never applies the default again: two or more changes of the default leave the pick where it was', () => {
+    let s = fold(startLevel('projects'), pick('tags'));
+    for (const auto of ['tasks', 'subtasks', 'tasks', 'projects', 'subtasks'] as const) {
+      s = reduceLevel(s, filters(auto));
+      // `auto` still follows the filters, so that the card can tell when they move it; the level does not.
+      expect(s).toEqual({ level: 'tags', auto, picked: true });
+    }
   });
 
-  it('protects the pick again when the user picks again after a change', () => {
-    const s = fold(startLevel('projects'), pick('tags'), filters('tasks'), pick('subtasks'), filters('projects'));
-    expect(s.level).toBe('subtasks');
-    expect(fold(s, filters('tasks')).level).toBe('tasks');
+  it('lets a later pick replace the earlier one, and keeps that one in the same way', () => {
+    const s = fold(startLevel('projects'), pick('tags'), filters('tasks'), pick('subtasks'), filters('projects'), filters('tasks'));
+    expect(s).toEqual({ level: 'subtasks', auto: 'tasks', picked: true });
   });
 
   it('does nothing when the filter changes but the default stays: ticking a tag does not undo a pick', () => {
@@ -139,9 +149,10 @@ describe('the level the card remembers', () => {
     expect(after.level).toBe('tags');
   });
 
-  it('counts a pick of the level already shown: the user chose it', () => {
+  it('counts a pick of the level already shown: the user chose it, and it holds like any other', () => {
     expect(fold(startLevel('tasks'), pick('tasks')).picked).toBe(true);
     expect(fold(startLevel('tasks'), pick('tasks'), filters('projects')).level).toBe('tasks');
+    expect(fold(startLevel('tasks'), pick('tasks'), filters('projects'), filters('subtasks')).level).toBe('tasks');
   });
 
   it('walks the owner’s filters: none, one project, one task, and back', () => {
@@ -154,5 +165,49 @@ describe('the level the card remembers', () => {
       levels.push(s.level);
     }
     expect(levels).toEqual(walk);
+  });
+
+  it('walks the same filters after a pick, and the level stays where the user put it at every step', () => {
+    const walk = [f(), f(['p1']), f(['p1'], ['t1']), f(['p1']), f(), f([], ['t1'])].map((x) => defaultLevel(x));
+    expect(walk).toEqual(['projects', 'tasks', 'subtasks', 'tasks', 'projects', 'subtasks']);
+    let s = fold(startLevel('projects'), pick('tags'));
+    const levels: ShareLevel[] = [];
+    for (const auto of walk) {
+      s = reduceLevel(s, filters(auto));
+      levels.push(s.level);
+    }
+    expect(levels).toEqual(['tags', 'tags', 'tags', 'tags', 'tags', 'tags']);
+  });
+
+  it('is moved only by a pick once there is one: any order of picks and filter changes ends on the last pick, or on the latest default if there was none', () => {
+    // The rule written without the reducer: the user's last pick if there has been one, else the latest default.
+    const model = (start: ShareLevel, events: readonly LevelEvent[]): LevelState => {
+      let auto = start;
+      let picked: ShareLevel | null = null;
+      for (const e of events) {
+        if (e.type === 'pick') picked = e.level;
+        else auto = e.auto;
+      }
+      return { level: picked ?? auto, auto, picked: picked !== null };
+    };
+    const defaults: readonly ShareLevel[] = ['projects', 'tasks', 'subtasks'];
+    const alphabet: readonly LevelEvent[] = [...(['projects', 'tasks', 'subtasks', 'tags'] as const).map(pick), ...defaults.map(filters)];
+    let sequences: LevelEvent[][] = [[]];
+    let checked = 0;
+    const wrong: { start: ShareLevel; events: readonly LevelEvent[]; got: LevelState; want: LevelState }[] = [];
+    for (let length = 0; length <= 5; length += 1) {
+      if (length > 0) sequences = sequences.flatMap((events) => alphabet.map((e) => [...events, e]));
+      for (const events of sequences) {
+        for (const start of defaults) {
+          const got = fold(startLevel(start), ...events);
+          const want = model(start, events);
+          checked += 1;
+          if (got.level !== want.level || got.auto !== want.auto || got.picked !== want.picked) wrong.push({ start, events, got, want });
+        }
+      }
+    }
+    expect(wrong.slice(0, 3)).toEqual([]);
+    // 1 + 7 + 7^2 + ... + 7^5 sequences, from each of the three defaults the card can start on.
+    expect(checked).toBe(((7 ** 6 - 1) / 6) * 3);
   });
 });
