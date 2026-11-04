@@ -9,6 +9,7 @@ import { bucketsOf, type Bucket, type Series } from './fam-volume';
 import { rowIndex, type Ctx } from './mctx';
 import { dayNum } from './range';
 import { delta, ratio, type Delta } from './stats';
+import { taskPassesTagFilter } from './tagFilter';
 import type { TaskStat } from './fam-projects';
 
 // ------------------------------------------------------------------ pauses, thinking, unconfirmed
@@ -58,6 +59,14 @@ function sumRows(ds: Ctx['cur']): { pause: number; thinking: number; byPause: Ma
   return { pause, thinking, byPause, byThinking, byDay };
 }
 
+const liveTagSets = new WeakMap<Ctx['snapshot'], ReadonlySet<string>>();
+/** The ids of the tags that exist, worked out once per snapshot. */
+function liveTagSet(ctx: Ctx): ReadonlySet<string> {
+  let live = liveTagSets.get(ctx.snapshot);
+  if (!live) liveTagSets.set(ctx.snapshot, (live = new Set(ctx.snapshot.tags.filter((t) => !t.deleted).map((t) => t.id))));
+  return live;
+}
+
 /** Whether a task passes the project, task and tag filters (the band and shift filters cut time, not tasks). */
 export function taskPasses(ctx: Ctx, taskId: string): boolean {
   const f = ctx.params.filters;
@@ -65,7 +74,7 @@ export function taskPasses(ctx: Ctx, taskId: string): boolean {
   if (!t) return false;
   if (f.projectIds.length && !f.projectIds.includes(t.projectId)) return false;
   if (f.taskIds.length && !f.taskIds.includes(t.id)) return false;
-  if (f.tagIds.length && !t.tags.some((id) => f.tagIds.includes(id))) return false;
+  if (f.tagIds.length && !taskPassesTagFilter(t.tags, f.tagIds, liveTagSet(ctx))) return false;
   return true;
 }
 

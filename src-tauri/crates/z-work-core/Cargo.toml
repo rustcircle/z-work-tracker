@@ -1,6 +1,6 @@
 [package]
 name = "z-work-core"
-version = "1.3.2"
+version = "1.3.3"
 edition.workspace = true
 rust-version.workspace = true
 description = "Tauri-independent core: state machine, persistence, sync merge, reports"

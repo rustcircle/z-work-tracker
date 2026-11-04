@@ -66,9 +66,15 @@ export async function dismissAway(page: Page): Promise<void> {
   await expect(dialog).toBeHidden();
 }
 
-export async function open(page: Page, query: string, ready = true): Promise<Violations> {
+/**
+ * Opens the app on the demo data. The page clock starts at DEMO_NOW and keeps running with real time, so a spec that
+ * places things inside or beyond a span measured by the page (a notice's first second) passes `frozen`: the clock then
+ * stands still until the spec moves it with `page.clock.runFor`, however slow the machine or busy its other workers.
+ */
+export async function open(page: Page, query: string, ready = true, frozen = false): Promise<Violations> {
   const found = await watch(page);
   await page.clock.install({ time: new Date(DEMO_NOW) });
+  if (frozen) await page.clock.pauseAt(new Date(Date.parse(DEMO_NOW) + 1000));
   await page.goto(`/?${query}`);
   if (query.includes('seed=p2') && !query.includes('away=show')) await dismissAway(page);
   if (ready) await expect(page.getByRole('tab', { name: 'Timeline' })).toBeVisible();

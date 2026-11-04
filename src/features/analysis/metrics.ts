@@ -1,10 +1,11 @@
 // Orchestrates the metric families for one analysis request.
 import { RateBook } from '../../lib/billing';
-import { dayOfInstant, evaluate, hasTimeFilter, prepare, resolveZones, type Evaluated, type Params } from './engine';
+import { dayOfInstant, evaluate, hasTimeFilter, prepare, resolveZones, type Evaluated, type Filters, type Params } from './engine';
 import { consistencyOf, focusOf, type Consistency, type Focus } from './fam-focus';
 import { budgetAlertsOf, fixedFeeOf, piecesOf, tagsOf, type BudgetAlert, type FixedFeeStat, type Pieces, type TagsView } from './fam-p2';
 import { budgetsOf, forecastOf, goalsOf, moneyOf, type BudgetBurn, type Forecast, type Goals, type Money } from './fam-goals';
 import { projectsOf, tasksOf, type ProjectStat, type Tasks } from './fam-projects';
+import { subtasksOf, type SubtaskStat } from './fam-subtasks';
 import { shiftsOf, zonesOf, type Shifts, type ZonesView } from './fam-shifts';
 import { bucketsOf, seriesOf, timeOfDayOf, volumeOf, type Bucket, type Series, type TimeOfDay, type Volume } from './fam-volume';
 import type { Basis, Ctx } from './mctx';
@@ -17,6 +18,8 @@ export interface Metrics {
   period: Period;
   prevPeriod: Period | null;
   zone: string;
+  /** The filters these figures were worked out with (a name search already turned into task ids). */
+  filters: Filters;
   zones: Ctx['zones'];
   /** The basis in use; billable falls back to exact under a band or shift filter. */
   basis: Basis;
@@ -33,6 +36,8 @@ export interface Metrics {
   time: TimeOfDay;
   projects: ProjectStat[];
   tasks: Tasks;
+  /** Time per subtask: each task's time divided among its subtasks and the part on none. Rows add up to the tasks'. */
+  subtasks: SubtaskStat[];
   focus: Focus;
   consistency: Consistency;
   goals: Goals;
@@ -83,6 +88,7 @@ export function computeMetrics(snapshot: Snapshot, params: Params, ev: Evaluated
     period: ev.cur.period,
     prevPeriod: ev.prev ? ev.prev.period : null,
     zone: params.zone,
+    filters: params.filters,
     zones: ctx.zones,
     basis,
     requestedBasis: requested,
@@ -96,6 +102,7 @@ export function computeMetrics(snapshot: Snapshot, params: Params, ev: Evaluated
     time,
     projects: projectsOf(ctx),
     tasks,
+    subtasks: subtasksOf(ctx, tasks.list),
     focus: focusOf(ctx),
     consistency: consistencyOf(
       ctx,

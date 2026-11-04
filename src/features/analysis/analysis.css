@@ -83,7 +83,6 @@
 .a-label { fill: var(--text); font-size: 12px; }
 .a-value { fill: var(--text); font-size: 12px; font-variant-numeric: tabular-nums; }
 .a-donut-total { fill: var(--text); font-size: 20px; font-weight: 650; }
-.a-leader { stroke: var(--axis); stroke-width: 1; }
 .a-mark { stroke: var(--surface); stroke-width: 1; }
 .a-slice { stroke: var(--surface); stroke-width: 2; }
 .a-area { stroke: var(--surface); stroke-width: 1; fill-opacity: 0.95; }
@@ -121,6 +120,32 @@
 .a-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; list-style: none; margin: 0 0 6px; padding: 0; font-size: 12px; }
 .a-legend li { display: inline-flex; align-items: center; gap: 5px; }
 .a-swatch { flex: none; }
+
+/* Share of time: the donut and its legend sit side by side when the card is wide, one above the other when it is narrow. */
+.a-share-switch { margin: 0 0 10px; }
+.a-share { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px; }
+.a-share-chart { flex: 0 1 252px; min-width: min(100%, 200px); margin-inline: auto; }
+.a-share-side { flex: 1 1 280px; min-width: 0; }
+.a-share-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; font-size: 13px; }
+.a-share-legend li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 0 9px; padding: 4px 8px; border-radius: 8px; }
+.a-share-legend li.is-open { cursor: pointer; }
+.a-share-legend li.is-open:hover, .a-share-legend li:focus-within { background: var(--surface-alt); }
+.a-share-swatch { box-sizing: border-box; width: 12px; height: 12px; border: 1px solid var(--border-strong); border-radius: 3px; }
+.a-share-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A row that opens holds a button that cuts its own text short with an ellipsis. The cell around it must not clip as well: the button's focus ring is drawn outside the button, and the cell cut it off. */
+.a-share-legend li.is-open .a-share-name { overflow: visible; }
+.a-share-name button { display: block; width: 100%; margin: 0; padding: 0; border: 0; border-radius: 3px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.a-share-name button:hover { text-decoration: underline; }
+.a-share-name button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* A task's project follows its name in the same line, muted, so a row too narrow for both cuts the project first. On the highlighted row (hover, focus) muted text would fall under 4.5:1 in the two Solarized themes, so it takes the text colour there. */
+.a-share-sep, .a-share-project { color: var(--text-muted); }
+.a-share-legend li.is-open:hover :is(.a-share-sep, .a-share-project), .a-share-legend li:focus-within :is(.a-share-sep, .a-share-project) { color: var(--text); }
+/* Hours and percentage are two right-aligned columns, so the closing brackets and the last digits line up from row to row. */
+.a-share-fig { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+.a-share-hm { display: inline-block; min-width: 8ch; text-align: right; }
+.a-share-pct { display: inline-block; min-width: 7ch; text-align: right; }
+/* The footnote of the Tags level sits under the legend, in line with the names. */
+.a-share-footnote { margin: 6px 8px 0; font-size: 12px; }
 
 .a-tip { position: absolute; z-index: 40; transform: translate(12px, -100%); pointer-events: none; background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 9px; font-size: 12px; box-shadow: 0 6px 20px rgb(0 0 0 / 0.22); white-space: nowrap; font-variant-numeric: tabular-nums; max-width: 340px; }
 .a-tip-left { transform: translate(calc(-100% - 12px), -100%); }

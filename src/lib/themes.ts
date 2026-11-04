@@ -88,43 +88,18 @@ export const THEME_LABELS: Record<Theme, string> = {
 
 const kebab = (s: string): string => s.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
 
-/** Only these themes let the Mica backdrop through. Solarized is a fixed palette: a wash of the wallpaper would change its colours. */
-export const MICA_THEMES: readonly Theme[] = ['light', 'dark'];
-/** How opaque the page background stays over Mica. Panels, cards and dialogs (`surface`) stay fully opaque. */
-export const MICA_ALPHA = 0.9;
-
-export const showsMica = (theme: Theme, on: boolean, available: boolean): boolean => on && available && MICA_THEMES.includes(theme);
-
-/** The page background as the CSS variable holds it with Mica showing: the token colour at `MICA_ALPHA`. */
-export function glassBackground(hex: string, alpha: number = MICA_ALPHA): string {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgb(${(n >> 16) & 255} ${(n >> 8) & 255} ${n & 255} / ${alpha})`;
-}
-
-/** What shows on screen for `hex` at `alpha` over a backdrop colour: plain alpha compositing. */
-export function composite(hex: string, alpha: number, backdrop: string): string {
-  const chan = (c: string, shift: number): number => (parseInt(c.slice(1), 16) >> shift) & 255;
-  const mix = (shift: number): number => Math.round(chan(hex, shift) * alpha + chan(backdrop, shift) * (1 - alpha));
-  return `#${[16, 8, 0].map((sh) => mix(sh).toString(16).padStart(2, '0')).join('')}`;
-}
-
 /**
- * Sets the CSS variables on the root element, such as `--text` and `--c-worked` and `--heat-0`.
- * With Mica showing only the page background (`--bg`) turns translucent, and `data-mica` marks the root so the
- * window can show through; with it off everything stays opaque, exactly as before.
+ * Sets the CSS variables on the root element, such as `--text` and `--c-worked` and `--heat-0`. Every one is an
+ * opaque colour, the page background (`--bg`) included.
  */
-export function applyTheme(theme: Theme, root: HTMLElement = document.documentElement, mica = false): void {
+export function applyTheme(theme: Theme, root: HTMLElement = document.documentElement): void {
   const tokens = THEMES[theme];
   for (const [key, value] of Object.entries(tokens)) {
     if (typeof value === 'string') root.style.setProperty(`--${kebab(key)}`, value);
     else (value as readonly string[]).forEach((c, i) => root.style.setProperty(`--${kebab(key)}-${i}`, c));
   }
-  // The theme's page colour, always opaque: for anything that must cover what scrolls under it, whatever Mica does.
+  // The page colour again, under the name the sticky bars and other covers use (see styles/base.css).
   root.style.setProperty('--bg-solid', tokens.bg);
-  const glass = mica && MICA_THEMES.includes(theme);
-  if (glass) root.style.setProperty('--bg', glassBackground(tokens.bg));
-  if (glass) root.dataset.mica = 'on';
-  else delete root.dataset.mica;
   root.dataset.theme = theme;
   root.style.colorScheme = theme === 'dark' || theme === 'solarizedDark' ? 'dark' : 'light';
 }

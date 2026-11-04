@@ -56,7 +56,7 @@ function Root() {
   );
 }
 
-/** Tells the backend the page has painted, once, so it can show the (transparent) window with something in it. */
+/** Tells the backend the page has painted, once, so it can show the hidden window with something in it. */
 function WindowReady() {
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {

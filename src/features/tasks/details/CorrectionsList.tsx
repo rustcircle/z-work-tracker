@@ -5,6 +5,7 @@ import { useId, useState, type FormEvent } from 'react';
 import { useAppState } from '../../../app/store';
 import { useReadOnly } from '../../../app/useReadOnly';
 import { clock, dayLabel, formatDuration } from '../../../components/format';
+import { TimerButton } from '../../../components/TimerButton';
 import { Badge, Button } from '../../../components/ui';
 import { api } from '../../../lib/api';
 import { dayOf, parseIso, toIso } from '../../../lib/tz';
@@ -405,9 +406,9 @@ function SettleForm({ seg, device, name, onCancel, onDone }: { seg: RawSegment; 
         </p>
       )}
       <div className="form-actions">
-        <Button type="submit" variant="primary" disabled={busy || ro.readOnly} title={ro.why ?? undefined}>
+        <TimerButton type="submit" variant="primary" disabled={busy || ro.readOnly} title={ro.why ?? undefined}>
           Confirm close
-        </Button>
+        </TimerButton>
         <Button onClick={onCancel}>Cancel</Button>
       </div>
     </form>

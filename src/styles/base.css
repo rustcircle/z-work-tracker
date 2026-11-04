@@ -1,10 +1,9 @@
 /* Reset and shared primitives. Colours come only from the theme tokens set by lib/themes.ts. */
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { height: 100%; }
-/* The window itself is transparent on Windows (for Mica), so the page must paint an opaque background of its own
-   before any script has run, and whenever Mica is off or unavailable. `applyTheme` replaces --bg with the theme's
-   colour; only html[data-mica='on'] below lets the window show through. --bg-solid is the same colour, never
-   translucent, for sticky bars and anything else that must cover what scrolls under it. */
+/* The page paints an opaque background of its own before any script has run; `applyTheme` replaces --bg with the
+   theme's colour. --bg-solid is the same colour, for sticky bars and anything else that must cover what scrolls
+   under it. */
 :root { --bg: #f3f4f6; --bg-solid: #f3f4f6; }
 html { background: var(--bg); }
 body {
@@ -15,10 +14,6 @@ body {
   font-size: 14px;
   line-height: 1.45;
 }
-/* Mica (Windows 11, Light and Dark only): the page background token is already translucent (lib/themes.ts), so
-   the body adds nothing under it and the window backdrop shows through. Without Mica `data-mica` is absent and
-   the body paints the opaque `--bg` above. */
-html[data-mica='on'], html[data-mica='on'] body { background: transparent; }
 h1, h2, h3, h4 { margin: 0; font-weight: 600; font-family: 'Segoe UI Variable Display', 'Segoe UI Variable', 'Segoe UI', system-ui, -apple-system, 'Helvetica Neue', Arial, sans-serif; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 button, input, select, textarea { font: inherit; color: inherit; }

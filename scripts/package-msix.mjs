@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 // Packs the Windows x64 build as MSIX packages, from macOS, with makemsix from Microsoft's MSIX Packaging SDK. It packs the exe and
-// WebView2Loader.dll that `pnpm package:windows` left in the release folder, and builds nothing unless --build is passed.
+// WebView2Loader.dll that `pnpm package:windows` left in the release folder, and builds nothing unless --build is passed. The logo, the
+// tiles and the taskbar icons are cut from src-tauri/icons/icon.png with sips, as listed by assetImages() in msix-manifest.mjs.
 // One run makes two packages from those same files, which differ only in AppxManifest.xml: the Store package, with the identity
 // Partner Center issued for the app, to upload there, and a test package, with an identity of our own, to sign by hand and try on
 // a PC. --identity store or --identity test makes just one of them. Neither is signed here: the Store signs what it publishes.
 // The identities are in msix-manifest.mjs. The README section on the Microsoft Store package has the setup.
+// A package also gets the resources.pri made for it on Windows, which Windows finds the target-size and unplated images through, if there is
+// one: packaging/msix/<package>/resources.pri, or the file that ZWT_MSIX_PRI_STORE or ZWT_MSIX_PRI_TEST names. It is checked to be a PRI file
+// for that package's identity, and to list every image of the package, before it is packed. Nothing here can make one: `pnpm msix:pri`
+// (make-pri.mjs) does, with a Windows VM; see resourceIndexFor in msix-manifest.mjs.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -12,22 +17,26 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 import {
-  ASSETS,
   EXECUTABLE,
+  RESOURCE_INDEX,
+  assetImages,
   embeddedVersion,
   identityOf,
+  lackingAssets,
   manifestFor,
   msixFileName,
   msixVersion,
   packageFamilyName,
   parseArguments,
   resourceCopies,
+  resourceIndexFor,
+  resourceIndexVariable,
   retiredVariables,
 } from './msix-manifest.mjs';
+import { SIPS, cargoTargetRoot, cutAssetImages, readAppConf } from './msix-stage.mjs';
 
 const TARGET = 'x86_64-pc-windows-gnu';
 const LOADER = 'WebView2Loader.dll';
-const SIPS = '/usr/bin/sips';
 const UNZIP = '/usr/bin/unzip';
 
 const root = resolve(import.meta.dirname, '..');
@@ -46,6 +55,35 @@ const SIGNED = {
   store: 'Signed: it carries a signature, which the Store replaces',
   test: 'Signed: it carries a signature',
 };
+/**
+ * Said at the end when a package has no resources.pri, `lacking` being the results of those that have none. Windows finds the target-size and
+ * unplated images, which are what draws the logo without a plate in the taskbar and Start, only through that index (Microsoft: "Generating MSIX
+ * package components"). makemsix doesn't make one, and makepri, which does, is a Windows program, part of the Windows SDK: so this says how to
+ * make one there, from a copy of the `stage` folder and the package's own manifest, and where to leave it for the next run.
+ */
+function noIndexNote(lacking, stage) {
+  const names = lacking.map(({ kind }) => kind);
+  return [
+    `No ${RESOURCE_INDEX} in the ${names.join(' and ')} package${names.length === 1 ? '' : 's'}: without one, Windows can't find the target-size and unplated images, so the taskbar and Start use the plain logo and still draw it on a plate.`,
+    "makemsix can't make the index. makepri, which can, is a Windows program, part of the Windows SDK. From this Mac, with the Windows VM running, `pnpm msix:pri` makes both and saves them where step 5 below says (the README has the steps). To make one by hand, on Windows, for each package:",
+    `  1. Copy the stage folder (${stage}) to the PC and put in the copy the AppxManifest.xml of the package it is for (take it from its .msix: unzip -p <package> AppxManifest.xml). Below, <stage> is that copy.`,
+    '  2. makepri createconfig /cf priconfig.xml /dq en-US /o /pv 10.0.0',
+    '  3. Delete the <packaging> element from priconfig.xml.',
+    `  4. makepri new /cf priconfig.xml /pr <stage> /mn <stage>\\AppxManifest.xml /of <stage>\\${RESOURCE_INDEX} /o`,
+    `  5. Save the result in this repo, and run this again: ${names.map((kind) => `${kind}: packaging/msix/${kind}/${RESOURCE_INDEX} (or the file named in ${resourceIndexVariable(kind)})`).join('; ')}.`,
+    'The index depends on the identity and on which images there are, not on the version, so one made now serves the next versions too. This script checks that it is a PRI file made for the identity of its package.',
+  ].join('\n');
+}
+
+/** What `resourceIndexFor` reads files with: the bytes, or null if there is no such file. Any other failure, a folder in its place for one, is thrown. */
+function readIfThere(file) {
+  try {
+    return readFileSync(file);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
 
 // The package while it is being made, under a name that is not a package's, and the packages this run has finished. A run that
 // fails takes them all away, and a package is renamed only once it has passed every check, so nothing else is ever left under
@@ -81,11 +119,14 @@ if (retired.length > 0) {
   console.warn(`${retired.join(', ')} ${one} set, and no longer read: the identities are in scripts/msix-manifest.mjs. Unset ${it} to stop this message.`);
 }
 
-const conf = JSON.parse(readFileSync(join(tauriDir, 'tauri.conf.json'), 'utf8'));
+let conf;
+try {
+  conf = readAppConf(tauriDir);
+} catch (error) {
+  fail(error.message);
+}
 const productName = conf.productName;
 const description = conf.bundle?.shortDescription;
-const unnamed = [['productName', productName], ['bundle.shortDescription', description]].filter(([, value]) => typeof value !== 'string' || !value);
-if (unnamed.length > 0) fail(`src-tauri/tauri.conf.json needs ${unnamed.map(([key]) => key).join(' and ')}.`);
 
 // Everything that can be wrong with the settings is reported together, before any work starts.
 const problems = [];
@@ -105,9 +146,7 @@ for (const kind of kinds) {
 }
 if (problems.length > 0) fail(problems.join('\n'));
 
-// Cargo reads a relative CARGO_TARGET_DIR against the folder it runs in, which here is src-tauri. The same rule as package-windows.mjs.
-const targetRoot = process.env.CARGO_TARGET_DIR ? resolve(tauriDir, process.env.CARGO_TARGET_DIR) : join(tauriDir, 'target');
-const release = join(targetRoot, TARGET, 'release');
+const release = join(cargoTargetRoot(tauriDir, process.env), TARGET, 'release');
 const exe = join(release, EXECUTABLE);
 
 // Packages from an earlier run go first, so a run that fails leaves nothing that could be taken for this one's.
@@ -117,6 +156,19 @@ for (const { file } of packages) {
   rmSync(file, { force: true });
   rmSync(`${file}.partial`, { force: true });
 }
+
+// The resources.pri of each package, if it has one: { file, bytes, variable }, checked to be a PRI file that names that package's identity.
+// They are read only now, with the packages of the earlier run gone, so a run that fails over a wrong one leaves none of the same name.
+const indexes = {};
+const wrongIndexes = [];
+for (const kind of kinds) {
+  try {
+    indexes[kind] = resourceIndexFor(kind, { env: process.env, root, read: readIfThere });
+  } catch (error) {
+    wrongIndexes.push(error.message);
+  }
+}
+if (wrongIndexes.length > 0) fail(wrongIndexes.join('\n'));
 
 const makemsix = resolve(process.env.ZWT_MAKEMSIX || join(homedir(), 'msix-packaging', '.vs', 'bin', 'makemsix'));
 if (!existsSync(makemsix)) {
@@ -183,14 +235,12 @@ for (const { from, to } of copies) {
   stageFile(to, from);
 }
 
-// The store logo and the tiles, cut from the app icon.
-const icon = join(tauriDir, 'icons', 'icon.png');
-if (!existsSync(icon)) fail(`The app icon is missing: ${icon}`);
-for (const [image, size] of Object.entries(ASSETS)) {
-  const file = join(stage, 'Assets', `${image}.png`);
-  const cut = spawnSync(SIPS, ['-s', 'format', 'png', '-z', String(size), String(size), icon, '--out', file], { encoding: 'utf8' });
-  if (cut.status !== 0 || !existsSync(file)) fail(`sips could not cut ${image}.png from ${icon}:\n${cut.stdout}${cut.stderr}`.trim());
-  staged.push(`Assets/${image}.png`);
+// The store logo, the tiles and the taskbar icons, cut from the app icon: the list is assetImages() in msix-manifest.mjs, and both
+// packages get all of it. make-pri.mjs cuts the same images, with the same function, for the resource index.
+try {
+  staged.push(...cutAssetImages({ icon: join(tauriDir, 'icons', 'icon.png'), dir: stage }));
+} catch (error) {
+  fail(error.message);
 }
 
 mkdirSync(outDir, { recursive: true });
@@ -204,10 +254,14 @@ const packEnv = { ...process.env, DYLD_FALLBACK_LIBRARY_PATH: [lib, process.env.
 /** Makes one package from the staged files and returns what was read back from it. It fails the whole run if anything is wrong. */
 function pack({ kind, file }) {
   const identity = identities[kind];
+  const index = indexes[kind];
   writeFileSync(join(stage, 'AppxManifest.xml'), manifestFor(kind, { displayName: productName, description, version }));
+  // The stage is shared, and the index of one package is wrong for the other: so it is in the stage only while its own package is packed.
+  if (index) writeFileSync(join(stage, RESOURCE_INDEX), index.bytes);
 
   partial = `${file}.partial`;
   const run = spawnSync(makemsix, ['pack', '-d', stage, '-p', partial], { encoding: 'utf8', env: packEnv, maxBuffer: 1 << 26 });
+  rmSync(join(stage, RESOURCE_INDEX), { force: true });
   const said = `${run.stdout ?? ''}${run.stderr ?? ''}`.trim();
   if (run.error) fail(`Could not run ${makemsix}: ${run.error.message}`);
   if (run.status !== 0) fail(`makemsix failed on the ${kind} package (exit ${run.status}):\n${said}`);
@@ -219,8 +273,16 @@ function pack({ kind, file }) {
   const listing = spawnSync(UNZIP, ['-Z1', partial], { encoding: 'utf8', maxBuffer: 1 << 26 });
   if (listing.status !== 0) fail(`${partial} can't be read as a zip file:\n${listing.stderr}`);
   const entries = listing.stdout.split('\n').filter(Boolean);
-  const lacking = ['AppxBlockMap.xml', '[Content_Types].xml', 'AppxManifest.xml', ...staged].filter((name) => !entries.includes(name));
+  const lacking = ['AppxBlockMap.xml', '[Content_Types].xml', 'AppxManifest.xml', ...staged, ...(index ? [RESOURCE_INDEX] : [])].filter((name) => !entries.includes(name));
   if (lacking.length > 0) fail(`The ${kind} package lacks: ${lacking.join(', ')}`);
+  // Every image of the list, whatever staging added: both packages carry the same set.
+  const noImages = lackingAssets(entries);
+  if (noImages.length > 0) fail(`The ${kind} package lacks ${noImages.length} of its ${assetImages().length} images: ${noImages.join(', ')}`);
+  // The index in the package is the file that was checked, whole: Windows reads one for the identity it names, and this one is for this package's.
+  if (index) {
+    const inside = spawnSync(UNZIP, ['-p', partial, RESOURCE_INDEX], { maxBuffer: 1 << 26 }).stdout;
+    if (!Buffer.isBuffer(inside) || !index.bytes.equals(inside)) fail(`The ${RESOURCE_INDEX} inside the ${kind} package is not the file it was made from, ${index.file}.`);
+  }
 
   const manifest = spawnSync(UNZIP, ['-p', partial, 'AppxManifest.xml'], { encoding: 'utf8', maxBuffer: 1 << 24 }).stdout ?? '';
   const identityTag = /<Identity\s[^>]*>/.exec(manifest)?.[0] ?? '';
@@ -242,20 +304,31 @@ function pack({ kind, file }) {
   renameSync(partial, file);
   partial = null;
   made.push(file);
-  return { kind, file, entries, read, family: packageFamilyName(read.name, read.publisher) };
+  return { kind, file, entries, read, index, family: packageFamilyName(read.name, read.publisher) };
 }
 
 const results = packages.map(pack);
 
+/** The report line on the resource index, from what the package holds and, if it was given one, where that came from. */
+function indexLine({ entries, index }) {
+  if (!entries.includes(RESOURCE_INDEX)) return `Resource index: none, there is no ${RESOURCE_INDEX} in it`;
+  if (!index) return `Resource index: ${RESOURCE_INDEX} is in it`;
+  const source = index.variable ? `${index.file}, named by ${index.variable}` : index.file;
+  return `Resource index: ${RESOURCE_INDEX} is in it, a copy of ${source} (${index.bytes.length} bytes, SHA-256 ${createHash('sha256').update(index.bytes).digest('hex')})`;
+}
+
+const withoutIndex = results.filter(({ entries }) => !entries.includes(RESOURCE_INDEX));
+
 console.log(
   [
-    ...results.flatMap(({ kind, file, entries, read, family }) => [
+    ...results.flatMap(({ kind, file, entries, read, index, family }) => [
       '',
       `Package: ${file}`,
       `For: ${PURPOSE[kind]}`,
       `Size: ${statSync(file).size} bytes`,
       `SHA-256: ${createHash('sha256').update(readFileSync(file)).digest('hex')}`,
-      `Files in the package: ${entries.length}`,
+      `Files in the package: ${entries.length}, of which ${assetImages().length} are images in Assets`,
+      indexLine({ entries, index }),
       'Identity in the manifest inside it:',
       `  Name: ${read.name}`,
       `  Publisher: ${read.publisher}`,
@@ -266,5 +339,6 @@ console.log(
     ]),
     '',
     `App exe in ${results.length === 1 ? 'it' : 'both'}: version ${built}, built ${statSync(exe).mtime.toISOString()}, SHA-256 ${createHash('sha256').update(exeBytes).digest('hex')}`,
+    ...(withoutIndex.length > 0 ? ['', noIndexNote(withoutIndex, stage)] : []),
   ].join('\n'),
 );

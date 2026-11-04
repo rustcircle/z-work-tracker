@@ -106,7 +106,7 @@ const COMMANDS: Record<string, 'blocked' | 'allowed'> = {
   // Reports and files.
   export_xlsx: 'allowed', export_csv: 'allowed', export_summary_csv: 'allowed', export_pdf: 'allowed', pick_pdf_logo: 'allowed', clear_pdf_logo: 'allowed',
   // This computer only: preferences, setup, notices, drafts, reminders, Start with Windows, the window.
-  set_theme: 'allowed', set_hide_earnings: 'allowed', set_mica: 'allowed', set_backup_keep: 'allowed', mark_client_zone_prompt_done: 'allowed',
+  set_theme: 'allowed', set_hide_earnings: 'allowed', set_backup_keep: 'allowed', mark_client_zone_prompt_done: 'allowed',
   mark_sync_prompt_done: 'allowed', set_setup_step: 'allowed', finish_setup: 'allowed', dismiss_notice: 'allowed', stash_draft: 'allowed',
   clear_draft: 'allowed', keep_unsaved_words: 'allowed', snooze_reminder: 'allowed', get_autostart: 'allowed', set_autostart: 'allowed',
   get_autostart_info: 'allowed', open_startup_settings: 'allowed', window_ready: 'allowed', ack_hide_notice: 'allowed', quit_app: 'allowed',

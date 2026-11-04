@@ -58,7 +58,7 @@
         </div>
         <div>
           <a class="toc-group" href="#analysis">Analysis</a>
-          <ul><li><a href="#periods">Periods and comparison</a></li><li><a href="#metrics">Metrics</a></li><li><a href="#zones">Time zones and Show both</a></li><li><a href="#shifts">Work shifts</a></li></ul>
+          <ul><li><a href="#periods">Periods and comparison</a></li><li><a href="#metrics">Metrics</a></li><li><a href="#share-of-time">Share of time</a></li><li><a href="#zones">Time zones and Show both</a></li><li><a href="#shifts">Work shifts</a></li></ul>
         </div>
         <div>
           <a class="toc-group" href="#data">Your data</a>
@@ -114,6 +114,7 @@
         </table>
       </div>
       <p>Paused time is left out of the total. After you quit and reopen the app, Resume on a paused task opens the new-task form instead. Submitting it creates a new task linked to the paused one, and the paused one stays as it was.</p>
+      <p>Use the mouse for these buttons. The Space bar never starts, pauses, resumes or stops a timer, so a stray key press can't change one. Enter on a focused button still works.</p>
 
       <h3 id="tray">The tray</h3>
       <ul class="plain">
@@ -144,7 +145,13 @@
       <p>Nothing is overwritten: the recorded times stay, the correction sits beside them, and the history lists every change with when, what and why. You can't correct a running segment, or time that is on a billing summary until that summary is voided.</p>
 
       <h3 id="subtasks">Subtasks</h3>
-      <p>Write subtasks as a task list in the description, then make one active. One is active at a time, and new time goes to it. Switching while the task runs splits the time at that moment, so the task total stays the sum of its parts.</p>
+      <p>Subtasks are the items of a task list in the task's description:</p>
+      <ol>
+        <li>Open the task for editing, click in <b>Description</b> and press the <b>Task list</b> button (☑≡) in the formatting bar.</li>
+        <li>Type one subtask per line, pressing Enter between them, and save the task.</li>
+        <li>On the task card, each subtask shows its own time. Press <b>Make active</b> on the one you are working on. The button works only for saved items.</li>
+      </ol>
+      <p>One subtask is active at a time, and new time goes to it. Switching while the task runs splits the time at that moment, so the task total stays the sum of its parts. Tick an item when it is done. Deleting the active item from the description clears the active subtask.</p>
 
       <h3 id="tags">Tags and templates</h3>
       <p>Tags have a name and a colour, and four starter tags come with the app. <b>New tag</b>, beside the tag picker, opens Settings at the form for a new tag, and <b>Back to task</b> returns you to the form with what you typed. Analysis breaks time down by tag.</p>
@@ -196,10 +203,20 @@
       <h2 id="analysis-title" class="label">Analysis</h2>
 
       <h3 id="periods">Periods and comparison</h3>
-      <p>Choose a day, week, month, quarter, year or a custom range, and filter by project, task, band, shift or text. <b>Compare with the previous period</b> sets each figure beside the same length of time before it.</p>
+      <p>Choose a day, week, month, quarter, year or a custom range, and filter by project, task, tag, band, shift or text. <b>Compare with the previous period</b> sets each figure beside the same length of time before it.</p>
 
       <h3 id="metrics">Metrics</h3>
       <p>Sections cover volume, time of day, projects, tasks, focus and sessions, consistency, goals and money, shifts and zones. Every metric has an info button and an entry in the searchable <b>Metrics glossary</b>. Every chart has a <b>View data</b> table, and clicking a chart shows the tasks behind it. Insights are written from your numbers, with no AI, and there is no productivity score.</p>
+
+      <h3 id="share-of-time">Share of time</h3>
+      <p>The share-of-time chart shows where the period's hours went. Each row of its legend gives the hours and the share, for example <b>Client website 16h 50m (47%)</b>. The hours follow the Billable/Exact switch and your filters and add up to the total in the middle, and the shares add up to 100%.</p>
+      <ul class="plain">
+        <li><b>Projects</b>, <b>Tasks</b>, <b>Subtasks</b> or <b>Tags</b> chooses what each slice is. The chart starts at the level your filter leaves open: projects with no project filter, tasks for one project, subtasks for one task. You can switch the level at any time.</li>
+        <li>Rows name only what the filter leaves open, such as <b>Task · Project</b> across projects or just the task within one. Subtask time with no subtask shows as <b>(no subtask)</b>.</li>
+        <li>With <b>Tags</b>, each slice is a tag combination, such as <b>Design + Client</b>, and time without tags is <b>No tag</b>. A task with several tags is counted once, under its combination.</li>
+        <li>With many tasks, subtasks or combinations, the smallest are grouped as <b>Other</b>. View data lists every one.</li>
+      </ul>
+      <p>To filter by tag, tick the tags you want: with none ticked, every task counts, and with some ticked, tasks with any of them count. <b>No tag</b> selects untagged tasks.</p>
       <figure class="doc-figure doc-figure-sm">
         <picture><source media="(max-width: 640px)" srcset="assets/analysis-phone.webp" width="244" height="298"><img src="assets/analysis.webp" width="757" height="298" loading="lazy" decoding="async" alt="Analysis cards for total time, active days, average per active day, earnings, fixed fee and weekly target, with changes compared with the previous period."></picture>
         <figcaption>Metric cards in Analysis, with sample data.</figcaption>

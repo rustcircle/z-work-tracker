@@ -1,26 +1,34 @@
 // @vitest-environment jsdom
 // jsdom for DOMParser: the manifest is read back as XML, so what is checked is what a reader of the package would see.
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import {
   ASSETS,
   PACKAGES,
+  RESOURCE_INDEX,
+  assetImages,
   buildManifest,
   checkIdentity,
+  checkResourceIndex,
   embeddedVersion,
   encodePublisherHash,
   identityOf,
+  lackingAssets,
   manifestFor,
   msixFileName,
   msixVersion,
   packageFamilyName,
   parseArguments,
+  pngInfo,
   publisherId,
   resourceCopies,
+  resourceIndexFor,
+  resourceIndexVariable,
   retiredVariables,
+  scaledSize,
 } from './msix-manifest.mjs';
 
 const NS = {
@@ -37,7 +45,7 @@ const STORE = {
   publisher: 'CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9',
   publisherDisplayName: 'Pedro Miguel Rodrigues Jorge',
   family: 'PedroMiguelRodriguesJorge.zWorkTracker_54k2cbaqgvhqp',
-  file: 'zWorkTracker_1.3.2.0_x64_store.msix',
+  file: 'zWorkTracker_1.3.3.0_x64_store.msix',
 };
 /** The identity of the package made for trying the app on a PC. Its Publisher is the subject of the certificate it is signed with. */
 const TEST = {
@@ -45,7 +53,7 @@ const TEST = {
   publisher: 'CN=zWorkTracker Test Signing',
   publisherDisplayName: 'zWorkTracker (test)',
   family: 'rustcircle.zWorkTracker.Test_ym7m1j5c19s9r',
-  file: 'zWorkTracker_1.3.2.0_x64_test-unsigned.msix',
+  file: 'zWorkTracker_1.3.3.0_x64_test-unsigned.msix',
 };
 
 /** A made-up identity, for the tests of the manifest as such. */
@@ -59,7 +67,7 @@ const fields = {
 };
 
 /** What the packaging script passes besides the identity. */
-const app = { displayName: 'zWorkTracker', description: 'Labor hours tracker', version: '1.3.2' };
+const app = { displayName: 'zWorkTracker', description: 'Labor hours tracker', version: '1.3.3' };
 
 /** What a call said when it threw. */
 function messageOf(run: () => unknown): string {
@@ -265,23 +273,23 @@ describe('the package family name', () => {
 
 describe('the files one run makes', () => {
   it('are named for the app, the package version, x64 and the package: store or test-unsigned', () => {
-    expect(msixFileName('zWorkTracker', '1.3.2', 'store')).toBe(STORE.file);
-    expect(msixFileName('zWorkTracker', '1.3.2', 'test')).toBe(TEST.file);
+    expect(msixFileName('zWorkTracker', '1.3.3', 'store')).toBe(STORE.file);
+    expect(msixFileName('zWorkTracker', '1.3.3', 'test')).toBe(TEST.file);
   });
 
   it('take the version with or without its fourth part, as the script has it after msixVersion', () => {
-    expect(msixFileName('zWorkTracker', '1.3.2.0', 'store')).toBe(STORE.file);
-    expect(msixFileName('zWorkTracker', msixVersion('1.3.2'), 'test')).toBe(TEST.file);
+    expect(msixFileName('zWorkTracker', '1.3.3.0', 'store')).toBe(STORE.file);
+    expect(msixFileName('zWorkTracker', msixVersion('1.3.3'), 'test')).toBe(TEST.file);
   });
 
   it('refuse a version the Store would turn away, and a package that is not one of the two', () => {
     expect(messageOf(() => msixFileName('zWorkTracker', '0.2.0', 'store'))).toContain('starts with 0');
     expect(messageOf(() => msixFileName('zWorkTracker', '1.3', 'test'))).toContain('is not a version the Store takes');
-    expect(messageOf(() => msixFileName('zWorkTracker', '1.3.2', 'both'))).toContain('Unknown package');
+    expect(messageOf(() => msixFileName('zWorkTracker', '1.3.3', 'both'))).toContain('Unknown package');
   });
 
   it('differ from each other, so neither can overwrite the other', () => {
-    expect(msixFileName('zWorkTracker', '1.3.2', 'store')).not.toBe(msixFileName('zWorkTracker', '1.3.2', 'test'));
+    expect(msixFileName('zWorkTracker', '1.3.3', 'store')).not.toBe(msixFileName('zWorkTracker', '1.3.3', 'test'));
   });
 });
 
@@ -376,7 +384,7 @@ describe('AppxManifest.xml', () => {
     expect(attrs(only(doc, NS.foundation, 'Identity'))).toEqual({
       Name: want.name,
       Publisher: want.publisher,
-      Version: '1.3.2.0',
+      Version: '1.3.3.0',
       ProcessorArchitecture: 'x64',
     });
     expect(only(doc, NS.foundation, 'PublisherDisplayName').textContent).toBe(want.publisherDisplayName);
@@ -385,7 +393,7 @@ describe('AppxManifest.xml', () => {
 
   it('of the Store package says the Store’s own values, as Partner Center prints them', () => {
     const xml = manifestFor('store', app);
-    expect(xml).toContain('<Identity Name="PedroMiguelRodriguesJorge.zWorkTracker" Publisher="CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9" Version="1.3.2.0" ProcessorArchitecture="x64" />');
+    expect(xml).toContain('<Identity Name="PedroMiguelRodriguesJorge.zWorkTracker" Publisher="CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9" Version="1.3.3.0" ProcessorArchitecture="x64" />');
     expect(xml).toContain('<PublisherDisplayName>Pedro Miguel Rodrigues Jorge</PublisherDisplayName>');
   });
 
@@ -453,7 +461,7 @@ describe('AppxManifest.xml', () => {
     });
   });
 
-  it('names exactly the images the packaging script cuts, each at the base size of its kind', () => {
+  it('names exactly the base images the packaging script cuts, each at the base size of its kind', () => {
     expect(ASSETS).toEqual({ StoreLogo: 50, Square44x44Logo: 44, Square150x150Logo: 150 });
     const named = [...buildManifest(fields).matchAll(/Assets\\([A-Za-z0-9]+)\.png/g)].map((m) => m[1]);
     expect(named.sort()).toEqual(Object.keys(ASSETS).sort());
@@ -513,6 +521,370 @@ describe('AppxManifest.xml', () => {
       }
     }
     expect(() => buildManifest({ ...fields, description: 'one\ttwo\nthree\r\nfour' })).not.toThrow();
+  });
+});
+
+/** The plain image the manifest names for each logo, with its base size. */
+const BASE_IMAGES = { StoreLogo: 50, Square44x44Logo: 44, Square150x150Logo: 150 };
+/**
+ * The images that must be in Assets, as Microsoft lists them in "Construct your Windows App's Icon" (Windows app design, iconography),
+ * written out here and not read from the module, so that a change to the list fails a test. [logo, percent, pixels] is its table of
+ * the manifest entries at each display scale, with halves rounded up: 150 px at 125% is 188.
+ */
+const AT_SCALE: readonly (readonly [logo: keyof typeof BASE_IMAGES, percent: number, pixels: number])[] = [
+  ['StoreLogo', 100, 50], ['StoreLogo', 125, 63], ['StoreLogo', 150, 75], ['StoreLogo', 200, 100], ['StoreLogo', 400, 200],
+  ['Square44x44Logo', 100, 44], ['Square44x44Logo', 125, 55], ['Square44x44Logo', 150, 66], ['Square44x44Logo', 200, 88], ['Square44x44Logo', 400, 176],
+  ['Square150x150Logo', 100, 150], ['Square150x150Logo', 125, 188], ['Square150x150Logo', 150, 225], ['Square150x150Logo', 200, 300], ['Square150x150Logo', 400, 600],
+];
+/** The sides, in pixels, at which the shell asks for the app icon; each comes plain, unplated (dark theme) and light-unplated. */
+const TARGET_SIDES = [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256];
+const TARGET_FORMS = ['', '_altform-unplated', '_altform-lightunplated'];
+
+/** Every image Assets must hold, with the side in pixels it must have: 3 plain, 15 for display scales and 42 for the taskbar and Start. */
+function expectedImages(): Map<string, number> {
+  const images = new Map<string, number>();
+  for (const [logo, size] of Object.entries(BASE_IMAGES)) images.set(`Assets/${logo}.png`, size);
+  for (const [logo, percent, pixels] of AT_SCALE) images.set(`Assets/${logo}.scale-${percent}.png`, pixels);
+  for (const side of TARGET_SIDES) {
+    for (const form of TARGET_FORMS) images.set(`Assets/Square44x44Logo.targetsize-${side}${form}.png`, side);
+  }
+  return images;
+}
+
+describe('the images in Assets', () => {
+  const kinds = ['store', 'test'] as const;
+  const images = assetImages();
+  const names = images.map(({ name }) => name);
+  const sizes = new Map(images.map(({ name, size }) => [name, size]));
+
+  it('are the 60 images Windows picks from, and no others', () => {
+    expect(expectedImages().size).toBe(60);
+    expect(names).toHaveLength(60);
+    expect([...names].sort()).toEqual([...expectedImages().keys()].sort());
+  });
+
+  it('are each cut at the side in pixels that its name asks for', () => {
+    for (const [name, size] of expectedImages()) expect(sizes.get(name), name).toBe(size);
+  });
+
+  it('are named as Windows looks for them, which a sample spelled out whole shows', () => {
+    // Whole names, so that a mistake in how the module builds them is not repeated by the way this test builds them.
+    const sample: [string, number][] = [
+      ['Assets/Square44x44Logo.png', 44],
+      ['Assets/Square150x150Logo.png', 150],
+      ['Assets/StoreLogo.png', 50],
+      ['Assets/Square44x44Logo.scale-100.png', 44],
+      ['Assets/Square44x44Logo.scale-400.png', 176],
+      ['Assets/Square150x150Logo.scale-125.png', 188],
+      ['Assets/StoreLogo.scale-125.png', 63],
+      ['Assets/StoreLogo.scale-400.png', 200],
+      ['Assets/Square44x44Logo.targetsize-16.png', 16],
+      ['Assets/Square44x44Logo.targetsize-16_altform-unplated.png', 16],
+      ['Assets/Square44x44Logo.targetsize-24_altform-unplated.png', 24],
+      ['Assets/Square44x44Logo.targetsize-30_altform-lightunplated.png', 30],
+      ['Assets/Square44x44Logo.targetsize-48_altform-lightunplated.png', 48],
+      ['Assets/Square44x44Logo.targetsize-256_altform-unplated.png', 256],
+      ['Assets/Square44x44Logo.targetsize-256_altform-lightunplated.png', 256],
+    ];
+    for (const [name, size] of sample) expect(sizes.get(name), name).toBe(size);
+  });
+
+  it('are each named once, in the Assets folder, with forward slashes and a .png ending', () => {
+    expect(new Set(names).size).toBe(names.length);
+    const shape = /^Assets\/(StoreLogo|Square44x44Logo|Square150x150Logo)(\.(scale|targetsize)-\d+(_altform-(unplated|lightunplated))?)?\.png$/;
+    for (const name of names) expect(shape.test(name), name).toBe(true);
+  });
+
+  it('round half up from the base size, as in Microsoft’s table', () => {
+    for (const [logo, percent, pixels] of AT_SCALE) expect(scaledSize(BASE_IMAGES[logo], percent), `${logo} at ${percent}%`).toBe(pixels);
+    expect(scaledSize(150, 125)).toBe(188);
+    expect(scaledSize(50, 125)).toBe(63);
+  });
+
+  it('include the plain image that the manifest of each package names for each logo, which stays beside the variants', () => {
+    for (const kind of kinds) {
+      const named = [...manifestFor(kind, app).matchAll(/Assets\\([A-Za-z0-9]+)\.png/g)].map((m) => `Assets/${m[1]}.png`);
+      expect([...named].sort(), kind).toEqual(Object.keys(BASE_IMAGES).map((logo) => `Assets/${logo}.png`).sort());
+      for (const name of named) expect(sizes.has(name), `${kind}: ${name}`).toBe(true);
+    }
+  });
+
+  it('are none lacking from the file list of a package that holds them all', () => {
+    // A package's file list, as `unzip -Z1` prints it: what makemsix adds, the app, and the images.
+    const entries = ['AppxBlockMap.xml', '[Content_Types].xml', 'AppxManifest.xml', 'zWorkTracker.exe', 'WebView2Loader.dll', ...expectedImages().keys()];
+    expect(lackingAssets(entries)).toEqual([]);
+  });
+
+  it('are each reported by name when a package lacks it, a variant as much as a plain image', () => {
+    for (const name of expectedImages().keys()) {
+      const without = ['AppxManifest.xml', ...[...expectedImages().keys()].filter((other) => other !== name)];
+      expect(lackingAssets(without), name).toEqual([name]);
+    }
+    // With only the three plain images, which is what 1.3.2 had and what left the plate on, the other 57 are lacking.
+    const lacking = lackingAssets(Object.keys(BASE_IMAGES).map((logo) => `Assets/${logo}.png`));
+    expect(lacking).toHaveLength(57);
+    expect(lacking).toContain('Assets/Square44x44Logo.targetsize-24_altform-unplated.png');
+    expect(lackingAssets([])).toHaveLength(60);
+  });
+
+  it('are lacking when they are in another folder of the package, as a name is looked for whole', () => {
+    expect(lackingAssets([...expectedImages().keys()].map((name) => name.replace('Assets/', 'Assets/sub/')))).toHaveLength(60);
+  });
+});
+
+describe('the resource index of a package, resources.pri', () => {
+  const utf16 = (text: string) => Buffer.from(text, 'utf16le');
+  /** The path of every image as makepri writes it into an index: 8-bit text with a backslash, as Microsoft's own two indexes hold theirs. */
+  const imagePaths = assetImages().map(({ name }) => name.replace('/', '\\'));
+  /**
+   * Something shaped like what makepri writes, as read off Microsoft's own resources.pri: the eight bytes of the magic first and last,
+   * section tags, the name of the resource map as UTF-16LE both as ms-appx://<name>/ and on its own, the path of each of `images` (all 60 by
+   * default) and 0xDEFFFADE and a size before the closing magic. A `name` of null leaves the name out.
+   */
+  function pri(name: string | null, magic = 'mrm_pri2', images: readonly string[] = imagePaths): Buffer {
+    return Buffer.concat([
+      Buffer.from(magic, 'latin1'),
+      Buffer.alloc(24),
+      Buffer.from('[mrm_decn_info][mrm_hschemaex] ', 'latin1'),
+      name === null ? Buffer.alloc(0) : Buffer.concat([utf16(`ms-appx://${name}/`), Buffer.alloc(8), utf16(name)]),
+      Buffer.from('[mrm_dataitem] ', 'latin1'),
+      ...images.flatMap((path) => [Buffer.from(path, 'latin1'), Buffer.alloc(1)]),
+      Buffer.alloc(16),
+      Buffer.from('defaffde', 'hex'),
+      Buffer.alloc(4),
+      Buffer.from(magic, 'latin1'),
+    ]);
+  }
+  const packages = [
+    ['store', STORE],
+    ['test', TEST],
+  ] as const;
+
+  it.each(packages)('takes a file that starts like a PRI file and names the identity of the %s package, and hands its bytes back', (kind, identity) => {
+    const bytes = pri(identity.name);
+    expect(checkResourceIndex(kind, bytes)).toBe(bytes);
+  });
+
+  it('is called resources.pri', () => {
+    expect(RESOURCE_INDEX).toBe('resources.pri');
+  });
+
+  it('refuses a file that is empty', () => {
+    expect(messageOf(() => checkResourceIndex('store', Buffer.alloc(0)))).toBe('it is empty.');
+  });
+
+  it('refuses a file that does not start with mrm_pri2, whatever else it holds, and shows what it starts with', () => {
+    const body = pri(STORE.name).subarray(8);
+    const wrong: [string, Buffer, string][] = [
+      ['the priconfig.xml it was made from', Buffer.from('<?xml version="1.0" encoding="utf-8"?><resources targetOsVersion="10.0.0"/>'), '"<?xml ve"'],
+      ['a zip file', Buffer.concat([Buffer.from('504b0304', 'hex'), body]), '"PK\\x03\\x04\\x00\\x00\\x00\\x00"'],
+      ['a web page, as saved from a failed download', Buffer.from('<!DOCTYPE html><title>Not found</title>'), '"<!DOCTYP"'],
+      ['the magic after other bytes', Buffer.concat([Buffer.from('  '), pri(STORE.name)]), '"  mrm_pr"'],
+      ['the magic cut short', Buffer.concat([Buffer.from('mrm_pri'), body]), '"mrm_pri\\x00"'],
+      ['another version of the magic', pri(STORE.name, 'mrm_pri0'), '"mrm_pri0"'],
+      ['three bytes', Buffer.from('mrm'), '"mrm"'],
+    ];
+    for (const [what, bytes, shown] of wrong) {
+      const message = messageOf(() => checkResourceIndex('store', bytes));
+      expect(message, what).toContain('it is not a PRI file');
+      expect(message, what).toContain(shown);
+      expect(message, what).toContain('starts with mrm_pri2');
+    }
+  });
+
+  it('refuses the index of the other package, in both directions, and says whose it names', () => {
+    const forTest = messageOf(() => checkResourceIndex('store', pri(TEST.name)));
+    expect(forTest).toContain(`it names the identity of the test package, ${TEST.name}, and the store package's is ${STORE.name}.`);
+    const forStore = messageOf(() => checkResourceIndex('test', pri(STORE.name)));
+    expect(forStore).toContain(`it names the identity of the store package, ${STORE.name}, and the test package's is ${TEST.name}.`);
+  });
+
+  it('refuses an index that names both identities, since it cannot be told which package it is for', () => {
+    const both = Buffer.concat([pri(STORE.name), pri(TEST.name)]);
+    for (const [kind] of packages) expect(messageOf(() => checkResourceIndex(kind, both)), kind).toContain('it names the identity of the');
+  });
+
+  it.each(packages)('refuses an index that names neither identity, made from another manifest, and says which name the %s package wants', (kind, identity) => {
+    for (const bytes of [pri('Placeholder.zWorkTracker'), pri(null)]) {
+      expect(messageOf(() => checkResourceIndex(kind, bytes))).toContain(`it does not name the identity of the ${kind} package, ${identity.name}.`);
+    }
+  });
+
+  it('looks for the name as makepri writes it, in UTF-16LE: the letters as single bytes do not count, nor part of the name', () => {
+    const magic = Buffer.concat([Buffer.from('mrm_pri2', 'latin1'), Buffer.alloc(24)]);
+    expect(() => checkResourceIndex('store', Buffer.concat([magic, Buffer.from(STORE.name, 'latin1')]))).toThrow('does not name the identity of the store package');
+    expect(() => checkResourceIndex('store', Buffer.concat([magic, utf16(STORE.name.slice(0, -1))]))).toThrow('does not name the identity of the store package');
+    // Where the name sits does not matter, an odd offset included: no layout of the file is assumed beyond how it starts.
+    expect(() => checkResourceIndex('store', Buffer.concat([magic, Buffer.from('x'), utf16(STORE.name)]))).not.toThrow();
+  });
+
+  it('names the variable that can point to the index of each package', () => {
+    expect(resourceIndexVariable('store')).toBe('ZWT_MSIX_PRI_STORE');
+    expect(resourceIndexVariable('test')).toBe('ZWT_MSIX_PRI_TEST');
+  });
+
+  it('refuses a package that is not one of the two, including names an object has of its own', () => {
+    for (const kind of ['both', 'constructor', '__proto__', 'toString', '', 42, null, undefined]) {
+      expect(messageOf(() => resourceIndexVariable(kind)), String(kind)).toContain('Unknown package');
+      expect(messageOf(() => checkResourceIndex(kind, pri(STORE.name))), String(kind)).toContain('Unknown package');
+      expect(messageOf(() => resourceIndexFor(kind, { env: {}, root: '/work', read: () => null })), String(kind)).toContain('Unknown package');
+    }
+  });
+
+  describe('looked for, in a made-up file system', () => {
+    const root = resolve('/work/repo');
+    const usual = (kind: string) => join(root, 'packaging', 'msix', kind, 'resources.pri');
+    /** A reader over a made-up disk: the bytes of each path in `files`, null for any other, and the paths it was asked for. */
+    function disk(files: Record<string, Buffer>) {
+      const asked: string[] = [];
+      return {
+        asked,
+        read: (file: string): Buffer | null => {
+          asked.push(file);
+          return Object.hasOwn(files, file) ? (files[file] ?? null) : null;
+        },
+      };
+    }
+
+    it.each(packages)('finds the index of the %s package at packaging/msix/<package>/resources.pri in the repo, checked and whole', (kind, identity) => {
+      const bytes = pri(identity.name);
+      const { read, asked } = disk({ [usual(kind)]: bytes });
+      expect(resourceIndexFor(kind, { env: {}, root, read })).toEqual({ file: usual(kind), bytes, variable: null });
+      expect(asked).toEqual([usual(kind)]);
+    });
+
+    it('is none, and no error, when there is no file at the usual place, and does not look at the other package\'s', () => {
+      expect(resourceIndexFor('store', { env: {}, root, read: () => null })).toBeNull();
+      const { read, asked } = disk({ [usual('store')]: pri(STORE.name) });
+      expect(resourceIndexFor('test', { env: {}, root, read })).toBeNull();
+      expect(asked).toEqual([usual('test')]);
+    });
+
+    it('takes the file that the variable names instead of the one in the repo, and says which variable named it', () => {
+      const named = resolve('/elsewhere/store.pri');
+      const bytes = pri(STORE.name);
+      const { read, asked } = disk({ [named]: bytes, [usual('store')]: Buffer.from('not looked at') });
+      expect(resourceIndexFor('store', { env: { ZWT_MSIX_PRI_STORE: named }, root, read })).toEqual({ file: named, bytes, variable: 'ZWT_MSIX_PRI_STORE' });
+      expect(asked).toEqual([named]);
+    });
+
+    it('reads a relative path in the variable against the folder it is run in, as a shell would', () => {
+      const bytes = pri(TEST.name);
+      const { read } = disk({ [resolve('my.pri')]: bytes });
+      expect(resourceIndexFor('test', { env: { ZWT_MSIX_PRI_TEST: ' my.pri ' }, root, read })?.file).toBe(resolve('my.pri'));
+    });
+
+    it('takes a variable that is not set, empty or blank for no variable, and ignores the variable of the other package', () => {
+      const bytes = pri(STORE.name);
+      for (const env of [{}, { ZWT_MSIX_PRI_STORE: undefined }, { ZWT_MSIX_PRI_STORE: '' }, { ZWT_MSIX_PRI_STORE: '  \t' }, { ZWT_MSIX_PRI_TEST: resolve('/elsewhere/test.pri') }]) {
+        const { read } = disk({ [usual('store')]: bytes });
+        expect(resourceIndexFor('store', { env, root, read }), JSON.stringify(env)).toEqual({ file: usual('store'), bytes, variable: null });
+      }
+    });
+
+    it('refuses a variable that names a file that is not there, since that cannot mean no index', () => {
+      const named = resolve('/elsewhere/missing.pri');
+      const message = messageOf(() => resourceIndexFor('store', { env: { ZWT_MSIX_PRI_STORE: named }, root, read: disk({ [usual('store')]: pri(STORE.name) }).read }));
+      expect(message).toBe(`ZWT_MSIX_PRI_STORE names ${named}, which is not there.`);
+    });
+
+    it('refuses a file that is not the index of the package, at the usual place or named by a variable, saying which file and which package', () => {
+      const message = messageOf(() => resourceIndexFor('store', { env: {}, root, read: disk({ [usual('store')]: pri(TEST.name) }).read }));
+      expect(message).toBe(`${usual('store')} cannot be the resource index of the store package: it names the identity of the test package, ${TEST.name}, and the store package's is ${STORE.name}. Windows uses an index only for the package whose name it holds.`);
+      const named = resolve('/elsewhere/test.pri');
+      const viaVariable = messageOf(() => resourceIndexFor('test', { env: { ZWT_MSIX_PRI_TEST: named }, root, read: disk({ [named]: Buffer.alloc(0) }).read }));
+      expect(viaVariable).toBe(`${named} cannot be the resource index of the test package: it is empty.`);
+    });
+
+    it('refuses an index that names the identity but lacks an image of the package, as one made before the set of images changed does', () => {
+      // 1.3.2 had the three plain images only; an index made for them would pass for the identity and leave the other 57 to be found nowhere.
+      const old = pri(STORE.name, 'mrm_pri2', imagePaths.slice(0, 3));
+      expect(messageOf(() => resourceIndexFor('store', { env: {}, root, read: disk({ [usual('store')]: old }).read }))).toBe(
+        `${usual('store')} cannot be the resource index of the store package: it does not list 57 of the 60 images of a package (Assets/StoreLogo.scale-100.png, Assets/StoreLogo.scale-125.png, Assets/StoreLogo.scale-150.png and 54 more). ` +
+          'An index lists the images that were there when it was made, so this one was made for another set of images, and Windows would not find those through it. Make it again with pnpm msix:pri.',
+      );
+      // One image missing is enough, and it is named.
+      const one = pri(TEST.name, 'mrm_pri2', imagePaths.filter((path) => !path.includes('targetsize-48_altform-unplated')));
+      const named = resolve('/elsewhere/test.pri');
+      expect(messageOf(() => resourceIndexFor('test', { env: { ZWT_MSIX_PRI_TEST: named }, root, read: disk({ [named]: one }).read }))).toContain(
+        `${named} cannot be the resource index of the test package: it does not list 1 of the 60 images of a package (Assets/Square44x44Logo.targetsize-48_altform-unplated.png).`,
+      );
+    });
+
+    it('names the wrong identity before the lacking images, when an index has both faults', () => {
+      const both = pri(TEST.name, 'mrm_pri2', []);
+      expect(messageOf(() => resourceIndexFor('store', { env: {}, root, read: disk({ [usual('store')]: both }).read }))).toContain('it names the identity of the test package');
+    });
+
+    it('says which file could not be read, and why, when reading it fails for another reason than that it is missing', () => {
+      const read = (): Buffer => {
+        throw new Error('EISDIR: illegal operation on a directory, read');
+      };
+      expect(messageOf(() => resourceIndexFor('store', { env: {}, root, read }))).toBe(`Could not read ${usual('store')}: EISDIR: illegal operation on a directory, read`);
+    });
+  });
+});
+
+describe('reading a PNG header', () => {
+  /** One chunk of a PNG file: its length, its name, its data and a checksum. The checksum is left empty, as nothing here reads it. */
+  function chunk(type: string, data: Buffer): Buffer {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(data.length, 0);
+    head.write(type, 4, 'latin1');
+    return Buffer.concat([head, data, Buffer.alloc(4)]);
+  }
+  /** The start of a PNG file of this colour type: the signature, the header, the `before` chunks, one pixel chunk, the `after` chunks and the end. */
+  function png(colourType: number, { width = 16, height = 16, before = [], after = [] }: { width?: number; height?: number; before?: Buffer[]; after?: Buffer[] } = {}): Buffer {
+    const header = Buffer.alloc(13);
+    header.writeUInt32BE(width, 0);
+    header.writeUInt32BE(height, 4);
+    header[8] = 8;
+    header[9] = colourType;
+    return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', header), ...before, chunk('IDAT', Buffer.alloc(4)), ...after, chunk('IEND', Buffer.alloc(0))]);
+  }
+  const transparentColour = chunk('tRNS', Buffer.from([0, 0, 0, 0, 0, 0]));
+
+  it('reads the width and the height', () => {
+    expect(pngInfo(png(6, { width: 600, height: 600 }))).toEqual({ width: 600, height: 600, alpha: true });
+    expect(pngInfo(png(6, { width: 24, height: 40 }))).toEqual({ width: 24, height: 40, alpha: true });
+  });
+
+  it('says an image with an alpha channel can be transparent: grey with alpha, and RGBA', () => {
+    expect(pngInfo(png(4))?.alpha).toBe(true);
+    expect(pngInfo(png(6))?.alpha).toBe(true);
+  });
+
+  it('says an image with no alpha channel and no tRNS chunk cannot be: grey, RGB and palette', () => {
+    for (const colourType of [0, 2, 3]) expect(pngInfo(png(colourType))?.alpha, `colour type ${colourType}`).toBe(false);
+  });
+
+  it('says an image can be transparent when a tRNS chunk before the pixels declares a transparent colour', () => {
+    for (const colourType of [0, 2, 3]) expect(pngInfo(png(colourType, { before: [transparentColour] }))?.alpha, `colour type ${colourType}`).toBe(true);
+    // A chunk between the header and the pixels that is not tRNS changes nothing, and one after the pixels is too late to count.
+    expect(pngInfo(png(2, { before: [chunk('gAMA', Buffer.alloc(4))] }))?.alpha).toBe(false);
+    expect(pngInfo(png(2, { after: [transparentColour] }))?.alpha).toBe(false);
+  });
+
+  it('is null for what does not start like a PNG, instead of reading a size from it', () => {
+    const whole = png(6);
+    expect(pngInfo(Buffer.alloc(0))).toBeNull();
+    expect(pngInfo(Buffer.from('GIF89a'))).toBeNull();
+    expect(pngInfo(whole.subarray(0, 32))).toBeNull();
+    expect(pngInfo(Buffer.concat([Buffer.from('89504e470d0a1a0b', 'hex'), whole.subarray(8)]))).toBeNull();
+    expect(pngInfo(Buffer.concat([whole.subarray(0, 12), Buffer.from('IHDX'), whole.subarray(16)]))).toBeNull();
+  });
+
+  it('does not run off the end of a file that is cut short after its header', () => {
+    expect(pngInfo(png(2).subarray(0, 33))).toEqual({ width: 16, height: 16, alpha: false });
+    expect(pngInfo(png(2).subarray(0, 38))).toEqual({ width: 16, height: 16, alpha: false });
+  });
+
+  it('finds the app icon, which the logos are cut from, square and able to be transparent', () => {
+    const info = pngInfo(readFileSync(resolve(import.meta.dirname, '../src-tauri/icons/icon.png')));
+    expect(info?.alpha, 'src-tauri/icons/icon.png has no transparency, so the images cut from it would be drawn as solid squares').toBe(true);
+    expect(info?.width).toBe(info?.height);
+    // The biggest taskbar icon is 256 px, which is then cut down and never enlarged.
+    expect(info?.width).toBeGreaterThanOrEqual(256);
   });
 });
 

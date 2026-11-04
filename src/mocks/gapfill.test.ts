@@ -191,12 +191,11 @@ describe('remote pause, shift versions, setup and drafts', () => {
     expect(call<Snapshot>(s, 'get_snapshot').setup.pending).toBe(false);
   });
 
-  it('keeps drafts in a map and clears them; Mica follows the switch', () => {
+  it('keeps drafts in a map and clears them', () => {
     const s = emptyState();
     call(s, 'stash_draft', { taskId: 'x', description: { type: 'doc' } });
     expect(s.drafts.x).toEqual({ type: 'doc' });
     call(s, 'clear_draft', { taskId: 'x' });
     expect(s.drafts).toEqual({});
-    expect(call<Snapshot>(s, 'set_mica', { on: true }).prefs).toMatchObject({ mica: true, micaAvailable: false });
   });
 });

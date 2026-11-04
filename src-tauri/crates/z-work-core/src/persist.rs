@@ -267,6 +267,23 @@ mod migration_tests {
         assert_eq!(again, file);
     }
 
+    /// Compat: a backup 1.3.2 wrote holds `prefs.mica`, the Windows 11 backdrop 1.3.3 removed. It parses with nothing
+    /// lost, the key is ignored, and a file written from it no longer has it.
+    #[test]
+    fn a_1_3_2_backup_with_the_mica_preference_parses_and_loses_nothing() {
+        let mut file = new_local_file("pc");
+        file.prefs.theme = crate::model::Theme::SolarizedDark;
+        file.prefs.setup_done = true;
+        let mut old = serde_json::to_value(&file).unwrap();
+        old["prefs"]["mica"] = Value::Bool(true);
+        let read = parse_checked(&serde_json::to_vec_pretty(&old).unwrap()).unwrap();
+        assert_eq!(read, file);
+        assert_eq!(
+            serde_json::to_value(&read).unwrap()["prefs"].get("mica"),
+            None
+        );
+    }
+
     #[test]
     fn a_phase_1_device_file_is_readable_and_passes_the_sync_checks() {
         let v: Value = serde_json::from_str(V1).unwrap();

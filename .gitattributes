@@ -12,3 +12,4 @@ src-tauri/crates/z-work-core/fonts/OFL.txt -text
 *.png binary
 *.ico binary
 *.icns binary
+*.pri binary

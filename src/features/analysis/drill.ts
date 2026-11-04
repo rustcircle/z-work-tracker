@@ -15,6 +15,10 @@ export interface DrillSel {
   weekday?: number;
   projectId?: string;
   taskId?: string;
+  /** Time on this subtask (an item of the task's list); `null` is the time on no subtask. Used with `taskId`. */
+  subtaskId?: string | null;
+  /** Only these tasks, such as the ones counted in one row of the Tags level. */
+  taskIds?: readonly string[];
   /** Tasks that carry this tag (a task with two tags is behind both marks). `null` means tasks with no tag. */
   tagId?: string | null;
 }
@@ -53,10 +57,13 @@ function matches(sel: DrillSel, day: number, hour: number): boolean {
 export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel, taskTags?: ReadonlyMap<string, readonly string[]>): DrillResult {
   const segments: DrillSegment[] = [];
   const byTask = new Map<string, DrillTask>();
+  const only = sel.taskIds ? new Set(sel.taskIds) : null;
   let total = 0;
   for (const sp of spans) {
     if (sel.projectId && sp.projectId !== sel.projectId) continue;
     if (sel.taskId && sp.taskId !== sel.taskId) continue;
+    if (sel.subtaskId !== undefined && sp.subtaskId !== sel.subtaskId) continue;
+    if (only && !only.has(sp.taskId)) continue;
     if (sel.tagId !== undefined && taskTags) {
       const tags = taskTags.get(sp.taskId) ?? [];
       if (sel.tagId === null ? tags.length > 0 : !tags.includes(sel.tagId)) continue;

@@ -205,8 +205,6 @@ run(async () => {
   await inv('stash_draft', { taskId: t.id, description: ${JSON.stringify(LIST)} });
   await inv('clear_draft', { taskId: t.id });
   try { await inv('request_remote_pause', { taskId: t.id }); r.pauseHere = 'accepted'; } catch (e) { r.pauseHere = e.code; }
-  const micaSnap = await inv('set_mica', { on: false });
-  r.mica = [micaSnap.prefs.mica, micaSnap.prefs.micaAvailable];
   // Phase 2 on the real backend: time away, corrections, billing, PDF, tags, backups.
   await inv('smoke_observe', { idle: 3600 });
   await wait(1100);
@@ -290,7 +288,6 @@ run(async () => {
   check('an exact colour clash is replaced and reported by the real backend', r1.twin?.[0] === '#DC2626' && /^#[0-9a-f]{6}$/i.test(r1.twin?.[1] ?? '') && r1.twin[1].toLowerCase() !== '#dc2626', JSON.stringify(r1.twin));
   check('a selected CSV says so, and an empty selection is refused', /selection/.test(readFileSync(r1.selCsv ?? '', 'utf8')) && r1.emptySel === 'validation', r1.emptySel);
   check('a task running here cannot be asked to pause from here', r1.pauseHere === 'conflict', r1.pauseHere);
-  check('Mica is off and unavailable off Windows', r1.mica?.[0] === false && r1.mica?.[1] === false, JSON.stringify(r1.mica));
   check('backend rejects unknown task and blank name', r1.badStart === 'not_found' && r1.blankName === 'validation', `${r1.badStart} ${r1.blankName}`);
   check('cold launch: a blank description cannot start, and the launch stays cold', r1.coldBlankStart === 'validation' && r1.coldBefore === false, r1.coldBlankStart);
   check('first start turns the launch warm, with a copy source', r1.warmAfterStart === true && r1.copySource === 'Smoke task');
@@ -476,7 +473,8 @@ run(async () => {
   document.querySelector('button[aria-label="Edit Smoke task"]').click();
   await until(() => !form(), 'the editor to close');
   await until(() => document.querySelector('[data-testid="held-banner"]'), 'the banner');
-  await inv('set_mica', { on: false });
+  // Another successful action, as the jsdom test does with Hide earnings: it saves a pref and hands back a snapshot. Off is what it already is.
+  await inv('set_hide_earnings', { hide: false });
   await inv('smoke_emit_changed');
   await wait(300);
   r.bannerStays = Boolean(document.querySelector('[data-testid="held-banner"]'));

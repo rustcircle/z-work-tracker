@@ -2,6 +2,7 @@
 import { useApp } from '../../app/store';
 import { clock } from '../../components/format';
 import { IconWarn } from '../../components/icons';
+import { TimerButton } from '../../components/TimerButton';
 import { Button } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
 import { api } from '../../lib/api';
@@ -27,9 +28,9 @@ export function ReminderBanner() {
         <strong>{name}</strong> is still running. {why} Did you forget to stop it?
       </span>
       <div className="banner-actions">
-        <Button small variant="primary" onClick={() => void act(() => api.pauseTask(r.taskId))}>
+        <TimerButton small variant="primary" onClick={() => void act(() => api.pauseTask(r.taskId))}>
           Pause
-        </Button>
+        </TimerButton>
         <Button small onClick={() => void act(() => api.snoozeReminder(60))}>
           Keep running 1 h
         </Button>

@@ -5,6 +5,7 @@ import { BANDS } from '../../lib/split';
 import type { Snapshot } from '../../lib/types';
 import { OUTSIDE, type Filters } from './engine';
 import { periodOf } from './range';
+import { NO_TAG } from './tagFilter';
 import type { AnalysisView } from './view';
 
 const HOURS = ['00-06', '06-12', '12-18', '18-24'] as const;
@@ -23,7 +24,11 @@ export function filterText(snapshot: Snapshot, filters: Filters): string {
   const named = (ids: readonly string[], items: readonly { id: string; name: string }[], gone: string): string[] => ids.map((id) => items.find((x) => x.id === id)?.name ?? gone);
   if (filters.projectIds.length > 0) parts.push(listText('project', 'projects', named(filters.projectIds, snapshot.projects, '(deleted)')));
   if (filters.taskIds.length > 0) parts.push(listText('task', 'tasks', named(filters.taskIds, snapshot.tasks, '(deleted)')));
-  if (filters.tagIds.length > 0) parts.push(listText('tag', 'tags', named(filters.tagIds, snapshot.tags, '(deleted)')));
+  if (filters.tagIds.length > 0) {
+    // "No tag" is a choice beside the tags: "no tag" alone, or last in the list of tags.
+    const tagNames = [...named(filters.tagIds.filter((id) => id !== NO_TAG), snapshot.tags, '(deleted)'), ...(filters.tagIds.includes(NO_TAG) ? ['no tag'] : [])];
+    parts.push(tagNames.length === 1 && filters.tagIds.includes(NO_TAG) ? 'no tag' : listText('tag', 'tags', tagNames));
+  }
   if (filters.band !== null) parts.push(`band ${BANDS[filters.band]} (${HOURS[filters.band]})`);
   if (filters.shiftKey === OUTSIDE) parts.push('outside any shift');
   else if (filters.shiftKey !== null) {

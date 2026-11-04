@@ -6,7 +6,7 @@ A desktop app for Windows 10 and 11 that accounts for labor hours by project and
 
 It runs locally. It makes no network calls and sends no telemetry. Data leaves the machine only if you choose a OneDrive or Google Drive folder for sync.
 
-Status: version 1.3.2. This version keeps its data in a SQLite database on this computer instead of a JSON file; coming from 1.3.1, see [Upgrading to 1.3.2](#upgrading-to-132) before you install. It has been run and tested on macOS, and the Windows installer and the Microsoft Store package have been built, but the only things to run on Windows so far are the CI test gates and the GitHub build, which signed the installer and checked the signatures on the runner: **the app itself has never run on real Windows**, as either build. See [Known limitations](#known-limitations).
+Status: version 1.3.3. Since 1.3.2, the app keeps its data in a SQLite database on this computer instead of a JSON file; coming from 1.3.1, see [Upgrading to 1.3.2](#upgrading-to-132) before you install. It has been run and tested on macOS, and the Windows installer and the Microsoft Store package have been built, but the only things to run on Windows so far are the CI test gates and the GitHub build, which signed the installer and checked the signatures on the runner: **the app itself has never run on real Windows**, as either build. See [Known limitations](#known-limitations).
 
 ![Timeline](docs/images/timeline-light.png)
 
@@ -32,7 +32,7 @@ Status: version 1.3.2. This version keeps its data in a SQLite database on this 
 
 ## Install and uninstall
 
-**Install.** Run `zWorkTracker_1.3.2_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data folder. From 1.3.1, sync and quit first: the data comes back from your sync folder (see [Upgrading to 1.3.2](#upgrading-to-132)).
+**Install.** Run `zWorkTracker_1.3.3_x64-setup.exe`. It installs for the current user in `%LOCALAPPDATA%\zWorkTracker` and needs no admin rights. It adds a Start Menu shortcut, offers a desktop shortcut and can launch the app when it finishes. Upgrading installs over the old version and keeps your data folder. From 1.3.1, sync and quit first: the data comes back from your sync folder (see [Upgrading to 1.3.2](#upgrading-to-132)).
 
 An unsigned installer can make Windows SmartScreen say "Windows protected your PC". To continue, choose **More info**, then **Run anyway**. This project's builds are meant for your own PCs, signed with [a self-signed certificate](#trusting-your-own-builds-with-a-self-signed-certificate); SmartScreen may still warn about a downloaded file even then.
 
@@ -61,7 +61,7 @@ To uninstall the Store build, use **Settings > Apps > Installed apps**. Connect 
 
 ## Migration guide
 
-For moving to 1.3.2: upgrading the installer version, moving from the installer version to the Microsoft Store version, and restoring or moving to a new PC. None of these steps has been run on Windows yet. Back up first, whichever you do.
+For moving to 1.3.3: upgrading the installer version, moving from the installer version to the Microsoft Store version, and restoring or moving to a new PC. None of these steps has been run on Windows yet. Back up first, whichever you do.
 
 ### 1. Back up first
 
@@ -78,8 +78,8 @@ That copies the installer version's data folder, with its `backups` folder insid
 ### 2. Upgrading the installer version in place
 
 1. Back up, as above. Coming from 1.3.1, also sync and quit first, as in [Upgrading to 1.3.2](#upgrading-to-132) below.
-2. Run `zWorkTracker_1.3.2_x64-setup.exe` over the version you have. **Don't uninstall the old one first.** The installer is meant to be run over an older one: it asks a running copy to quit through its normal exit path, so an open work segment closes cleanly, replaces the program files in `%LOCALAPPDATA%\zWorkTracker`, and keeps your data folder, `%APPDATA%\com.rustcircle.zworktracker\`, as it is. Uninstalling first would also remove the Start with Windows entry, and would delete your data if **Also delete my time data** were ticked.
-3. Open the app and check **Settings > About**: App version should say 1.3.2. Your projects, hours and billing summaries should all be there. Coming from 1.3.1, they appear after the first sync.
+2. Run `zWorkTracker_1.3.3_x64-setup.exe` over the version you have. **Don't uninstall the old one first.** The installer is meant to be run over an older one: it asks a running copy to quit through its normal exit path, so an open work segment closes cleanly, replaces the program files in `%LOCALAPPDATA%\zWorkTracker`, and keeps your data folder, `%APPDATA%\com.rustcircle.zworktracker\`, as it is. Uninstalling first would also remove the Start with Windows entry, and would delete your data if **Also delete my time data** were ticked.
+3. Open the app and check **Settings > About**: App version should say 1.3.3. Your projects, hours and billing summaries should all be there. Coming from 1.3.1, they appear after the first sync.
 4. Update every PC that syncs with yours before you work on them side by side. An older version doesn't know about [one computer at a time](#one-computer-at-a-time), and after a [restore from a version](#versions-and-restoring) its changes are skipped until it is updated.
 
 #### Upgrading to 1.3.2
@@ -93,7 +93,7 @@ That copies the installer version's data folder, with its `backups` folder insid
 
 **Without a sync folder,** 1.3.2 starts empty and says so. Your data is still on this computer. The old file and every 1.3.1 backup stay where they were, and the app never removes a 1.3.1 backup. At the first start it also copies the old file, once, to `backups/z-work-data-legacy-1.3.1.json`. To bring your data back, restore that copy in **Settings > Backups**.
 
-**What carries over.** The device id and name, the sync folders, whether setup was done, and how many daily backups to keep. Everything else of this computer's own goes back to its default: theme, Mica, Hide earnings and the last currency used.
+**What carries over.** The device id and name, the sync folders, whether setup was done, and how many daily backups to keep. Everything else of this computer's own goes back to its default: theme, Hide earnings and the last currency used.
 
 **The Store build** updates through the Microsoft Store. Sync and quit it before the update, as above; its data comes back from the folder in the same way.
 
@@ -139,7 +139,7 @@ The folder holds the same files as the installer version's (see [Data and privac
 
 **From a version in your cloud folder.** This rolls back every computer that syncs with the folder.
 
-1. Update every computer to 1.3.2 first. A version older than 1.3.1 has its changes skipped after a restore until it is updated.
+1. Update every computer to 1.3.2 or later first. A version older than 1.3.1 has its changes skipped after a restore until it is updated.
 2. Open **Settings > Versions** on a computer that isn't read-only. A read-only one has to take over first, and restoring makes this one the computer that is making changes.
 3. Find the version, open **What changed** to read its record, and press **Restore…**. The first step compares the version's counts with this computer's. **Continue**, then **Restore this version**.
 4. Before anything changes, a copy of today's data is saved on this computer and as a version in your folders, so restoring that copy undoes the restore. A running task is paused. Each other computer follows the restored data at its next sync, and keeps a copy of what it had as a version too.
@@ -197,6 +197,8 @@ The backend enforces these rules, not only the form. A warm copy is a separate t
 
 Every Start or Resume opens a work segment and every Pause or Stop closes it. Times come only from the backend clock and are stored in UTC. Paused time is excluded from the total.
 
+**Space never touches a timer.** The Space bar does nothing on Start, Pause, Resume, Stop, the Start of the task form, Pause it from here, the reminder's Pause or Confirm close in Corrections, pressed or held. Use the mouse; Enter on a focused button still works.
+
 **Resume after a relaunch.** On a cold launch, Resume doesn't continue the task directly, and the backend refuses it. It opens the same empty form, with every field required. Submitting creates a **new task linked to the paused one** and starts timing it. The paused task keeps its name and description, stays paused, can still be stopped, and shows a link to its continuation. Cancel changes nothing and logs no time. Once a task has started in this launch, Resume works directly again.
 
 ![Resume on a cold launch opens the empty form](docs/images/launch-cold-resume.png)
@@ -251,7 +253,9 @@ The running task's elapsed clock ticks every second. That is the only figure tha
 
 ### Analysis
 
-A chart-first dashboard with day, week, month, quarter, year and custom ranges, filters by project, task, band and shift, and a comparison with the previous equal period. Sections cover volume, time of day, projects, tasks, focus and sessions, consistency, goals and money, forecast, shifts and zones. Every chart has a **View data** table and tooltips with exact values, and clicking a chart drills down to the tasks and segments behind it.
+A chart-first dashboard with day, week, month, quarter, year and custom ranges, filters by project, task, tag (or no tag), band and shift, and a comparison with the previous equal period. Sections cover volume, time of day, projects, tasks, focus and sessions, consistency, goals and money, forecast, shifts and zones. Every chart has a **View data** table and tooltips with exact values, and clicking a chart drills down to the tasks and segments behind it.
+
+**Share of time** is a donut with a legend beside it, or below it when the card is narrow, that writes every slice as text, such as `16h 50m (47%)`, in the hours of the Billable or Exact basis, so the rows add up to the total in the centre. A **Projects / Tasks / Subtasks / Tags** switch changes what the slices are. It starts on the level your filter leaves open (Projects with no project filter or several, Tasks with one project, Subtasks with one task; Tags is only picked by hand), and a level you pick by hand stays when the filter next changes that default, and gives way to the default at the change after that. A row names only what the filter leaves open, such as a task's project only when the tasks come from several, while the tooltip and the screen reader's name always give the whole path. Time on no subtask is its own row, `<Task> (no subtask)`, and Subtasks is off while nothing is logged on one. Tags gives each exact combination of tags a row, such as `Design + Client`, and untagged time `No tag`, with each task counted once. The tag filter has a **No tag** choice too: alone it keeps only the untagged tasks, and with tags chosen it keeps those as well. With more than nine rows only the top eight show, followed by one `Other (N tasks)`, `Other (N subtasks)` or `Other (N combinations)` row, while **View data** still lists every row. The percentages are whole numbers rounded so that they always add up to 100, which can move some slices by a point from plain rounding; a slice whose share rounds to 0 reads `<1%`. The legend shows hours, not earnings, so Hide earnings leaves it as it is.
 
 Each metric has an info popover and an entry in the searchable Metrics glossary. Written Insights are generated from the numbers, with no AI. There's no productivity score: logged time measures logged time, not output.
 
@@ -407,8 +411,6 @@ CSV has `record_type` rows: `segment` rows carry raw UTC, zone times and exact d
 ### Themes
 
 **Light** (default), **Solarized Light**, **Solarized Dark** and **Dark**, chosen in Settings per device. The OS theme isn't followed. Project colours stay as you chose them in every theme.
-
-**Mica**, under Appearance, lets the Windows 11 backdrop show faintly through the page background in Light and Dark. Solarized stays opaque, and so do panels with text. It's off by default, and on anything older than Windows 11 the switch is disabled and says why. If Windows refuses the backdrop, the page stays opaque and the switch is disabled for that run. Windows can also accept it and draw a plain fill instead, for example with Transparency effects off. The app can't detect that, so about 10% of that fill shows through the page background. Panels with text stay opaque.
 
 ### Folder sync on OneDrive and Google Drive
 
@@ -735,7 +737,7 @@ node scripts/perf-native.mjs --exe <dir>/release/zWorkTracker --store <store> --
 pnpm package:windows
 ```
 
-This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_1.3.2_x64-setup.exe`. MinGW's gcc, `x86_64-w64-mingw32-gcc`, compiles the bundled SQLite into the exe as well as linking it. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the installer and the files inside it are signed (reading those needs `brew install sevenzip`). `WebView2Loader.dll` ships inside the installer next to the exe.
+This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-windows-gnu/release/bundle/nsis/zWorkTracker_1.3.3_x64-setup.exe`. MinGW's gcc, `x86_64-w64-mingw32-gcc`, compiles the bundled SQLite into the exe as well as linking it. It then lists the exe's imports in `pe-imports.txt`, fails if a compiler runtime DLL is needed, and reports whether the installer and the files inside it are signed (reading those needs `brew install sevenzip`). `WebView2Loader.dll` ships inside the installer next to the exe.
 
 ### Microsoft Store package from macOS
 
@@ -743,14 +745,16 @@ This builds with the GNU toolchain and writes `src-tauri/target/x86_64-pc-window
 pnpm package:msix                    # the Store package, from the build that package:windows left
 pnpm package:msix --build            # builds the Windows app first, then the Store package
 pnpm package:msix --identity both    # the Store and the test package (--identity test for only the test package)
+pnpm msix:pri                        # makes the resources.pri of both packages with makepri, in a Windows VM (see below)
+pnpm msix:vm                         # all of the Windows side: the indexes, both packages again, and the Windows App Certification Kit on the Store package (see below)
 ```
 
 A run with `--identity both` packs the Windows build that `pnpm package:windows` left in `src-tauri/target/x86_64-pc-windows-gnu/release` as two packages, made from the same exe and differing only in the identity in their manifests. They are written to `bundle/msix` in that folder:
 
 | File | Identity | For |
 |---|---|---|
-| `zWorkTracker_1.3.2.0_x64_store.msix` | Name `PedroMiguelRodriguesJorge.zWorkTracker`, Publisher `CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9`, publisher display name "Pedro Miguel Rodrigues Jorge" | Uploading in Partner Center |
-| `zWorkTracker_1.3.2.0_x64_test-unsigned.msix` | Name `rustcircle.zWorkTracker.Test`, Publisher `CN=zWorkTracker Test Signing`, publisher display name "zWorkTracker (test)" | Trying the app on a PC, once you have signed it |
+| `zWorkTracker_1.3.3.0_x64_store.msix` | Name `PedroMiguelRodriguesJorge.zWorkTracker`, Publisher `CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9`, publisher display name "Pedro Miguel Rodrigues Jorge" | Uploading in Partner Center |
+| `zWorkTracker_1.3.3.0_x64_test-unsigned.msix` | Name `rustcircle.zWorkTracker.Test`, Publisher `CN=zWorkTracker Test Signing`, publisher display name "zWorkTracker (test)" | Trying the app on a PC, once you have signed it |
 
 It builds nothing itself: `--build` runs the same `tauri build` as `package:windows` first, and without it an exe whose version isn't the app's is refused. `--identity` takes `store`, which is the default, `test` or `both`, and comes in any order with `--build`. A package of the same kind from an earlier run is removed first, and a run that fails leaves none of its own. At the end it checks that what was packed is in each package and that the manifest inside carries the identity the package was made for, and prints for each its path, size and SHA-256 and the identity and package family name read back from that manifest, then the version, build time and SHA-256 of the exe that went in.
 
@@ -764,9 +768,37 @@ It builds nothing itself: `--build` runs the same `tauri build` as `package:wind
 
 It also needs `sips` and `unzip`, which macOS has. `--build` needs `brew install mingw-w64 nsis`, as `package:windows` does. Unlike `package:windows`, it doesn't check which DLLs the exe imports, so run that after changing dependencies.
 
-**The version** is the app's with a 0 added, so 1.3.2 is package version 1.3.2.0. The Store keeps the last part for itself and wants 0 there, the other parts are whole numbers up to 65535, and the first can't be 0 ([Microsoft](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements#package-version-numbering)). A version that breaks this stops the script, rather than making a package the Store would turn away. The manifest makes it a full-trust x64 app. Its minimum is Windows 10 version 2004 (`MinVersion="10.0.19041.0"`), so it covers the Windows 10 and 11 the rest of this README is written for. It declares a startup task, `zWorkTrackerStartup`, which stays off until it is turned on, and the app's **Start with Windows** switch now turns it on and off.
+**The logo, the tiles and the taskbar icon** are cut from `src-tauri/icons/icon.png` with `sips`: 60 images in `Assets`, the same in both packages. The manifest names three of them, `StoreLogo.png`, `Square44x44Logo.png` and `Square150x150Logo.png`, and they stay. Each of the three also comes at the five display scales, as `<name>.scale-100.png` to `<name>.scale-400.png`, and the app icon comes at the 14 sizes Windows asks for, 16 to 256 px, as `Square44x44Logo.targetsize-<size>.png` and with `_altform-unplated` and `_altform-lightunplated` added to that name ([Microsoft](https://learn.microsoft.com/en-us/windows/apps/design/style/iconography/app-icon-construction)). The unplated images are what lets the taskbar and Start draw the logo without a plate; with only the plain `Square44x44Logo.png`, as in 1.3.2, they put it on one. **Windows finds those images only through a `resources.pri` in the package** ([Microsoft](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-manual-conversion)), which `makemsix` can't make and `makepri`, from the Windows SDK, makes only on Windows. A package packed without one still builds, but the plate stays, and the script says so at the end of each run: `pnpm msix:pri`, below, makes the indexes. Not tested on Windows.
 
-**What has been tested.** With made-up identity values: `makemsix` accepted the manifest, the startup task included. It checks a manifest against Microsoft's schemas and nothing more, so it also accepts one that names files that aren't there or a version the Store refuses; the script checks those itself. The package unpacks to files identical to the ones packed, and its block map uses SHA-256, as the Store requires. **Not tested:** Partner Center accepting the upload, certification, the Windows App Certification Kit (it runs only on Windows, and Microsoft advises running it before submitting), and installing or running the package on Windows, including everything in the list below. The [checklist](#manual-windows-test-checklist) covers it.
+**`pnpm msix:pri` makes the two `resources.pri` from the Mac, with a Windows VM.** It needs the Windows 11 VM in UTM (Arm or x64) running on the shared network, which gives the Mac the address `192.168.64.1`, and the .NET SDK on the Mac for `dotnet`. It cuts the 60 images and writes the manifest of each package into `store/` and `test/` in `src-tauri/target/msix-pri`. It gets `makepri.exe` for ARM64 and for x64 from the `Microsoft.Windows.SDK.BuildTools` package on nuget.org, the newest release unless `--sdk-version` names one, checks the package with `dotnet nuget verify --all` and that Microsoft Corporation signed it and nuget.org served it, and keeps it in `~/msix-build/tools/sdk-buildtools/<version>` with its SHA-256: the next run asks nuget.org which release is the newest, and downloads nothing if it is the one it has kept. Nothing from the package is ever run on the Mac. It then serves the folders, both `makepri.exe` and a PowerShell script on `192.168.64.1:8765`, and prints the one line to type in PowerShell in the VM, so that nothing has to be pasted into it:
+
+```
+iwr 192.168.64.1:8765/d.ps1 -UseBasicParsing | iex
+```
+
+That script is for Windows PowerShell 5.1 and works only in `C:\zwt-test` on the VM. For each package it fetches the files and checks the SHA-256 of each, runs `makepri createconfig`, takes the `<packaging>` element out of `priconfig.xml`, runs `makepri new` and `makepri dump`, checks that the dump lists all 14 `_altform-unplated` images, and sends the `resources.pri` back. A line typed a second time, after one index was sent, asks the Mac (`GET /status`) what it holds and goes on with the other. If the Mac turns an index away, it says why on its own screen and in the answer, and keeps the file it refused in `received/<package>-refused.pri`. Only the PC that fetched the script may send an index back. It prints `OK` lines as it goes and, at the first thing that goes wrong, a `FAIL` line that says what. When both files have arrived, or after `--timeout` minutes (15), or on Ctrl-C, the Mac stops serving, checks each file as `package:msix` does and saves it as `packaging/msix/store/resources.pri` and `packaging/msix/test/resources.pri`. Then run `pnpm package:msix --identity both`. The script for the VM is also written to `src-tauri/target/msix-pri/d.ps1` to be read first, and `pnpm msix:pri --dry-run` does everything but the VM part, with made-up indexes and on 127.0.0.1, and installs nothing in `packaging/`. `--help` lists the options.
+
+`package:msix` takes `packaging/msix/<package>/resources.pri` (or the file that `ZWT_MSIX_PRI_STORE` or `ZWT_MSIX_PRI_TEST` names) into a package only after checking it: it must be a PRI file, must name the identity of its own package and not the other's, and must hold the path of all 60 images, so an index made before the images changed stops the build and says to make it again. An index depends on the identity and on the names of the images, not on the version, so these two serve the next versions too as long as neither changes; keep them with the repo. A `resources.pri` does not depend on the processor either, so an index made in the Arm VM, with the x64 `makepri.exe` under emulation or with the arm64 one, serves the x64 packages. The script on the VM runs the x64 `makepri.exe` on every PC and the arm64 one only if the x64 one does not start, and says which one it used. The Mac side is tested in `scripts/make-pri.test.ts`, with a made-up index standing in for the VM. **Not tested:** the script for the VM on a real Windows VM (it was written and read on a Mac, which has no PowerShell to run it), and whether the taskbar and Start then draw the logo without a plate.
+
+**`pnpm msix:vm` does the whole Windows side in one go, the Windows App Certification Kit (WACK) on the Store package included.** It is `pnpm msix:pri` and more, with the same VM and the same single line to type, which has not changed. Run `pnpm msix:vm` on the Mac, and in the VM open **Windows PowerShell as Administrator** (Start, type PowerShell, right-click Windows PowerShell, Run as administrator: the certificate store and the kit need it) and type, or press the up arrow until it is there:
+
+```
+iwr 192.168.64.1:8765/d.ps1 -UseBasicParsing | iex
+```
+
+It serves on `192.168.64.1:8765` and nowhere else (`--host` and `--port` change that; the port being busy, or the address not being up because the VM is not running, is said at once and nothing is stopped to make room), and takes a GET or a PUT for exact paths only: the files it was told of, `/status`, the two indexes, `/wack-report.xml` (5 MB at most) and `/vm-status.json` (64 KB at most). Then:
+
+1. **The indexes.** The VM makes both `resources.pri` as above; the Mac checks and saves them in `packaging/msix`.
+2. **Both packages again.** The Mac packs them with those indexes (`package:msix --identity both`; the release exe that is there is packed as it is, nothing is built) and checks each: the 60 images and `resources.pri` at the root, the one that was saved, the identity, version 1.3.3.0, x64, the package family name, no signature. If they pass it publishes them in `~/msix-build` (`--publish-dir`), where a package of the same name that was there, which has no index, is first renamed `...no-pri.msix` (`...previous-<time>.msix` if it had one), never deleted; packages of other versions, `vm-test/` and `tools/` are not touched. It prints the SHA-256 of what it published.
+3. **A copy of the Store package, signed for the kit alone**: `zWorkTracker_1.3.3.0_x64_store-wack.msix`, signed by `osslsigncode` with a certificate that `openssl` makes for this run: RSA 3072, subject exactly the Store publisher `CN=1DEF8D7B-1D68-4604-8047-048DC92CF3A9`, valid 7 days, for code signing only, no CA. The signature is checked with `osslsigncode verify` against that certificate. The private key is in a temporary folder that only you can open, is deleted the moment the copy is signed, whatever happened, and is never written in the repo, a log or the screen. **The Store package that was published, the one to upload, stays unsigned and untouched**: its SHA-256 is read before and after. With `ZWT_TEST_PFX` (a `.pfx`) and `ZWT_TEST_PFX_PASS_FILE` (a file with its password) both set, a copy of the test package is signed too, with that key, as `...test-signed.msix`; the password is only ever named to the tools as a file.
+4. **The kit, in the VM.** It fetches the copy and its public certificate and checks their SHA-256, puts the certificate in `LocalMachine\TrustedPeople`, and, if `appcert.exe` is missing, downloads Microsoft's installer of the Windows SDK from `https://go.microsoft.com/fwlink/?linkid=2382519` (the link for the current SDK, 10.0.28000.2957, on [Windows SDK downloads](https://learn.microsoft.com/windows/apps/windows-sdk/downloads)), checks that its Authenticode signature is valid and Microsoft Corporation's, and runs `winsdksetup.exe /features OptionId.WindowsSoftwareLogoToolkit /quiet /norestart /ceip off`: that one feature is the kit. It takes some minutes and shows nothing while it runs. Then `appcert.exe reset` and `appcert.exe test -appxpackagepath C:\zwt-test\zWorkTracker_1.3.3.0_x64_store-wack.msix -reportoutputpath C:\zwt-test\wack-report.xml`, which installs and starts the app and takes ten to thirty minutes, and sends the XML report back. Whatever happens, it then takes the certificate out again, by its thumbprint, and removes the package the kit installed, by the exact name of the Store identity and no other. If a signed test package was made it installs that over the earlier test install, starts it, and says what to look at: the taskbar and Start icons without a plate, and the tray icon.
+5. **The report.** The Mac prints the overall result, then every test as PASS, FAIL or WARN with the text of what failed (a test the kit calls optional that fails is a WARN: it does not change the overall result), and saves the report, `wack-summary.txt` and `wack-summary.json`, the WACK copy, its certificate, the VM's status and a log in `.stack/out/msix-vm/<YYYYMMDD-HHMM>/`. The format of the report was read off a real one and off two public readers of it; see the comment above `parseWackReport` in `scripts/msix-vm.mjs`. It stops when the VM says it has finished, which includes its clean-up, a few minutes at most after the report, or after `--timeout` minutes (60), or on Ctrl-C. The exit status is 0 if the report passed and the VM finished, 2 if the report's overall result is not PASS, 1 for anything else.
+
+Each step in the VM prints `OK`, and the first thing that goes wrong prints `FAIL`, the step and the reason, which it also sends to the Mac, so that both screens say it; then it cleans up and stops. Type the line again after fixing it: what the Mac already holds is not made again. `pnpm msix:vm --dry-run` does the Mac side for real with no VM (made-up indexes, 127.0.0.1, a temporary folder, a made-up report) and deletes what it made; `--help` lists the options. It needs `openssl` (3.4 or newer, `brew install openssl`; the one macOS ships cannot do it) and `osslsigncode` (`brew install osslsigncode`) as well as `makemsix`. **Not tested:** the script for the VM on a real Windows PC (it was written and read on a Mac, which has no PowerShell to run it), the Windows SDK installer's feature name on a machine (it was read off the installer's own manifest by others, and a Windows 11 PC got `appcert.exe` 10.0.28000.2957 from it), and **the kit on Windows on Arm64, which the VM may be**: Microsoft documents no Arm64 build of the kit, and GitHub's `windows-11-arm` images have the Windows SDK with no `appcert.exe`. The script tries, and if `appcert.exe` is not there afterwards it stops with a FAIL that says so; the kit then has to run on an x64 Windows PC. No Store package has been run through the kit yet.
+
+**The version** is the app's with a 0 added, so 1.3.3 is package version 1.3.3.0. The Store keeps the last part for itself and wants 0 there, the other parts are whole numbers up to 65535, and the first can't be 0 ([Microsoft](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements#package-version-numbering)). A version that breaks this stops the script, rather than making a package the Store would turn away. The manifest makes it a full-trust x64 app. Its minimum is Windows 10 version 2004 (`MinVersion="10.0.19041.0"`), so it covers the Windows 10 and 11 the rest of this README is written for. It declares a startup task, `zWorkTrackerStartup`, which stays off until it is turned on, and the app's **Start with Windows** switch now turns it on and off.
+
+**What has been tested.** With made-up identity values: `makemsix` accepted the manifest, the startup task included. It checks a manifest against Microsoft's schemas and nothing more, so it also accepts one that names files that aren't there or a version the Store refuses; the script checks those itself. The package unpacks to files identical to the ones packed, and its block map uses SHA-256, as the Store requires. **Not tested:** Partner Center accepting the upload, certification, the Windows App Certification Kit (it runs only on Windows, and Microsoft advises running it before submitting; `pnpm msix:vm`, above, runs it in the VM), and installing or running the package on Windows, including everything in the list below. The [checklist](#manual-windows-test-checklist) covers it.
 
 **How the app handles being packaged, not yet seen on Windows.** Microsoft documents that a packaged app's writes under HKCU, and the new files it creates under AppData, go to a private copy that only that app sees and that is removed on uninstall ([Microsoft](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes)). The app now plans for that rather than avoiding it:
 
@@ -840,8 +872,8 @@ The artifact's name then ends in `-self-signed`. With no secrets the workflow st
 **5. Check it,** on a PC set up as in step 3. `signtool` comes with the Windows SDK, isn't on the PATH, and is found as in step 4. `Get-AuthenticodeSignature` is part of Windows, so it's enough on a PC without the SDK:
 
 ```powershell
-& $env:SIGNTOOL_PATH verify /pa /v .\zWorkTracker_1.3.2_x64-setup.exe
-Get-AuthenticodeSignature .\zWorkTracker_1.3.2_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
+& $env:SIGNTOOL_PATH verify /pa /v .\zWorkTracker_1.3.3_x64-setup.exe
+Get-AuthenticodeSignature .\zWorkTracker_1.3.3_x64-setup.exe | Format-List Status, StatusMessage, SignerCertificate, TimeStamperCertificate
 ```
 
 `signtool` should end with `Successfully verified`, and `Status` should read `Valid`, with a `TimeStamperCertificate`. After installing, run the same two commands on `$env:LOCALAPPDATA\zWorkTracker\zWorkTracker.exe` and `uninstall.exe` beside it. Check the installer and the installed files: the exe left in `src-tauri\target` by the build is the unsigned original.
@@ -907,7 +939,7 @@ Never commit real values. `.env` is ignored by git, and so are certificate and k
 
 ### Manual Windows test checklist
 
-None of this has been run yet. Please check on real Windows 10 and Windows 11 PCs, and note for each item the Windows edition and build (`winver`), the build type, pass or fail, and a screenshot of every dialog. The installer build is `zWorkTracker_1.3.2_x64-setup.exe` from `pnpm package:windows`; the Store build is `zWorkTracker_1.3.2.0_x64.msix` from `pnpm package:msix --build`, installed test-signed with `Add-AppxPackage` or through Partner Center flighting.
+None of this has been run yet. Please check on real Windows 10 and Windows 11 PCs, and note for each item the Windows edition and build (`winver`), the build type, pass or fail, and a screenshot of every dialog. The installer build is `zWorkTracker_1.3.3_x64-setup.exe` from `pnpm package:windows`; the Store build is `zWorkTracker_1.3.3.0_x64_test-unsigned.msix` from `pnpm package:msix --build`, installed test-signed with `Add-AppxPackage` or through Partner Center flighting.
 
 **Both builds, and the installer build:**
 
@@ -916,6 +948,7 @@ None of this has been run yet. Please check on real Windows 10 and Windows 11 PC
 - [ ] Start Menu shortcut, optional desktop shortcut and launch on finish work
 - [ ] Listed in Installed apps with name, version, publisher and icon
 - [ ] Start, Pause, Resume and Stop work, with auto-pause on another task
+- [ ] Space does nothing on Start, Pause, Resume and Stop, pressed or held, even right after clicking that button; Enter on a focused one still works
 - [ ] X hides to the tray with the one-time notice; a running task keeps timing
 - [ ] Tray left-click, menu, tooltip and running icon work; Pause/Resume from the tray work
 - [ ] Tray Quit closes the segment and marks the task paused
@@ -1032,11 +1065,11 @@ None of this has been run yet. Please check on real Windows 10 and Windows 11 PC
 - Real backend, webview and exit paths were tested on macOS with the native smoke script, which doesn't click the real tray icon. Tray icon appearance is unverified.
 - The real OneDrive and Google Drive clients have not been exercised. Detection is tested with an injected environment.
 - Most UI flows are tested with Playwright against the IPC mock.
+- The 1.3.3 MSIX packages carry taskbar and Start images without a plate, but have no `resources.pri` yet, and Windows uses those images only through one, so the taskbar and Start still show the logo on a plate. The index and a Windows App Certification Kit run come with 1.3.4, through `pnpm msix:vm`; 1.3.3 isn't submitted to the Store. The window, opaque since Mica was removed in 1.3.3, hasn't been seen on Windows either.
 
 **Not done.**
 
 - OS shutdown relies on the app's exit event, which is unverified on Windows; if it doesn't fire, heartbeat recovery closes the segment within about 30 seconds of the real time.
-- Mica has never been seen on Windows 11: the code is only compile-checked for Windows, and the tests prove the colours and contrast, not the look. It's optional and off by default, and it applies to Light and Dark only.
 - Google Drive detection reads DriveFS's registry settings first, then scans drive letters and common folder names. The registry key names come from public descriptions and haven't been checked against a real install; if they're wrong, the scan and the picker still work.
 - macOS gets no lock signal. Windows is the target, and this wasn't small enough to be worth the risk.
 - The lock signal (`WTSQuerySessionInformationW`) has not been seen answering on a real locked Windows session; its logic is tested with injected events. On macOS there is no lock signal, so locks are noticed only through idle time.

@@ -180,9 +180,6 @@ export interface MockState {
   /** The first-run setup was finished or skipped. A fresh store is `setupDone: false, syncPromptDone: false`. */
   setupDone: boolean;
   setupStep: number;
-  mica: boolean;
-  /** Only Windows 11 can show Mica; the mock says so when a test asks. */
-  micaAvailable: boolean;
   /** Asks made to pause tasks running on another device. */
   pauseRequests: PauseRequest[];
   /** Durable local drafts by task id (`stash_draft`). They never sync. */
@@ -272,8 +269,6 @@ export function emptyState(now = '2026-10-31T12:00:00Z'): MockState {
     autostart: false,
     setupDone: true,
     setupStep: 0,
-    mica: false,
-    micaAvailable: false,
     pauseRequests: [],
     drafts: {},
     revision: 0,
@@ -711,8 +706,6 @@ function snapshot(s: MockState, read = false): Snapshot {
       hideEarnings: s.hideEarnings,
       lastCurrency: s.lastCurrency,
       clientZonePromptDone: s.clientZonePromptDone,
-      mica: s.mica,
-      micaAvailable: s.micaAvailable,
     },
     notices: s.notices,
     warnings: [...s.warnings, ...colorWarnings(s), ...referenceWarnings(s), ...(s.packaged && s.targets.length === 0 ? [PACKAGED_NO_FOLDER_WARNING] : [])],
@@ -1313,9 +1306,6 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
       return snapshot(s);
     case 'window_ready':
       return null;
-    case 'set_mica':
-      s.mica = a.on === true;
-      return snapshot(s);
     case 'pick_pdf_logo':
       s.hasPdfLogo = true;
       return snapshot(s);

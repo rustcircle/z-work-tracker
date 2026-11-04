@@ -701,10 +701,6 @@ export interface Snapshot {
     hideEarnings: boolean;
     lastCurrency: Currency | null;
     clientZonePromptDone: boolean;
-    /** Windows 11's Mica backdrop is switched on (it only shows where `micaAvailable`). */
-    mica: boolean;
-    /** This system can show Mica: false everywhere except Windows 11. */
-    micaAvailable: boolean;
   };
   notices: Notice[];
   warnings: string[];

@@ -7,6 +7,7 @@ import { useReadOnly } from '../../app/useReadOnly';
 import { useNav } from '../../components/nav';
 import { RichView, hasDescription } from '../../components/RichText';
 import { Badge, Button, IconButton, Modal, ProjectChip } from '../../components/ui';
+import { TimerButton } from '../../components/TimerButton';
 import { IconChevron, IconEdit, IconPause, IconPlay, IconStop, IconTrash } from '../../components/icons';
 import { formatDuration } from '../../components/format';
 import { useCommands } from '../../components/useCommands';
@@ -64,9 +65,9 @@ function TaskCardImpl({ task, project, tasks, continuedBy, launch, loggedSecs }:
   }, [focusTask, task.id, openEditor, clearFocusTask]);
 
   const btn = (label: 'Start' | 'Pause' | 'Resume' | 'Stop', ctl: { enabled: boolean; why: string | null }, icon: ReactElement, run: () => void, variant: 'primary' | 'secondary' = 'secondary') => (
-    <Button key={label} small variant={variant} icon={icon} disabled={!ctl.enabled} title={ctl.why ?? undefined} onClick={run}>
+    <TimerButton key={label} small variant={variant} icon={icon} disabled={!ctl.enabled} title={ctl.why ?? undefined} onClick={run}>
       {label}
-    </Button>
+    </TimerButton>
   );
 
   // Cold launch: Resume never continues the old task directly. It opens the form for a new, linked task.

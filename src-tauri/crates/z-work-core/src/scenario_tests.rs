@@ -405,7 +405,6 @@ fn read_only_refuses_every_shared_change_and_allows_prefs() {
     s.mark_client_zone_prompt_done().unwrap();
     s.mark_sync_prompt_done().unwrap();
     s.mark_hide_notice_shown().unwrap();
-    s.set_mica(true).unwrap();
     s.set_setting("activeZone", json!("Asia/Tokyo")).unwrap();
     s.set_setting("showBoth", json!(true)).unwrap();
     s.on_exit().unwrap();

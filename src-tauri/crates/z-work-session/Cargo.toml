@@ -1,6 +1,6 @@
 [package]
 name = "z-work-session"
-version = "1.3.2"
+version = "1.3.3"
 edition.workspace = true
 rust-version.workspace = true
 description = "Whether the Windows session is locked, and the app's package identity. The workspace's only unsafe code, audited FFI calls"
