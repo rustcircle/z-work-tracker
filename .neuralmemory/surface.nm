@@ -1,0 +1,99 @@
+# ═══════════════════════════════════════════════════
+# .neuralmemory/surface.nm
+# Neural Memory Knowledge Surface v1
+# Auto-generated from brain.db | Editable by human
+# ═══════════════════════════════════════════════════
+---
+brain: default
+updated: 2026-11-04T06:24:36
+neurons: 498
+synapses: 1955
+token_budget: 1200
+depth_available: [surface, detail, deep]
+---
+
+# ── GRAPH ──────────────────────────────────────────
+# Nodes = key concepts. Edges = causal/decisional links.
+# Agent: scan this section to understand the knowledge landscape.
+# Format: [id] content (type) {p:N} →edge→ [target_id_or_text]
+
+[c4] z-work-tracker: check_shared in validate.rs is stricter than input validators,… (concept) {p:6}
+  →related_to→ [c26] "MSIX"
+  →stored_by→ [c4] "z-work-tracker: check_shared in validate.rs is stricter…"
+  →involves→ "entry"
+  →involves→ "Any"
+  →involves→ "validate.rs"
+
+[c5] zWorkTracker: owner decided to remove the Windows 11 Mica backdrop feature… (concept) {p:6}
+  →stored_by→ [c5] "zWorkTracker: owner decided to remove the Windows 11 Mica…"
+  →involves→ "to remove the Windows 11 Mica backdrop feature entirely in 1"
+  →related_to→ "z-work-tracker: in src/features/projects/ProjectsTab.tsx a…"
+  →co_occurs→ "z-work-tracker: in src/features/projects/ProjectsTab.tsx a…"
+  →related_to→ "z-work-tracker core review: once sync reads per record…"
+
+[c6] z-work-tracker review false positive to avoid: SyncSchedule::cycle_done… (concept) {p:6}
+  →stored_by→ [c6] "z-work-tracker review false positive to avoid:…"
+  →co_occurs→ [c4] "z-work-tracker: check_shared in validate.rs is stricter…"
+  →co_occurs→ [c4] "z-work-tracker: check_shared in validate.rs is stricter…"
+  →related_to→ "ClockBanner"
+  →involves→ "Also JS Date"
+
+[c7] AppData (concept) {p:6}
+  →co_occurs→ [c26] "MSIX"
+  →co_occurs→ "NSIS"
+  →co_occurs→ "Store"
+  →co_occurs→ "HKCU"
+  →co_occurs→ "app_data_dir"
+
+[c8] the (concept) {p:6}
+  →co_occurs→ [c19] "src/features/tasks/details/DeleteTask.tsx"
+  →co_occurs→ "Esc"
+  →co_occurs→ "one dialog must first check that dialog is"
+  →co_occurs→ "Enter"
+
+[c1] z-work-tracker: makemsix pack 1.7.243 (--pack build) enforces only the… (concept) {p:7}
+  →stored_by→ [c1] "z-work-tracker: makemsix pack 1.7.243 (--pack build)…"
+  →involves→ "Executable"
+  →related_to→ [c26] "MSIX"
+  →related_to→ "ClockBanner"
+  →involves→ "In"
+
+[c2] zWorkTracker: letting a time-bearing task disappear (delete_task,… (concept) {p:7}
+  →stored_by→ [c2] "zWorkTracker: letting a time-bearing task disappear…"
+  →involves→ [c23] "SummariesCard"
+  →related_to→ "zWorkTracker"
+  →related_to→ "HLC"
+  →related_to→ "HLC"
+
+# ── SIGNALS ────────────────────────────────────────
+# Active alerts, unresolved items, pending decisions.
+# Agent: check this FIRST each session for urgent context.
+
+~ z-work-tracker 1.3.3 merged to local main (0154df5) on 2026-11-04, not yet pushe
+! zWorkTracker Playwright: fullyParallel with workers 32 runs the 459-test suite i
+! zWorkTracker MSIX: Windows uses Square44x44Logo targetsize/altform-unplated imag
+! zWorkTracker 1.3.3 (donut legend, 4 share levels, tag combos, No tag filter, Spa
+! zWorkTracker: 1.3.3 ships without resources.pri/WACK (VM step skipped at owner's
+! zWorkTracker: owner will submit to the Microsoft Store only after 1.3.4 (subtask
+! zWorkTracker 1.3.4 planned (after 1.3.3 Store submission): subtasks can carry a
+~ zWorkTracker Share of time chart (1.3.3): levels Projects/Tasks/Subtasks/Tags; d
+! z-work-tracker: to run `node scripts/make-pri.mjs --dry-run` without writing to
+~ z-work-tracker scripts/make-pri.mjs: in Windows PowerShell 5.1, Invoke-WebReques
+
+# ── DEPTH MAP ──────────────────────────────────────
+# When surface isn't enough, this tells agent WHERE to dig.
+# Format: [id] → depth_hint (context)
+
+[c1] → NEEDS_DEEP (28 synapses in brain.db, recall "z-work-tracker: makemsix pack 1.7.243…")
+[c2] → NEEDS_DETAIL (15 total synapses, recall "zWorkTracker: letting a time-bearing…")
+[c4] → NEEDS_DETAIL (15 total synapses, recall "z-work-tracker: check_shared in…")
+[c5] → NEEDS_DEEP (16 synapses in brain.db, recall "zWorkTracker: owner decided to remove…")
+[c6] → NEEDS_DEEP (16 synapses in brain.db, recall "z-work-tracker review false positive…")
+
+# ── META ───────────────────────────────────────────
+# Stats for agent to gauge brain richness
+
+coverage: 0.06
+staleness: 0.01
+last_consolidation: 2026-11-04T06:24:36
+top_entities: [z-work-tracker:, zWorkTracker:, zWorkTracker, z-work-tracker:, zWorkTracker:]
