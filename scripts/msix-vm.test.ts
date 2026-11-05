@@ -10,7 +10,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -208,7 +208,7 @@ describe('the command line', () => {
     const first = uniqueDir(join(parent, 'runs'), '20261103-0905');
     const second = uniqueDir(join(parent, 'runs'), '20261103-0905');
     const third = uniqueDir(join(parent, 'runs'), '20261103-0905');
-    expect([first, second, third].map((dir) => dir.slice(parent.length))).toEqual(['/runs/20261103-0905', '/runs/20261103-0905-2', '/runs/20261103-0905-3']);
+    expect([first, second, third].map((dir) => dir.slice(parent.length))).toEqual(['20261103-0905', '20261103-0905-2', '20261103-0905-3'].map((name) => sep + join('runs', name)));
     writeFileSync(join(first, 'kept.txt'), 'x');
     expect(readFileSync(join(first, 'kept.txt'), 'utf8')).toBe('x');
   });
