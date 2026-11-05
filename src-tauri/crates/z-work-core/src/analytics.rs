@@ -19,6 +19,7 @@ use crate::error::CoreError;
 use crate::model::{BillingType, Shared, ShiftVersion, TaskState};
 use crate::pieces::{Piece, PieceKind};
 use crate::report::{AnalyticsColumn, AnalyticsSheet, CellKind, ExportSource};
+use crate::subtasks::EffectiveTags;
 use crate::time::Ts;
 use crate::validate::parse_zone;
 
@@ -322,6 +323,8 @@ fn buckets_of(period: &Period, unit: Unit) -> Vec<Bucket> {
 #[derive(Clone)]
 struct Stretch {
     task: String,
+    /// The subtask of the recorded segment it comes from.
+    subtask: Option<String>,
     start: i64,
     end: i64,
     /// Open on this device, so its end is now.
@@ -359,6 +362,7 @@ fn stretches_of(pieces: &[Piece], own_device: &str) -> Vec<Stretch> {
                     cur = Some((
                         Stretch {
                             task: p.task_id.clone(),
+                            subtask: p.subtask_id.clone(),
                             start: p.start.secs(),
                             end: p.end.secs(),
                             live: is_live,
@@ -381,6 +385,7 @@ fn stretches_of(pieces: &[Piece], own_device: &str) -> Vec<Stretch> {
 /// A stretch of logged time cut to the period.
 struct Span {
     task: String,
+    subtask: Option<String>,
     project: String,
     start: i64,
     end: i64,
@@ -897,6 +902,9 @@ struct Metrics<'a> {
     overlap: Option<i64>,
     selected_days: Option<BTreeSet<i64>>,
     place: String,
+    tz: Tz,
+    /// The row pieces of each task some of whose subtasks count under tags of their own, by task.
+    split_pieces: BTreeMap<String, Vec<Piece>>,
 }
 
 fn number(v: f64) -> Value {
@@ -1694,7 +1702,79 @@ impl Metrics<'_> {
         }
     }
 
-    /// `None` when no task with time carries a tag.
+    /// A task's time, split by the tags each piece counts under (`subtasks::effective`): (tag ids, exact,
+    /// billable). One part with the task's tags when no subtask counts differently, as before 1.4.
+    ///
+    /// Exact time is that of the worked spans. Billable time is that of each row's piece parts, the row's rounding
+    /// going onto the latest part first, as `billing::allocate_rounding` does onto rate buckets. The parts add up to
+    /// the task's figures.
+    fn tag_parts<'s>(&'s self, t: &TaskRow) -> Vec<(Vec<&'s str>, i64, i64)> {
+        let Some(task) = self.data.tasks.get(&t.id) else {
+            return vec![(Vec::new(), t.exact, t.billable)];
+        };
+        let effective = EffectiveTags::of(task);
+        let Some(pieces) = self.split_pieces.get(&t.id) else {
+            return vec![(effective.of_subtask(None).to_vec(), t.exact, t.billable)];
+        };
+        let mut parts: BTreeMap<&[&str], (i64, i64)> = BTreeMap::new();
+        for sp in self.spans.iter().filter(|sp| sp.task == t.id) {
+            parts
+                .entry(effective.of_subtask(sp.subtask.as_deref()))
+                .or_default()
+                .0 += sp.end - sp.start;
+        }
+        /// A piece's part of one day, and the tags it counts under.
+        struct DayPart<'e, 'd> {
+            start: Ts,
+            end: Ts,
+            piece: &'e str,
+            tags: &'e [&'d str],
+        }
+        let mut by_day: BTreeMap<NaiveDate, Vec<DayPart<'_, 's>>> = BTreeMap::new();
+        for p in pieces {
+            let tags = effective.of_subtask(p.subtask_id.as_deref());
+            for (day, start, end) in split_by_day(p.start, p.end, self.tz) {
+                by_day.entry(day).or_default().push(DayPart {
+                    start,
+                    end,
+                    piece: p.id.as_str(),
+                    tags,
+                });
+            }
+        }
+        for row in self.rows.iter().filter(|r| r.task_id == t.id) {
+            let Some(list) = by_day.get_mut(&row.day) else {
+                continue;
+            };
+            list.sort_by(|x, y| (x.start, x.end, x.piece).cmp(&(y.start, y.end, y.piece)));
+            let mut secs: Vec<i64> = list.iter().map(|x| x.end.secs() - x.start.secs()).collect();
+            let mut diff = row.billable_secs - secs.iter().sum::<i64>();
+            for s in secs.iter_mut().rev() {
+                let applied = diff.max(-*s);
+                *s += applied;
+                diff -= applied;
+                if diff == 0 {
+                    break;
+                }
+            }
+            for (part, s) in list.iter().zip(secs) {
+                parts.entry(part.tags).or_default().1 += s;
+            }
+        }
+        let reached: Vec<(Vec<&str>, i64, i64)> = parts
+            .into_iter()
+            .filter(|(_, (exact, billable))| *exact > 0 || *billable > 0)
+            .map(|(tags, (exact, billable))| (tags.to_vec(), exact, billable))
+            .collect();
+        if reached.is_empty() {
+            vec![(effective.of_subtask(None).to_vec(), t.exact, t.billable)]
+        } else {
+            reached
+        }
+    }
+
+    /// `None` when no task with time carries a tag. Each piece of a task's time counts under the tags it has,
+    /// which since 1.4 can be some of the task's for a subtask; a task counts once in each row it reaches.
     fn tags_sheet(&self) -> Option<AnalyticsSheet> {
         #[derive(Default)]
         struct Row {
@@ -1708,28 +1788,31 @@ impl Metrics<'_> {
         let tasks = self.tasks();
         for t in &tasks {
             total += t.billable;
-            let tags: Vec<&str> = self
-                .data
-                .tasks
-                .get(&t.id)
-                .map(|x| {
-                    x.tags
-                        .iter()
-                        .filter(|id| self.data.tags.get(*id).is_some_and(|g| !g.deleted))
-                        .map(String::as_str)
-                        .collect()
-                })
-                .unwrap_or_default();
-            let count = |r: &mut Row| {
-                r.exact += t.exact;
-                r.billable += t.billable;
-                r.tasks += 1;
-            };
-            if tags.is_empty() {
-                count(untagged.get_or_insert_with(Row::default));
+            let mut reached: BTreeSet<&str> = BTreeSet::new();
+            let mut reached_untagged = false;
+            for (tags, exact, billable) in self.tag_parts(t) {
+                let live: Vec<&str> = tags
+                    .into_iter()
+                    .filter(|id| self.data.tags.get(*id).is_some_and(|g| !g.deleted))
+                    .collect();
+                let add = |r: &mut Row| {
+                    r.exact += exact;
+                    r.billable += billable;
+                };
+                if live.is_empty() {
+                    add(untagged.get_or_insert_with(Row::default));
+                    reached_untagged = true;
+                }
+                for id in live {
+                    add(by.entry(id).or_default());
+                    reached.insert(id);
+                }
             }
-            for id in tags {
-                count(by.entry(id).or_default());
+            if reached_untagged {
+                untagged.get_or_insert_with(Row::default).tasks += 1;
+            }
+            for id in reached {
+                by.entry(id).or_default().tasks += 1;
             }
         }
         if by.is_empty() {
@@ -2042,6 +2125,7 @@ fn metrics<'a>(
                     Some(Span {
                         project: project_of(&s.task)?,
                         task: s.task.clone(),
+                        subtask: s.subtask.clone(),
                         start: a,
                         end: b,
                         own_start: s.start,
@@ -2083,6 +2167,22 @@ fn metrics<'a>(
             })
         })
         .collect();
+    // The Tags sheet splits these tasks' rows by the tags each piece counts under.
+    let mut split_pieces: BTreeMap<String, Vec<Piece>> = BTreeMap::new();
+    for t in data
+        .tasks
+        .values()
+        .filter(|t| !t.subtask_tags.is_empty() && !EffectiveTags::of(t).uniform())
+    {
+        split_pieces.insert(
+            t.id.clone(),
+            row_pieces
+                .iter()
+                .filter(|p| p.task_id == t.id)
+                .cloned()
+                .collect(),
+        );
+    }
     let rows = task_days_of(data, tz, row_pieces);
     let mut windows = windows_for(data, ext.0, ext.1);
     // A selection counts only the shifts of the days it holds, so scheduled hours and attainment are
@@ -2133,6 +2233,8 @@ fn metrics<'a>(
         selected_days,
         place,
         period,
+        tz,
+        split_pieces,
     }
 }
 
@@ -2182,7 +2284,7 @@ mod tests {
     use crate::machine::tests::{DEV, ctx, project_input, task_input};
     use crate::model::{
         BillablePause, GapDecision, GapKind, IdleGap, RoundMethod, RoundingVersion, Segment,
-        SettingEntry, Stamp, Tag,
+        SettingEntry, Stamp, SubtaskTags, Tag,
     };
     use crate::report::SelectedEntry;
     use crate::report::tests::source;
@@ -2612,6 +2714,38 @@ mod tests {
         s
     }
 
+    /// `write` (tags a and b) with subtasks of its own tags (1.4): Draft keeps tag-b, Edit has none (No tag), and an
+    /// entry for a subtask no longer in the description, whose time counts under the task's tags. Draft's time has a
+    /// thinking gap and a dropped one, Edit's runs over midnight, and the 2 March row has a billable pause and rounding.
+    fn with_subtask_tags(mut s: Shared) -> Shared {
+        let write = s.tasks.get_mut("write").unwrap();
+        write.description = crate::subtasks::tests::list_of(&["sub-draft", "sub-edit"]);
+        for (id, tags) in [
+            ("sub-draft", vec!["tag-b"]),
+            ("sub-edit", vec![]),
+            ("sub-gone", vec!["tag-b"]),
+        ] {
+            write.subtask_tags.insert(
+                id.into(),
+                SubtaskTags {
+                    tags: Some(tags.into_iter().map(str::to_owned).collect()),
+                    stamp: stamp(),
+                    extra: crate::model::Extra::new(),
+                },
+            );
+        }
+        for (seg, sub) in [
+            ("w1", "sub-draft"),
+            ("w4", "sub-draft"),
+            ("w3", "sub-edit"),
+            ("w6", "sub-edit"),
+            ("w5", "sub-gone"),
+        ] {
+            s.segments.get_mut(seg).unwrap().subtask_id = Some(sub.into());
+        }
+        s
+    }
+
     fn entry(task: &str, day: &str) -> SelectedEntry {
         SelectedEntry {
             task_id: task.into(),
@@ -2672,10 +2806,23 @@ mod tests {
             .tasks
             .values()
             .map(|t| {
-                json!({
+                let mut v = json!({
                     "id": t.id, "name": t.name, "projectId": t.project_id, "state": t.state,
                     "stoppedAt": t.stopped_at, "tags": t.tags,
-                })
+                });
+                // As `service` shows subtasks, for a task that has tags of their own for some.
+                if !t.subtask_tags.is_empty() {
+                    v["subtasks"] = crate::subtasks::items(&t.description)
+                        .into_iter()
+                        .map(|i| {
+                            json!({
+                                "id": i.id, "text": i.text, "checked": i.checked,
+                                "tags": crate::subtasks::shown(t, &i.id),
+                            })
+                        })
+                        .collect();
+                }
+                v
             })
             .collect();
         let mut pieces = src.counted();
@@ -2684,12 +2831,16 @@ mod tests {
             .iter()
             .map(|p| {
                 let device = p.device_id.clone().unwrap_or_default();
-                json!({
+                let mut v = json!({
                     "id": p.id, "taskId": p.task_id, "deviceId": device, "start": p.start,
                     "end": (!p.open).then_some(p.end),
                     "provisionalEnd": (p.open && device != src.device_id).then_some(p.end),
                     "segmentId": p.source_id, "kind": p.kind,
-                })
+                });
+                if let Some(id) = &p.subtask_id {
+                    v["subtaskId"] = json!(id);
+                }
+                v
             })
             .collect();
         let settings: BTreeMap<&String, &Value> = src
@@ -2782,8 +2933,14 @@ mod tests {
         };
         let overnight = client_hours("22:00", "06:00");
         let all_day = client_hours("00:00", "00:00");
+        let own_tags = source(with_subtask_tags(world()), "2027-02-01T00:00:00Z");
+        // The UI counts subtasks' own tags from A2 on (1.4): until then its parity test skips these cases.
+        let ui_later = |mut c: Value| {
+            c["tsSkip"] = json!("subtask tags: the UI follows from A2 on");
+            c
+        };
         let got = json!({
-            "comment": "Written by the Rust test in analytics.rs, and read by that test and by analyticsParity.test.ts, so both sides give these figures.",
+            "comment": "Written by the Rust test in analytics.rs, and read by that test and by analyticsParity.test.ts, so both sides give these figures. A case with tsSkip is one the UI does not follow yet, and says why.",
             "cases": [
                 case("a month", &full, "2026-03-01", "2026-03-31"),
                 case("one day", &full, "2026-03-03", "2026-03-03"),
@@ -2798,6 +2955,8 @@ mod tests {
                 case("client hours overnight, one day", &overnight, "2026-03-03", "2026-03-03"),
                 case("client hours all day", &all_day, "2026-03-02", "2026-03-08"),
                 case("a selection with client hours overnight", &selected(&overnight), "2026-03-02", "2026-03-04"),
+                ui_later(case("subtasks with tags of their own", &own_tags, "2026-03-01", "2026-03-31")),
+                ui_later(case("a selection with subtasks with tags of their own", &selected(&own_tags), "2026-03-02", "2026-03-04")),
             ],
         });
         let body = serde_json::to_string_pretty(&got).unwrap() + "\n";
@@ -3103,6 +3262,7 @@ mod tests {
             let (from, to) = (at(from).secs(), at(to).secs());
             let span = Span {
                 task: String::new(),
+                subtask: None,
                 project: String::new(),
                 start: from,
                 end: to,
@@ -3201,5 +3361,54 @@ mod tests {
         let all = text(data);
         assert!(!all.contains("secretproject"), "its project's row");
         assert!(!all.contains("Hidden tag"), "its tag's row");
+    }
+
+    /// Each task's parts add up to its own figures, whether or not its subtasks have tags of their own, so the Tags
+    /// sheet still shares out exactly the time the other sheets count.
+    #[test]
+    fn subtask_time_counts_under_its_own_tags_and_every_task_adds_up() {
+        let tz = parse_zone(ZONE).unwrap();
+        let (from, to) = (date("2026-01-01"), date("2026-12-31"));
+        for data in [world(), with_subtask_tags(world())] {
+            let src = source(data, "2027-02-01T00:00:00Z");
+            for selection in [false, true] {
+                let src = if selection {
+                    selected(&src)
+                } else {
+                    src.clone()
+                };
+                let m = metrics(&src, ZONE, tz, from, to, None);
+                for t in m.tasks() {
+                    let parts = m.tag_parts(&t);
+                    assert_eq!(parts.iter().map(|p| p.1).sum::<i64>(), t.exact, "{}", t.id);
+                    assert_eq!(
+                        parts.iter().map(|p| p.2).sum::<i64>(),
+                        t.billable,
+                        "{}",
+                        t.id
+                    );
+                }
+            }
+        }
+        let src = source(with_subtask_tags(world()), "2027-02-01T00:00:00Z");
+        let m = metrics(&src, ZONE, tz, from, to, None);
+        let write = m.tasks().into_iter().find(|t| t.id == "write").unwrap();
+        let groups: Vec<Vec<&str>> = m.tag_parts(&write).into_iter().map(|p| p.0).collect();
+        assert_eq!(groups, [vec![], vec!["tag-a", "tag-b"], vec!["tag-b"]]);
+        // A tag deleted since counts nowhere: Draft's time goes to No tag with Edit's.
+        let mut data = with_subtask_tags(world());
+        data.tags.get_mut("tag-b").unwrap().deleted = true;
+        let sheets = metrics(
+            &source(data, "2027-02-01T00:00:00Z"),
+            ZONE,
+            tz,
+            from,
+            to,
+            None,
+        )
+        .sheets();
+        let rows = &sheet(&sheets, "Tags").rows;
+        let names: Vec<&str> = rows.iter().map(|r| r[0].as_str().unwrap()).collect();
+        assert_eq!(names, ["Hidden tag", "Client work", "No tag"]);
     }
 }

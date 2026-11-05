@@ -23011,7 +23011,3364 @@
       },
       "to": "2026-03-04",
       "zone": "America/New_York"
+    },
+    {
+      "from": "2026-03-01",
+      "name": "subtasks with tags of their own",
+      "now": 1801440000,
+      "selection": false,
+      "sheets": [
+        {
+          "columns": [
+            {
+              "header": "Metric",
+              "kind": "text"
+            },
+            {
+              "header": "Time",
+              "kind": "duration"
+            },
+            {
+              "header": "Count",
+              "kind": "int"
+            },
+            {
+              "header": "Share",
+              "kind": "percent"
+            },
+            {
+              "header": "Time basis",
+              "kind": "text"
+            },
+            {
+              "header": "Glossary id",
+              "kind": "text"
+            }
+          ],
+          "containsPrices": false,
+          "name": "KPI summary",
+          "rows": [
+            [
+              "Total time (Exact)",
+              108150.0,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.total"
+            ],
+            [
+              "Total time (Billable)",
+              112320.0,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.total"
+            ],
+            [
+              "Rounding adjustment (Billable minus Exact)",
+              4170.0,
+              null,
+              null,
+              "Billable",
+              "money.rounding"
+            ],
+            [
+              "Billable pauses (in Billable, not in Exact)",
+              600.0,
+              null,
+              null,
+              "Billable",
+              "pauses.billable"
+            ],
+            [
+              "Thinking time (in Exact and Billable)",
+              600.0,
+              null,
+              null,
+              "Exact",
+              "time.thinking"
+            ],
+            [
+              "Active days",
+              null,
+              9,
+              null,
+              "Exact",
+              "volume.activeDays"
+            ],
+            [
+              "Calendar days elapsed",
+              null,
+              31,
+              null,
+              "Follows the Basis switch",
+              "volume.avgCalendarDay"
+            ],
+            [
+              "Average per active day",
+              12480.0,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.avgActiveDay"
+            ],
+            [
+              "Average per calendar day",
+              3623.2258064516127,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.avgCalendarDay"
+            ],
+            [
+              "Average per week",
+              25362.580645161288,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.perWeek"
+            ],
+            [
+              "Sessions",
+              null,
+              21,
+              null,
+              "Exact",
+              "focus.sessions"
+            ],
+            [
+              "Average session",
+              5150.0,
+              null,
+              null,
+              "Exact",
+              "focus.avgSession"
+            ],
+            [
+              "Median session",
+              3300.0,
+              null,
+              null,
+              "Exact",
+              "focus.avgSession"
+            ],
+            [
+              "Longest session",
+              28800.0,
+              null,
+              null,
+              "Exact",
+              "focus.avgSession"
+            ],
+            [
+              "Longest uninterrupted stretch",
+              28800.0,
+              null,
+              null,
+              "Exact",
+              "focus.streak"
+            ],
+            [
+              "Pauses",
+              null,
+              5,
+              null,
+              "Exact",
+              "focus.pauses"
+            ],
+            [
+              "Paused time",
+              48300.0,
+              null,
+              null,
+              "Exact",
+              "focus.pausedTime"
+            ],
+            [
+              "Focus ratio",
+              null,
+              null,
+              0.6912751677852349,
+              "Exact",
+              "focus.ratio"
+            ],
+            [
+              "Context switches",
+              null,
+              8,
+              null,
+              "Exact",
+              "focus.switches"
+            ],
+            [
+              "Fragmentation (time in sessions under 25 min)",
+              null,
+              null,
+              0.039944521497919556,
+              "Exact",
+              "focus.fragmentation"
+            ],
+            [
+              "Tasks completed",
+              null,
+              2,
+              null,
+              "Neither",
+              "tasks.completed"
+            ],
+            [
+              "Tasks in progress",
+              null,
+              2,
+              null,
+              "Neither",
+              "tasks.inProgress"
+            ],
+            [
+              "Tasks spanning several days",
+              null,
+              4,
+              null,
+              "Neither",
+              "tasks.multiDay"
+            ],
+            [
+              "Day streak",
+              null,
+              0,
+              null,
+              "Exact",
+              "consistency.streak"
+            ],
+            [
+              "Typical start: 09:00 (middle half 09:00-09:00)",
+              null,
+              null,
+              null,
+              "Exact",
+              "consistency.start"
+            ],
+            [
+              "Typical finish: 12:46 (middle half 10:00-15:30)",
+              null,
+              null,
+              null,
+              "Exact",
+              "consistency.finish"
+            ],
+            [
+              "Overtime against shifts",
+              9000.0,
+              null,
+              null,
+              "Exact",
+              "consistency.overtime"
+            ],
+            [
+              "Daily target attainment (last elapsed day)",
+              null,
+              null,
+              0.0,
+              "Exact",
+              "goals.daily"
+            ],
+            [
+              "Weekly target attainment (last elapsed week)",
+              null,
+              null,
+              0.0,
+              "Exact",
+              "goals.weekly"
+            ],
+            [
+              "Share of Billable time on billable projects",
+              null,
+              null,
+              0.9198717948717948,
+              "Billable",
+              "money.billable"
+            ],
+            [
+              "Scheduled shift hours",
+              698400.0,
+              null,
+              null,
+              "Exact",
+              "shifts.scheduled"
+            ],
+            [
+              "Worked inside shifts",
+              93330.0,
+              null,
+              null,
+              "Exact",
+              "shifts.attainment"
+            ],
+            [
+              "Outside any shift",
+              14820.0,
+              null,
+              null,
+              "Exact",
+              "shifts.outside"
+            ],
+            [
+              "Logged time inside client working hours",
+              null,
+              null,
+              0.45603328710124824,
+              "Exact",
+              "zones.overlap"
+            ]
+          ],
+          "title": "Summary: 1 Mar – 31 Mar 2026, New York, EDT, UTC-4"
+        },
+        {
+          "columns": [
+            {
+              "header": "Kind",
+              "kind": "text"
+            },
+            {
+              "header": "Band or hour",
+              "kind": "text"
+            },
+            {
+              "header": "Project",
+              "kind": "text"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Share",
+              "kind": "percent"
+            },
+            {
+              "header": "Average per active day",
+              "kind": "duration"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Bands",
+          "rows": [
+            [
+              "Band",
+              "Night",
+              "All projects",
+              9600,
+              0.08876560332871013,
+              1066.6666666666667
+            ],
+            [
+              "Band",
+              "Night",
+              "internal",
+              7200,
+              0.06657420249653259,
+              null
+            ],
+            [
+              "Band",
+              "Night",
+              "alpha",
+              2400,
+              0.022191400832177532,
+              null
+            ],
+            [
+              "Band",
+              "Morning",
+              "All projects",
+              63420,
+              0.5864077669902913,
+              7046.666666666667
+            ],
+            [
+              "Band",
+              "Morning",
+              "alpha",
+              22920,
+              0.21192787794729542,
+              null
+            ],
+            [
+              "Band",
+              "Morning",
+              "secretproject",
+              14400,
+              0.13314840499306518,
+              null
+            ],
+            [
+              "Band",
+              "Morning",
+              "beta",
+              13500,
+              0.12482662968099861,
+              null
+            ],
+            [
+              "Band",
+              "Morning",
+              "fixed",
+              10800,
+              0.09986130374479889,
+              null
+            ],
+            [
+              "Band",
+              "Morning",
+              "internal",
+              1800,
+              0.016643550624133148,
+              null
+            ],
+            [
+              "Band",
+              "Afternoon",
+              "All projects",
+              33330,
+              0.3081830790568655,
+              3703.3333333333335
+            ],
+            [
+              "Band",
+              "Afternoon",
+              "secretproject",
+              21600,
+              0.19972260748959778,
+              null
+            ],
+            [
+              "Band",
+              "Afternoon",
+              "alpha",
+              7530,
+              0.069625520110957,
+              null
+            ],
+            [
+              "Band",
+              "Afternoon",
+              "fixed",
+              3600,
+              0.033287101248266296,
+              null
+            ],
+            [
+              "Band",
+              "Afternoon",
+              "norate",
+              600,
+              0.005547850208044383,
+              null
+            ],
+            [
+              "Band",
+              "Evening",
+              "All projects",
+              1800,
+              0.016643550624133148,
+              200.0
+            ],
+            [
+              "Band",
+              "Evening",
+              "alpha",
+              1800,
+              0.016643550624133148,
+              null
+            ],
+            [
+              "Hour",
+              "00:00",
+              "All projects",
+              2400,
+              0.022191400832177532,
+              266.6666666666667
+            ],
+            [
+              "Hour",
+              "01:00",
+              "All projects",
+              1800,
+              0.016643550624133148,
+              200.0
+            ],
+            [
+              "Hour",
+              "03:00",
+              "All projects",
+              3600,
+              0.033287101248266296,
+              400.0
+            ],
+            [
+              "Hour",
+              "04:00",
+              "All projects",
+              1800,
+              0.016643550624133148,
+              200.0
+            ],
+            [
+              "Hour",
+              "08:00",
+              "All projects",
+              3420,
+              0.03162274618585298,
+              380.0
+            ],
+            [
+              "Hour",
+              "09:00",
+              "All projects",
+              23700,
+              0.21914008321775313,
+              2633.3333333333335
+            ],
+            [
+              "Hour",
+              "10:00",
+              "All projects",
+              18600,
+              0.17198335644937587,
+              2066.6666666666665
+            ],
+            [
+              "Hour",
+              "11:00",
+              "All projects",
+              17700,
+              0.1636615811373093,
+              1966.6666666666667
+            ],
+            [
+              "Hour",
+              "12:00",
+              "All projects",
+              13530,
+              0.12510402219140082,
+              1503.3333333333333
+            ],
+            [
+              "Hour",
+              "13:00",
+              "All projects",
+              4200,
+              0.038834951456310676,
+              466.6666666666667
+            ],
+            [
+              "Hour",
+              "14:00",
+              "All projects",
+              6600,
+              0.06102635228848821,
+              733.3333333333334
+            ],
+            [
+              "Hour",
+              "15:00",
+              "All projects",
+              5400,
+              0.049930651872399444,
+              600.0
+            ],
+            [
+              "Hour",
+              "16:00",
+              "All projects",
+              3600,
+              0.033287101248266296,
+              400.0
+            ],
+            [
+              "Hour",
+              "23:00",
+              "All projects",
+              1800,
+              0.016643550624133148,
+              200.0
+            ]
+          ],
+          "title": "Time of day (Exact): 1 Mar – 31 Mar 2026, New York, EDT, UTC-4"
+        },
+        {
+          "columns": [
+            {
+              "header": "Project",
+              "kind": "text"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Billable time",
+              "kind": "duration"
+            },
+            {
+              "header": "Share",
+              "kind": "percent"
+            },
+            {
+              "header": "Tasks with time",
+              "kind": "int"
+            },
+            {
+              "header": "Average per task",
+              "kind": "duration"
+            },
+            {
+              "header": "Rounding adjustment (hours)",
+              "kind": "number"
+            },
+            {
+              "header": "Previous period",
+              "kind": "duration"
+            },
+            {
+              "header": "Change",
+              "kind": "percent"
+            },
+            {
+              "header": "Rate",
+              "kind": "text"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Projects",
+          "rows": [
+            [
+              "alpha",
+              34650,
+              38700,
+              0.34455128205128205,
+              2,
+              19350.0,
+              1.125,
+              null,
+              null,
+              ""
+            ],
+            [
+              "secretproject",
+              36000,
+              36000,
+              0.32051282051282054,
+              1,
+              36000.0,
+              0.0,
+              null,
+              null,
+              ""
+            ],
+            [
+              "fixed",
+              14400,
+              14400,
+              0.1282051282051282,
+              1,
+              14400.0,
+              0.0,
+              null,
+              null,
+              "Fixed fee"
+            ],
+            [
+              "beta",
+              13500,
+              13320,
+              0.11858974358974358,
+              1,
+              13320.0,
+              -0.05,
+              null,
+              null,
+              ""
+            ],
+            [
+              "internal",
+              9000,
+              9000,
+              0.08012820512820513,
+              1,
+              9000.0,
+              0.0,
+              null,
+              null,
+              "Not billable"
+            ],
+            [
+              "norate",
+              600,
+              900,
+              0.008012820512820512,
+              1,
+              900.0,
+              0.08333333333333333,
+              null,
+              null,
+              "No rate set"
+            ]
+          ],
+          "title": "Projects (Billable shares): 1 Mar – 31 Mar 2026, New York, EDT, UTC-4"
+        },
+        {
+          "columns": [
+            {
+              "header": "Weekday",
+              "kind": "text"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Occurrences so far",
+              "kind": "int"
+            },
+            {
+              "header": "Average per occurrence",
+              "kind": "duration"
+            },
+            {
+              "header": "Typical start",
+              "kind": "text"
+            },
+            {
+              "header": "Typical finish",
+              "kind": "text"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Weekdays",
+          "rows": [
+            [
+              "Monday",
+              11100,
+              5,
+              2220.0,
+              null,
+              null
+            ],
+            [
+              "Tuesday",
+              31950,
+              5,
+              6390.0,
+              null,
+              null
+            ],
+            [
+              "Wednesday",
+              25200,
+              4,
+              6300.0,
+              null,
+              null
+            ],
+            [
+              "Thursday",
+              29100,
+              4,
+              7275.0,
+              null,
+              null
+            ],
+            [
+              "Friday",
+              3600,
+              4,
+              900.0,
+              null,
+              null
+            ],
+            [
+              "Saturday",
+              0,
+              4,
+              0.0,
+              null,
+              null
+            ],
+            [
+              "Sunday",
+              7200,
+              5,
+              1440.0,
+              null,
+              null
+            ]
+          ],
+          "title": "Weekdays (Exact): 1 Mar – 31 Mar 2026, New York, EDT, UTC-4"
+        },
+        {
+          "columns": [
+            {
+              "header": "Tag",
+              "kind": "text"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Billable time",
+              "kind": "duration"
+            },
+            {
+              "header": "Share of total time (Billable, overlaps)",
+              "kind": "percent"
+            },
+            {
+              "header": "Tasks",
+              "kind": "int"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Tags",
+          "rows": [
+            [
+              "Hidden tag",
+              36000,
+              36000,
+              0.32051282051282054,
+              1
+            ],
+            [
+              "Client work",
+              21000,
+              22020,
+              0.19604700854700854,
+              2
+            ],
+            [
+              "Deep",
+              16500,
+              18300,
+              0.16292735042735043,
+              1
+            ],
+            [
+              "No tag",
+              42150,
+              44700,
+              0.39797008547008544,
+              5
+            ]
+          ],
+          "title": "Time by tag (a task with two tags counts fully in each, so rows overlap and have no total): 1 Mar – 31 Mar 2026, New York, EDT, UTC-4"
+        },
+        {
+          "columns": [
+            {
+              "header": "Shift",
+              "kind": "text"
+            },
+            {
+              "header": "Zone",
+              "kind": "text"
+            },
+            {
+              "header": "Windows",
+              "kind": "int"
+            },
+            {
+              "header": "Scheduled",
+              "kind": "duration"
+            },
+            {
+              "header": "Worked inside",
+              "kind": "duration"
+            },
+            {
+              "header": "Attainment (outside row: share of logged time)",
+              "kind": "percent"
+            },
+            {
+              "header": "Coverage",
+              "kind": "percent"
+            },
+            {
+              "header": "Started after shift start",
+              "kind": "int"
+            },
+            {
+              "header": "Average later start",
+              "kind": "duration"
+            },
+            {
+              "header": "Finished before shift end",
+              "kind": "int"
+            },
+            {
+              "header": "Average earlier finish",
+              "kind": "duration"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Shifts",
+          "rows": [
+            [
+              "Day",
+              "America/New_York",
+              22,
+              565200.0,
+              93330,
+              0.16512738853503184,
+              0.14730113636363637,
+              3,
+              4500.0,
+              7,
+              16667.14285714286
+            ],
+            [
+              "Late",
+              "UTC",
+              9,
+              129600.0,
+              0,
+              0.0,
+              0.0,
+              0,
+              null,
+              0,
+              null
+            ],
+            [
+              "Old",
+              "America/New_York",
+              1,
+              3600.0,
+              0,
+              0.0,
+              0.0,
+              0,
+              null,
+              0,
+              null
+            ],
+            [
+              "Outside any shift",
+              null,
+              null,
+              null,
+              14820,
+              0.13703190013869626,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          ],
+          "title": "Shifts (Exact): 1 Mar – 31 Mar 2026, New York, EDT, UTC-4"
+        },
+        {
+          "columns": [
+            {
+              "header": "Period",
+              "kind": "text"
+            },
+            {
+              "header": "Billable time",
+              "kind": "duration"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Earnings EUR",
+              "kind": "eur"
+            },
+            {
+              "header": "Earnings USD",
+              "kind": "usd"
+            }
+          ],
+          "containsPrices": true,
+          "name": "Earnings by period",
+          "rows": [
+            [
+              "1",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "2",
+              12240,
+              11100,
+              15000,
+              7245
+            ],
+            [
+              "3",
+              19080,
+              18420,
+              6000,
+              214290
+            ],
+            [
+              "4",
+              20700,
+              19800,
+              10800,
+              0
+            ],
+            [
+              "5",
+              28800,
+              28800,
+              0,
+              799200
+            ],
+            [
+              "6",
+              3600,
+              3600,
+              7200,
+              0
+            ],
+            [
+              "7",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "8",
+              7200,
+              7200,
+              0,
+              0
+            ],
+            [
+              "9",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "10",
+              14400,
+              13530,
+              28800,
+              0
+            ],
+            [
+              "11",
+              5400,
+              5400,
+              3600,
+              8050
+            ],
+            [
+              "12",
+              900,
+              300,
+              1800,
+              0
+            ],
+            [
+              "13",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "14",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "15",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "16",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "17",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "18",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "19",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "20",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "21",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "22",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "23",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "24",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "25",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "26",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "27",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "28",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "29",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "30",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "31",
+              0,
+              0,
+              0,
+              0
+            ],
+            [
+              "Total",
+              112320,
+              108150,
+              73200,
+              1028785
+            ]
+          ],
+          "title": "Earnings by period (Billable time, rate in force when logged). Row amounts are rounded; the total is worked out from the exact amounts. 1 Mar – 31 Mar 2026, New York, EDT, UTC-4"
+        },
+        {
+          "columns": [
+            {
+              "header": "Project",
+              "kind": "text"
+            },
+            {
+              "header": "Billable time",
+              "kind": "duration"
+            },
+            {
+              "header": "Earnings EUR",
+              "kind": "eur"
+            },
+            {
+              "header": "Earnings USD",
+              "kind": "usd"
+            },
+            {
+              "header": "Rate",
+              "kind": "text"
+            },
+            {
+              "header": "Effective hourly rate (fixed fee)",
+              "kind": "text"
+            }
+          ],
+          "containsPrices": true,
+          "name": "Earnings by project",
+          "rows": [
+            [
+              "alpha",
+              38700,
+              73200,
+              null,
+              "",
+              ""
+            ],
+            [
+              "secretproject",
+              36000,
+              null,
+              999000,
+              "",
+              ""
+            ],
+            [
+              "fixed",
+              14400,
+              null,
+              null,
+              "Fixed fee",
+              "€250.00 per hour"
+            ],
+            [
+              "beta",
+              13320,
+              null,
+              29785,
+              "",
+              ""
+            ],
+            [
+              "internal",
+              9000,
+              null,
+              null,
+              "Not billable",
+              ""
+            ],
+            [
+              "norate",
+              900,
+              null,
+              null,
+              "No rate set",
+              ""
+            ]
+          ],
+          "title": "Earnings by project: 1 Mar – 31 Mar 2026, New York, EDT, UTC-4"
+        }
+      ],
+      "snapshot": {
+        "gaps": [],
+        "pauses": [],
+        "projects": [
+          {
+            "archived": false,
+            "billable": true,
+            "billingType": "hourly",
+            "budgetHours": null,
+            "color": "#111111",
+            "feeCurrency": null,
+            "figures": {
+              "billableSecs": 0,
+              "budget": null,
+              "effectiveHourlyCents": null,
+              "exactSecs": 0,
+              "pauseSecs": 0,
+              "thinkingSecs": 0,
+              "timeValueCents": {}
+            },
+            "fixedFeeCents": null,
+            "id": "alpha",
+            "name": "alpha"
+          },
+          {
+            "archived": false,
+            "billable": true,
+            "billingType": "hourly",
+            "budgetHours": null,
+            "color": "#222222",
+            "feeCurrency": null,
+            "figures": {
+              "billableSecs": 0,
+              "budget": null,
+              "effectiveHourlyCents": null,
+              "exactSecs": 0,
+              "pauseSecs": 0,
+              "thinkingSecs": 0,
+              "timeValueCents": {}
+            },
+            "fixedFeeCents": null,
+            "id": "beta",
+            "name": "beta"
+          },
+          {
+            "archived": false,
+            "billable": true,
+            "billingType": "fixedFee",
+            "budgetHours": null,
+            "color": "#333333",
+            "feeCurrency": "EUR",
+            "figures": {
+              "billableSecs": 14400,
+              "budget": null,
+              "effectiveHourlyCents": 25000,
+              "exactSecs": 14400,
+              "pauseSecs": 0,
+              "thinkingSecs": 0,
+              "timeValueCents": {}
+            },
+            "fixedFeeCents": 100000,
+            "id": "fixed",
+            "name": "fixed"
+          },
+          {
+            "archived": false,
+            "billable": false,
+            "billingType": "hourly",
+            "budgetHours": null,
+            "color": "#444444",
+            "feeCurrency": null,
+            "figures": {
+              "billableSecs": 0,
+              "budget": null,
+              "effectiveHourlyCents": null,
+              "exactSecs": 0,
+              "pauseSecs": 0,
+              "thinkingSecs": 0,
+              "timeValueCents": {}
+            },
+            "fixedFeeCents": null,
+            "id": "internal",
+            "name": "internal"
+          },
+          {
+            "archived": false,
+            "billable": true,
+            "billingType": "hourly",
+            "budgetHours": null,
+            "color": "#555555",
+            "feeCurrency": null,
+            "figures": {
+              "billableSecs": 0,
+              "budget": null,
+              "effectiveHourlyCents": null,
+              "exactSecs": 0,
+              "pauseSecs": 0,
+              "thinkingSecs": 0,
+              "timeValueCents": {}
+            },
+            "fixedFeeCents": null,
+            "id": "norate",
+            "name": "norate"
+          },
+          {
+            "archived": false,
+            "billable": true,
+            "billingType": "hourly",
+            "budgetHours": null,
+            "color": "#666666",
+            "feeCurrency": null,
+            "figures": {
+              "billableSecs": 0,
+              "budget": null,
+              "effectiveHourlyCents": null,
+              "exactSecs": 0,
+              "pauseSecs": 0,
+              "thinkingSecs": 0,
+              "timeValueCents": {}
+            },
+            "fixedFeeCents": null,
+            "id": "secretproject",
+            "name": "secretproject"
+          }
+        ],
+        "rates": [
+          {
+            "currency": "EUR",
+            "deleted": false,
+            "effectiveFrom": "2026-01-01T00:00:00Z",
+            "id": "rate0",
+            "projectId": "alpha",
+            "rateCents": 6000,
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "device-a"
+            }
+          },
+          {
+            "currency": "EUR",
+            "deleted": false,
+            "effectiveFrom": "2026-03-03T14:00:00Z",
+            "id": "rate1",
+            "projectId": "alpha",
+            "rateCents": 7200,
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "device-a"
+            }
+          },
+          {
+            "currency": "USD",
+            "deleted": false,
+            "effectiveFrom": "2026-01-01T00:00:00Z",
+            "id": "rate2",
+            "projectId": "beta",
+            "rateCents": 8050,
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "device-a"
+            }
+          },
+          {
+            "currency": "USD",
+            "deleted": false,
+            "effectiveFrom": "2026-01-01T00:00:00Z",
+            "id": "rate3",
+            "projectId": "secretproject",
+            "rateCents": 99900,
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "device-a"
+            }
+          }
+        ],
+        "rounding": [
+          {
+            "deleted": false,
+            "effectiveFrom": "2000-01-01",
+            "id": "r-beta",
+            "incrementMinutes": 6,
+            "method": "nearest",
+            "projectId": "beta",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            }
+          },
+          {
+            "deleted": false,
+            "effectiveFrom": "2000-01-01",
+            "id": "r-global",
+            "incrementMinutes": 15,
+            "method": "up",
+            "projectId": null,
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            }
+          }
+        ],
+        "segments": [
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-02T15:10:00Z",
+            "id": "w1",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w1",
+            "start": "2026-03-02T14:00:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "",
+            "end": "2026-03-02T15:20:00Z",
+            "id": "p1:0",
+            "kind": "billablePause",
+            "provisionalEnd": null,
+            "segmentId": "p1",
+            "start": "2026-03-02T15:10:00Z",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-02T16:00:00Z",
+            "id": "w2",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w2",
+            "start": "2026-03-02T15:30:00Z",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-02T17:00:00Z",
+            "id": "d1",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "d1",
+            "start": "2026-03-02T16:05:00Z",
+            "taskId": "design"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-03T05:40:00Z",
+            "id": "w3",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w3",
+            "start": "2026-03-03T04:30:00Z",
+            "subtaskId": "sub-edit",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-03T13:07:00Z",
+            "id": "r1",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "r1",
+            "start": "2026-03-03T13:00:00Z",
+            "taskId": "review"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-03T15:00:00Z",
+            "id": "d2",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "d2",
+            "start": "2026-03-03T13:10:00Z",
+            "taskId": "design"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-03T15:30:00Z",
+            "id": "a1",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "a1",
+            "start": "2026-03-03T15:00:00Z",
+            "taskId": "admin"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-03T18:00:00Z",
+            "id": "s1",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "s1",
+            "start": "2026-03-03T16:00:00Z",
+            "taskId": "secret"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T18:00:00Z",
+            "id": "u1",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "u1",
+            "start": "2026-03-04T14:00:00Z",
+            "taskId": "support"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T18:20:00Z",
+            "id": "k1",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "k1",
+            "start": "2026-03-04T18:10:00Z",
+            "taskId": "spike"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T19:20:00Z",
+            "id": "w4",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w4",
+            "start": "2026-03-04T19:00:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T19:30:00Z",
+            "id": "w4:1",
+            "kind": "thinking",
+            "provisionalEnd": null,
+            "segmentId": "w4",
+            "start": "2026-03-04T19:20:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T19:50:00Z",
+            "id": "w4:2",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w4",
+            "start": "2026-03-04T19:30:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T20:30:00Z",
+            "id": "w4:3",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w4",
+            "start": "2026-03-04T20:00:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-05T22:00:00Z",
+            "id": "s2",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "s2",
+            "start": "2026-03-05T14:00:00Z",
+            "taskId": "secret"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-06T15:00:00Z",
+            "id": "w5",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w5",
+            "start": "2026-03-06T14:00:00Z",
+            "subtaskId": "sub-gone",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-08T08:30:00Z",
+            "id": "a2",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "a2",
+            "start": "2026-03-08T06:30:00Z",
+            "taskId": "admin"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-10T16:45:30Z",
+            "id": "w6",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w6",
+            "start": "2026-03-10T13:00:00Z",
+            "subtaskId": "sub-edit",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-11T14:00:00Z",
+            "id": "w7",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w7",
+            "start": "2026-03-11T13:30:00Z",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-11T15:00:00Z",
+            "id": "d3",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "d3",
+            "start": "2026-03-11T14:00:00Z",
+            "taskId": "design"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-12T13:20:00Z",
+            "id": "w8",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w8",
+            "start": "2026-03-12T13:15:00Z",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-05-14T15:00:00Z",
+            "id": "r2",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "r2",
+            "start": "2026-05-14T13:00:00Z",
+            "taskId": "review"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-11-20T15:30:00Z",
+            "id": "d4",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "d4",
+            "start": "2026-11-20T15:00:00Z",
+            "taskId": "design"
+          }
+        ],
+        "settings": {
+          "clientWorkEnd": "16:00",
+          "clientWorkStart": "10:00",
+          "clientZone": "Europe/Lisbon",
+          "dailyTargetHours": 4,
+          "weeklyTargetHours": 20
+        },
+        "shifts": [
+          {
+            "breakMinutes": 30,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2020-01-01",
+            "end": "17:00",
+            "id": "v1",
+            "name": "Day",
+            "retired": false,
+            "shiftId": "day",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "09:00",
+            "weekdays": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "zone": "America/New_York"
+          },
+          {
+            "breakMinutes": 60,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2026-03-10",
+            "end": "16:00",
+            "id": "v2",
+            "name": "Day",
+            "retired": false,
+            "shiftId": "day",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "08:00",
+            "weekdays": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "zone": "America/New_York"
+          },
+          {
+            "breakMinutes": 0,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2020-01-01",
+            "end": "02:00",
+            "id": "v3",
+            "name": "Late",
+            "retired": false,
+            "shiftId": "late",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "22:00",
+            "weekdays": [
+              1,
+              3
+            ],
+            "zone": "UTC"
+          },
+          {
+            "breakMinutes": 0,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2020-01-01",
+            "end": "13:00",
+            "id": "v4",
+            "name": "Old",
+            "retired": false,
+            "shiftId": "old",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "12:00",
+            "weekdays": [
+              2
+            ],
+            "zone": "America/New_York"
+          },
+          {
+            "breakMinutes": 0,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2026-03-05",
+            "end": "13:00",
+            "id": "v5",
+            "name": "Old",
+            "retired": true,
+            "shiftId": "old",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "12:00",
+            "weekdays": [
+              2
+            ],
+            "zone": "America/New_York"
+          }
+        ],
+        "systemZone": "UTC",
+        "tags": [
+          {
+            "color": "#abcdef",
+            "deleted": false,
+            "id": "tag-a",
+            "name": "Client work",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            }
+          },
+          {
+            "color": "#abcdef",
+            "deleted": false,
+            "id": "tag-b",
+            "name": "Deep",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            }
+          },
+          {
+            "color": "#abcdef",
+            "deleted": false,
+            "id": "tag-z",
+            "name": "Hidden tag",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "id": "admin",
+            "name": "admin",
+            "projectId": "internal",
+            "state": "draft",
+            "stoppedAt": null,
+            "tags": []
+          },
+          {
+            "id": "design",
+            "name": "design",
+            "projectId": "beta",
+            "state": "paused",
+            "stoppedAt": null,
+            "tags": [
+              "tag-a"
+            ]
+          },
+          {
+            "id": "review",
+            "name": "review",
+            "projectId": "alpha",
+            "state": "paused",
+            "stoppedAt": null,
+            "tags": []
+          },
+          {
+            "id": "secret",
+            "name": "secret",
+            "projectId": "secretproject",
+            "state": "draft",
+            "stoppedAt": null,
+            "tags": [
+              "tag-z"
+            ]
+          },
+          {
+            "id": "spike",
+            "name": "spike",
+            "projectId": "norate",
+            "state": "draft",
+            "stoppedAt": null,
+            "tags": []
+          },
+          {
+            "id": "support",
+            "name": "support",
+            "projectId": "fixed",
+            "state": "stopped",
+            "stoppedAt": "2026-03-04T18:05:00Z",
+            "tags": []
+          },
+          {
+            "id": "write",
+            "name": "write",
+            "projectId": "alpha",
+            "state": "stopped",
+            "stoppedAt": "2026-03-12T13:40:00Z",
+            "subtasks": [
+              {
+                "checked": false,
+                "id": "sub-draft",
+                "tags": [
+                  "tag-b"
+                ],
+                "text": "Item sub-draft"
+              },
+              {
+                "checked": false,
+                "id": "sub-edit",
+                "tags": [],
+                "text": "Item sub-edit"
+              }
+            ],
+            "tags": [
+              "tag-a",
+              "tag-b"
+            ]
+          }
+        ]
+      },
+      "to": "2026-03-31",
+      "tsSkip": "subtask tags: the UI follows from A2 on",
+      "zone": "America/New_York"
+    },
+    {
+      "from": "2026-03-02",
+      "name": "a selection with subtasks with tags of their own",
+      "now": 1801440000,
+      "selection": true,
+      "sheets": [
+        {
+          "columns": [
+            {
+              "header": "Metric",
+              "kind": "text"
+            },
+            {
+              "header": "Time",
+              "kind": "duration"
+            },
+            {
+              "header": "Count",
+              "kind": "int"
+            },
+            {
+              "header": "Share",
+              "kind": "percent"
+            },
+            {
+              "header": "Time basis",
+              "kind": "text"
+            },
+            {
+              "header": "Glossary id",
+              "kind": "text"
+            }
+          ],
+          "containsPrices": false,
+          "name": "KPI summary",
+          "rows": [
+            [
+              "Total time (Exact)",
+              36000.0,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.total"
+            ],
+            [
+              "Total time (Billable)",
+              37980.0,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.total"
+            ],
+            [
+              "Rounding adjustment (Billable minus Exact)",
+              1980.0,
+              null,
+              null,
+              "Billable",
+              "money.rounding"
+            ],
+            [
+              "Billable pauses (in Billable, not in Exact)",
+              600.0,
+              null,
+              null,
+              "Billable",
+              "pauses.billable"
+            ],
+            [
+              "Thinking time (in Exact and Billable)",
+              600.0,
+              null,
+              null,
+              "Exact",
+              "time.thinking"
+            ],
+            [
+              "Active days",
+              null,
+              3,
+              null,
+              "Exact",
+              "volume.activeDays"
+            ],
+            [
+              "Calendar days elapsed",
+              null,
+              3,
+              null,
+              "Follows the Basis switch",
+              "volume.avgCalendarDay"
+            ],
+            [
+              "Average per active day",
+              12660.0,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.avgActiveDay"
+            ],
+            [
+              "Average per calendar day",
+              12660.0,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.avgCalendarDay"
+            ],
+            [
+              "Average per week",
+              null,
+              null,
+              null,
+              "Follows the Basis switch",
+              "volume.perWeek"
+            ],
+            [
+              "Sessions",
+              null,
+              9,
+              null,
+              "Exact",
+              "focus.sessions"
+            ],
+            [
+              "Average session",
+              4000.0,
+              null,
+              null,
+              "Exact",
+              "focus.avgSession"
+            ],
+            [
+              "Median session",
+              1800.0,
+              null,
+              null,
+              "Exact",
+              "focus.avgSession"
+            ],
+            [
+              "Longest session",
+              14400.0,
+              null,
+              null,
+              "Exact",
+              "focus.avgSession"
+            ],
+            [
+              "Longest uninterrupted stretch",
+              14400.0,
+              null,
+              null,
+              "Exact",
+              "focus.streak"
+            ],
+            [
+              "Pauses",
+              null,
+              4,
+              null,
+              "Exact",
+              "focus.pauses"
+            ],
+            [
+              "Paused time",
+              47100.0,
+              null,
+              null,
+              "Exact",
+              "focus.pausedTime"
+            ],
+            [
+              "Focus ratio",
+              null,
+              null,
+              0.4332129963898917,
+              "Exact",
+              "focus.ratio"
+            ],
+            [
+              "Context switches",
+              null,
+              1,
+              null,
+              "Exact",
+              "focus.switches"
+            ],
+            [
+              "Fragmentation (time in sessions under 25 min)",
+              null,
+              null,
+              0.08333333333333333,
+              "Exact",
+              "focus.fragmentation"
+            ],
+            [
+              "Tasks completed",
+              null,
+              1,
+              null,
+              "Neither",
+              "tasks.completed"
+            ],
+            [
+              "Tasks in progress",
+              null,
+              0,
+              null,
+              "Neither",
+              "tasks.inProgress"
+            ],
+            [
+              "Tasks spanning several days",
+              null,
+              1,
+              null,
+              "Neither",
+              "tasks.multiDay"
+            ],
+            [
+              "Day streak",
+              null,
+              3,
+              null,
+              "Exact",
+              "consistency.streak"
+            ],
+            [
+              "Typical start: 09:00 (middle half 08:35-09:00)",
+              null,
+              null,
+              null,
+              "Exact",
+              "consistency.start"
+            ],
+            [
+              "Typical finish: 15:30 (middle half 12:45-20:05)",
+              null,
+              null,
+              null,
+              "Exact",
+              "consistency.finish"
+            ],
+            [
+              "Overtime against shifts",
+              0.0,
+              null,
+              null,
+              "Exact",
+              "consistency.overtime"
+            ],
+            [
+              "Daily target attainment (last elapsed day)",
+              null,
+              null,
+              1.3333333333333333,
+              "Exact",
+              "goals.daily"
+            ],
+            [
+              "Weekly target attainment (last elapsed week)",
+              null,
+              null,
+              0.5,
+              "Exact",
+              "goals.weekly"
+            ],
+            [
+              "Share of Billable time on billable projects",
+              null,
+              null,
+              1.0,
+              "Billable",
+              "money.billable"
+            ],
+            [
+              "Scheduled shift hours",
+              113400.0,
+              null,
+              null,
+              "Exact",
+              "shifts.scheduled"
+            ],
+            [
+              "Worked inside shifts",
+              28800.0,
+              null,
+              null,
+              "Exact",
+              "shifts.attainment"
+            ],
+            [
+              "Outside any shift",
+              7200.0,
+              null,
+              null,
+              "Exact",
+              "shifts.outside"
+            ],
+            [
+              "Logged time inside client working hours",
+              null,
+              null,
+              0.55,
+              "Exact",
+              "zones.overlap"
+            ]
+          ],
+          "title": "Summary: Selected entries, 2 Mar – 4 Mar 2026, New York, EST, UTC-5"
+        },
+        {
+          "columns": [
+            {
+              "header": "Kind",
+              "kind": "text"
+            },
+            {
+              "header": "Band or hour",
+              "kind": "text"
+            },
+            {
+              "header": "Project",
+              "kind": "text"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Share",
+              "kind": "percent"
+            },
+            {
+              "header": "Average per active day",
+              "kind": "duration"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Bands",
+          "rows": [
+            [
+              "Band",
+              "Night",
+              "All projects",
+              2400,
+              0.06666666666666667,
+              800.0
+            ],
+            [
+              "Band",
+              "Night",
+              "alpha",
+              2400,
+              0.06666666666666667,
+              null
+            ],
+            [
+              "Band",
+              "Morning",
+              "All projects",
+              23400,
+              0.65,
+              7800.0
+            ],
+            [
+              "Band",
+              "Morning",
+              "fixed",
+              10800,
+              0.3,
+              null
+            ],
+            [
+              "Band",
+              "Morning",
+              "beta",
+              6600,
+              0.18333333333333332,
+              null
+            ],
+            [
+              "Band",
+              "Morning",
+              "alpha",
+              6000,
+              0.16666666666666666,
+              null
+            ],
+            [
+              "Band",
+              "Afternoon",
+              "All projects",
+              8400,
+              0.23333333333333334,
+              2800.0
+            ],
+            [
+              "Band",
+              "Afternoon",
+              "alpha",
+              4800,
+              0.13333333333333333,
+              null
+            ],
+            [
+              "Band",
+              "Afternoon",
+              "fixed",
+              3600,
+              0.1,
+              null
+            ],
+            [
+              "Band",
+              "Evening",
+              "All projects",
+              1800,
+              0.05,
+              600.0
+            ],
+            [
+              "Band",
+              "Evening",
+              "alpha",
+              1800,
+              0.05,
+              null
+            ],
+            [
+              "Hour",
+              "00:00",
+              "All projects",
+              2400,
+              0.06666666666666667,
+              800.0
+            ],
+            [
+              "Hour",
+              "08:00",
+              "All projects",
+              3000,
+              0.08333333333333333,
+              1000.0
+            ],
+            [
+              "Hour",
+              "09:00",
+              "All projects",
+              10800,
+              0.3,
+              3600.0
+            ],
+            [
+              "Hour",
+              "10:00",
+              "All projects",
+              6000,
+              0.16666666666666666,
+              2000.0
+            ],
+            [
+              "Hour",
+              "11:00",
+              "All projects",
+              3600,
+              0.1,
+              1200.0
+            ],
+            [
+              "Hour",
+              "12:00",
+              "All projects",
+              3600,
+              0.1,
+              1200.0
+            ],
+            [
+              "Hour",
+              "14:00",
+              "All projects",
+              3000,
+              0.08333333333333333,
+              1000.0
+            ],
+            [
+              "Hour",
+              "15:00",
+              "All projects",
+              1800,
+              0.05,
+              600.0
+            ],
+            [
+              "Hour",
+              "23:00",
+              "All projects",
+              1800,
+              0.05,
+              600.0
+            ]
+          ],
+          "title": "Time of day (Exact): Selected entries, 2 Mar – 4 Mar 2026, New York, EST, UTC-5"
+        },
+        {
+          "columns": [
+            {
+              "header": "Project",
+              "kind": "text"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Billable time",
+              "kind": "duration"
+            },
+            {
+              "header": "Share",
+              "kind": "percent"
+            },
+            {
+              "header": "Tasks with time",
+              "kind": "int"
+            },
+            {
+              "header": "Average per task",
+              "kind": "duration"
+            },
+            {
+              "header": "Rounding adjustment (hours)",
+              "kind": "number"
+            },
+            {
+              "header": "Previous period",
+              "kind": "duration"
+            },
+            {
+              "header": "Change",
+              "kind": "percent"
+            },
+            {
+              "header": "Rate",
+              "kind": "text"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Projects",
+          "rows": [
+            [
+              "alpha",
+              15000,
+              17100,
+              0.45023696682464454,
+              1,
+              17100.0,
+              0.5833333333333334,
+              null,
+              null,
+              ""
+            ],
+            [
+              "fixed",
+              14400,
+              14400,
+              0.3791469194312796,
+              1,
+              14400.0,
+              0.0,
+              null,
+              null,
+              "Fixed fee"
+            ],
+            [
+              "beta",
+              6600,
+              6480,
+              0.17061611374407584,
+              1,
+              6480.0,
+              -0.03333333333333333,
+              null,
+              null,
+              ""
+            ]
+          ],
+          "title": "Projects (Billable shares): Selected entries, 2 Mar – 4 Mar 2026, New York, EST, UTC-5"
+        },
+        {
+          "columns": [
+            {
+              "header": "Weekday",
+              "kind": "text"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Occurrences so far",
+              "kind": "int"
+            },
+            {
+              "header": "Average per occurrence",
+              "kind": "duration"
+            },
+            {
+              "header": "Typical start",
+              "kind": "text"
+            },
+            {
+              "header": "Typical finish",
+              "kind": "text"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Weekdays",
+          "rows": [
+            [
+              "Monday",
+              7800,
+              1,
+              7800.0,
+              null,
+              null
+            ],
+            [
+              "Tuesday",
+              9000,
+              1,
+              9000.0,
+              null,
+              null
+            ],
+            [
+              "Wednesday",
+              19200,
+              1,
+              19200.0,
+              null,
+              null
+            ],
+            [
+              "Thursday",
+              0,
+              0,
+              null,
+              null,
+              null
+            ],
+            [
+              "Friday",
+              0,
+              0,
+              null,
+              null,
+              null
+            ],
+            [
+              "Saturday",
+              0,
+              0,
+              null,
+              null,
+              null
+            ],
+            [
+              "Sunday",
+              0,
+              0,
+              null,
+              null,
+              null
+            ]
+          ],
+          "title": "Weekdays (Exact): Selected entries, 2 Mar – 4 Mar 2026, New York, EST, UTC-5"
+        },
+        {
+          "columns": [
+            {
+              "header": "Tag",
+              "kind": "text"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Billable time",
+              "kind": "duration"
+            },
+            {
+              "header": "Share of total time (Billable, overlaps)",
+              "kind": "percent"
+            },
+            {
+              "header": "Tasks",
+              "kind": "int"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Tags",
+          "rows": [
+            [
+              "Deep",
+              10800,
+              12000,
+              0.315955766192733,
+              1
+            ],
+            [
+              "Client work",
+              8400,
+              8880,
+              0.23380726698262244,
+              2
+            ],
+            [
+              "No tag",
+              18600,
+              19500,
+              0.5134281200631912,
+              2
+            ]
+          ],
+          "title": "Time by tag (a task with two tags counts fully in each, so rows overlap and have no total): Selected entries, 2 Mar – 4 Mar 2026, New York, EST, UTC-5"
+        },
+        {
+          "columns": [
+            {
+              "header": "Shift",
+              "kind": "text"
+            },
+            {
+              "header": "Zone",
+              "kind": "text"
+            },
+            {
+              "header": "Windows",
+              "kind": "int"
+            },
+            {
+              "header": "Scheduled",
+              "kind": "duration"
+            },
+            {
+              "header": "Worked inside",
+              "kind": "duration"
+            },
+            {
+              "header": "Attainment (outside row: share of logged time)",
+              "kind": "percent"
+            },
+            {
+              "header": "Coverage",
+              "kind": "percent"
+            },
+            {
+              "header": "Started after shift start",
+              "kind": "int"
+            },
+            {
+              "header": "Average later start",
+              "kind": "duration"
+            },
+            {
+              "header": "Finished before shift end",
+              "kind": "int"
+            },
+            {
+              "header": "Average earlier finish",
+              "kind": "duration"
+            }
+          ],
+          "containsPrices": false,
+          "name": "Shifts",
+          "rows": [
+            [
+              "Day",
+              "America/New_York",
+              3,
+              81000.0,
+              28800,
+              0.35555555555555557,
+              0.3333333333333333,
+              0,
+              null,
+              3,
+              17400.0
+            ],
+            [
+              "Late",
+              "UTC",
+              2,
+              28800.0,
+              0,
+              0.0,
+              0.0,
+              0,
+              null,
+              0,
+              null
+            ],
+            [
+              "Old",
+              "America/New_York",
+              1,
+              3600.0,
+              0,
+              0.0,
+              0.0,
+              0,
+              null,
+              0,
+              null
+            ],
+            [
+              "Outside any shift",
+              null,
+              null,
+              null,
+              7200,
+              0.2,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          ],
+          "title": "Shifts (Exact): Selected entries, 2 Mar – 4 Mar 2026, New York, EST, UTC-5"
+        },
+        {
+          "columns": [
+            {
+              "header": "Period",
+              "kind": "text"
+            },
+            {
+              "header": "Billable time",
+              "kind": "duration"
+            },
+            {
+              "header": "Exact time",
+              "kind": "duration"
+            },
+            {
+              "header": "Earnings EUR",
+              "kind": "eur"
+            },
+            {
+              "header": "Earnings USD",
+              "kind": "usd"
+            }
+          ],
+          "containsPrices": true,
+          "name": "Earnings by period",
+          "rows": [
+            [
+              "Mon 2",
+              9000,
+              7800,
+              15000,
+              0
+            ],
+            [
+              "Tue 3",
+              9180,
+              9000,
+              4500,
+              14490
+            ],
+            [
+              "Wed 4",
+              19800,
+              19200,
+              10800,
+              0
+            ],
+            [
+              "Total",
+              37980,
+              36000,
+              30300,
+              14490
+            ]
+          ],
+          "title": "Earnings by period (Billable time, rate in force when logged). Row amounts are rounded; the total is worked out from the exact amounts. Selected entries, 2 Mar – 4 Mar 2026, New York, EST, UTC-5"
+        },
+        {
+          "columns": [
+            {
+              "header": "Project",
+              "kind": "text"
+            },
+            {
+              "header": "Billable time",
+              "kind": "duration"
+            },
+            {
+              "header": "Earnings EUR",
+              "kind": "eur"
+            },
+            {
+              "header": "Earnings USD",
+              "kind": "usd"
+            },
+            {
+              "header": "Rate",
+              "kind": "text"
+            },
+            {
+              "header": "Effective hourly rate (fixed fee)",
+              "kind": "text"
+            }
+          ],
+          "containsPrices": true,
+          "name": "Earnings by project",
+          "rows": [
+            [
+              "alpha",
+              17100,
+              30300,
+              null,
+              "",
+              ""
+            ],
+            [
+              "fixed",
+              14400,
+              null,
+              null,
+              "Fixed fee",
+              "€250.00 per hour"
+            ],
+            [
+              "beta",
+              6480,
+              null,
+              14490,
+              "",
+              ""
+            ]
+          ],
+          "title": "Earnings by project: Selected entries, 2 Mar – 4 Mar 2026, New York, EST, UTC-5"
+        }
+      ],
+      "snapshot": {
+        "gaps": [],
+        "pauses": [],
+        "projects": [
+          {
+            "archived": false,
+            "billable": true,
+            "billingType": "hourly",
+            "budgetHours": null,
+            "color": "#111111",
+            "feeCurrency": null,
+            "figures": {
+              "billableSecs": 0,
+              "budget": null,
+              "effectiveHourlyCents": null,
+              "exactSecs": 0,
+              "pauseSecs": 0,
+              "thinkingSecs": 0,
+              "timeValueCents": {}
+            },
+            "fixedFeeCents": null,
+            "id": "alpha",
+            "name": "alpha"
+          },
+          {
+            "archived": false,
+            "billable": true,
+            "billingType": "hourly",
+            "budgetHours": null,
+            "color": "#222222",
+            "feeCurrency": null,
+            "figures": {
+              "billableSecs": 0,
+              "budget": null,
+              "effectiveHourlyCents": null,
+              "exactSecs": 0,
+              "pauseSecs": 0,
+              "thinkingSecs": 0,
+              "timeValueCents": {}
+            },
+            "fixedFeeCents": null,
+            "id": "beta",
+            "name": "beta"
+          },
+          {
+            "archived": false,
+            "billable": true,
+            "billingType": "fixedFee",
+            "budgetHours": null,
+            "color": "#333333",
+            "feeCurrency": "EUR",
+            "figures": {
+              "billableSecs": 14400,
+              "budget": null,
+              "effectiveHourlyCents": 25000,
+              "exactSecs": 14400,
+              "pauseSecs": 0,
+              "thinkingSecs": 0,
+              "timeValueCents": {}
+            },
+            "fixedFeeCents": 100000,
+            "id": "fixed",
+            "name": "fixed"
+          }
+        ],
+        "rates": [
+          {
+            "currency": "EUR",
+            "deleted": false,
+            "effectiveFrom": "2026-01-01T00:00:00Z",
+            "id": "rate0",
+            "projectId": "alpha",
+            "rateCents": 6000,
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "device-a"
+            }
+          },
+          {
+            "currency": "EUR",
+            "deleted": false,
+            "effectiveFrom": "2026-03-03T14:00:00Z",
+            "id": "rate1",
+            "projectId": "alpha",
+            "rateCents": 7200,
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "device-a"
+            }
+          },
+          {
+            "currency": "USD",
+            "deleted": false,
+            "effectiveFrom": "2026-01-01T00:00:00Z",
+            "id": "rate2",
+            "projectId": "beta",
+            "rateCents": 8050,
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "device-a"
+            }
+          }
+        ],
+        "rounding": [
+          {
+            "deleted": false,
+            "effectiveFrom": "2000-01-01",
+            "id": "r-beta",
+            "incrementMinutes": 6,
+            "method": "nearest",
+            "projectId": "beta",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            }
+          },
+          {
+            "deleted": false,
+            "effectiveFrom": "2000-01-01",
+            "id": "r-global",
+            "incrementMinutes": 15,
+            "method": "up",
+            "projectId": null,
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            }
+          }
+        ],
+        "segments": [
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-02T15:10:00Z",
+            "id": "w1",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w1",
+            "start": "2026-03-02T14:00:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "",
+            "end": "2026-03-02T15:20:00Z",
+            "id": "p1:0",
+            "kind": "billablePause",
+            "provisionalEnd": null,
+            "segmentId": "p1",
+            "start": "2026-03-02T15:10:00Z",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-02T16:00:00Z",
+            "id": "w2",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w2",
+            "start": "2026-03-02T15:30:00Z",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-03T05:40:00Z",
+            "id": "w3",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w3",
+            "start": "2026-03-03T04:30:00Z",
+            "subtaskId": "sub-edit",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-03T15:00:00Z",
+            "id": "d2",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "d2",
+            "start": "2026-03-03T13:10:00Z",
+            "taskId": "design"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T18:00:00Z",
+            "id": "u1",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "u1",
+            "start": "2026-03-04T14:00:00Z",
+            "taskId": "support"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T19:20:00Z",
+            "id": "w4",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w4",
+            "start": "2026-03-04T19:00:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T19:30:00Z",
+            "id": "w4:1",
+            "kind": "thinking",
+            "provisionalEnd": null,
+            "segmentId": "w4",
+            "start": "2026-03-04T19:20:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T19:50:00Z",
+            "id": "w4:2",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w4",
+            "start": "2026-03-04T19:30:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          },
+          {
+            "deviceId": "device-a",
+            "end": "2026-03-04T20:30:00Z",
+            "id": "w4:3",
+            "kind": "work",
+            "provisionalEnd": null,
+            "segmentId": "w4",
+            "start": "2026-03-04T20:00:00Z",
+            "subtaskId": "sub-draft",
+            "taskId": "write"
+          }
+        ],
+        "settings": {
+          "clientWorkEnd": "16:00",
+          "clientWorkStart": "10:00",
+          "clientZone": "Europe/Lisbon",
+          "dailyTargetHours": 4,
+          "weeklyTargetHours": 20
+        },
+        "shifts": [
+          {
+            "breakMinutes": 30,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2020-01-01",
+            "end": "17:00",
+            "id": "v1",
+            "name": "Day",
+            "retired": false,
+            "shiftId": "day",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "09:00",
+            "weekdays": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "zone": "America/New_York"
+          },
+          {
+            "breakMinutes": 60,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2026-03-10",
+            "end": "16:00",
+            "id": "v2",
+            "name": "Day",
+            "retired": false,
+            "shiftId": "day",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "08:00",
+            "weekdays": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "zone": "America/New_York"
+          },
+          {
+            "breakMinutes": 0,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2020-01-01",
+            "end": "02:00",
+            "id": "v3",
+            "name": "Late",
+            "retired": false,
+            "shiftId": "late",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "22:00",
+            "weekdays": [
+              1,
+              3
+            ],
+            "zone": "UTC"
+          },
+          {
+            "breakMinutes": 0,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2020-01-01",
+            "end": "13:00",
+            "id": "v4",
+            "name": "Old",
+            "retired": false,
+            "shiftId": "old",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "12:00",
+            "weekdays": [
+              2
+            ],
+            "zone": "America/New_York"
+          },
+          {
+            "breakMinutes": 0,
+            "color": "#0ea5e9",
+            "deleted": false,
+            "effectiveFrom": "2026-03-05",
+            "end": "13:00",
+            "id": "v5",
+            "name": "Old",
+            "retired": true,
+            "shiftId": "old",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            },
+            "start": "12:00",
+            "weekdays": [
+              2
+            ],
+            "zone": "America/New_York"
+          }
+        ],
+        "systemZone": "UTC",
+        "tags": [
+          {
+            "color": "#abcdef",
+            "deleted": false,
+            "id": "tag-a",
+            "name": "Client work",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            }
+          },
+          {
+            "color": "#abcdef",
+            "deleted": false,
+            "id": "tag-b",
+            "name": "Deep",
+            "stamp": {
+              "at": "2026-01-01T00:00:00Z",
+              "by": "x"
+            }
+          }
+        ],
+        "tasks": [
+          {
+            "id": "design",
+            "name": "design",
+            "projectId": "beta",
+            "state": "stopped",
+            "stoppedAt": null,
+            "tags": [
+              "tag-a"
+            ]
+          },
+          {
+            "id": "support",
+            "name": "support",
+            "projectId": "fixed",
+            "state": "stopped",
+            "stoppedAt": "2026-03-04T18:05:00Z",
+            "tags": []
+          },
+          {
+            "id": "write",
+            "name": "write",
+            "projectId": "alpha",
+            "state": "stopped",
+            "stoppedAt": null,
+            "subtasks": [
+              {
+                "checked": false,
+                "id": "sub-draft",
+                "tags": [
+                  "tag-b"
+                ],
+                "text": "Item sub-draft"
+              },
+              {
+                "checked": false,
+                "id": "sub-edit",
+                "tags": [],
+                "text": "Item sub-edit"
+              }
+            ],
+            "tags": [
+              "tag-a",
+              "tag-b"
+            ]
+          }
+        ]
+      },
+      "to": "2026-03-04",
+      "tsSkip": "subtask tags: the UI follows from A2 on",
+      "zone": "America/New_York"
     }
   ],
-  "comment": "Written by the Rust test in analytics.rs, and read by that test and by analyticsParity.test.ts, so both sides give these figures."
+  "comment": "Written by the Rust test in analytics.rs, and read by that test and by analyticsParity.test.ts, so both sides give these figures. A case with tsSkip is one the UI does not follow yet, and says why."
 }
