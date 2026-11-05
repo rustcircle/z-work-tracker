@@ -54,10 +54,11 @@ async function openP2(page: Page, query = ''): Promise<Awaited<ReturnType<typeof
   return found;
 }
 
-/** Fourteen days fit on the first page of the p2 seed; older ones only if the button is there. */
-async function showAll(page: Page): Promise<void> {
-  const more = page.getByRole('button', { name: /^Show older/ });
-  while (await more.isVisible()) await more.click();
+/** The days run oldest to newest, a few side by side, today on the right: pages back until the day's card is drawn. */
+async function showDay(page: Page, name: string): Promise<void> {
+  const earlier = page.getByRole('button', { name: 'Earlier days' });
+  while ((await card(page, name).count()) === 0 && (await earlier.isEnabled())) await earlier.click();
+  await expect(card(page, name)).toBeVisible();
 }
 
 /** The seeded gaps' ids, so a test can plant more on the same running segment. */
@@ -251,8 +252,8 @@ test.describe('billable pauses on the timeline', () => {
     const row = today(page).locator('[data-testid="entry"][data-kind="billablePause"]');
     await expect(row).not.toContainText('$');
     await expect(today(page).getByTestId('day-billable')).not.toContainText('$');
-    await showAll(page);
-    const fee = page.getByTestId('fixed-fee').first();
+    await showDay(page, 'Wed 4 Mar 2026');
+    const fee = card(page, 'Wed 4 Mar 2026').getByTestId('fixed-fee').first();
     await expect(fee).toContainText('Fixed fee');
     await expect(fee).not.toContainText('€');
     await expectClean(page, found);
@@ -273,7 +274,7 @@ test.describe('timeline marks', () => {
     const looks = [await look('work', ':not([data-live])'), await look('billablePause'), await look('pending')];
     expect(new Set(looks).size).toBe(3);
 
-    await showAll(page);
+    await showDay(page, 'Tue 10 Mar 2026');
     const ten = card(page, 'Tue 10 Mar 2026');
     await expect(ten.locator('[data-testid="block"][data-kind="thinking"]')).toHaveCount(1);
     await expect(ten.locator('[data-testid="block"][data-kind="dropped"]')).toHaveCount(1);
@@ -291,16 +292,17 @@ test.describe('timeline marks', () => {
 
   test('corrected and hand-entered time keep the raw time in view', async ({ page }) => {
     const found = await openP2(page);
-    await showAll(page);
-    const nine = card(page, 'Mon 9 Mar 2026');
-    await expect(nine.locator('[data-testid="block"][data-mark="corrected"]')).toHaveCount(1);
-    await expect(nine.getByText('Recorded 09:00 to 11:20, corrected to 09:00 to 11:05.', { exact: false })).toBeVisible();
-    await expect(nine.getByText('Stopped at 11:05, the timer ran on', { exact: false })).toBeVisible();
+    // Yesterday is on the first page, next to today; Monday is a page back.
     const eleven = card(page, 'Wed 11 Mar 2026');
     await expect(eleven.locator('[data-testid="block"][data-mark="manual"]')).toHaveCount(1);
     await expect(eleven.getByText('Added by hand, 16:45 to 17:15.', { exact: false })).toBeVisible();
     // The backend's raw view carries no reason for hand-entered time; it is in the history of changes.
     await expect(eleven.getByText('The reason is in the history of changes.')).toBeVisible();
+    await showDay(page, 'Mon 9 Mar 2026');
+    const nine = card(page, 'Mon 9 Mar 2026');
+    await expect(nine.locator('[data-testid="block"][data-mark="corrected"]')).toHaveCount(1);
+    await expect(nine.getByText('Recorded 09:00 to 11:20, corrected to 09:00 to 11:05.', { exact: false })).toBeVisible();
+    await expect(nine.getByText('Stopped at 11:05, the timer ran on', { exact: false })).toBeVisible();
     await expectClean(page, found);
   });
 
@@ -323,7 +325,7 @@ test.describe('timeline marks', () => {
 
   test('a fixed-fee project says Fixed fee with the fee, not "No rate set"', async ({ page }) => {
     const found = await openP2(page);
-    await showAll(page);
+    await showDay(page, 'Wed 4 Mar 2026');
     const row = card(page, 'Wed 4 Mar 2026').locator('.proj-totals li', { hasText: 'Print run (fixed fee)' });
     await expect(row.getByTestId('fixed-fee')).toContainText('Fixed fee €1,000.00');
     await expect(row).not.toContainText('No rate set');
@@ -625,11 +627,12 @@ test.describe('screenshots', () => {
   test('banner, timeline and reminder', async ({ page }) => {
     await openP2(page);
     await page.screenshot({ path: path.join(SHOTS, 'timeaway-banner.png'), clip: { x: 0, y: 0, width: 1360, height: 260 } });
-    await showAll(page);
-    // The app scrolls inside its own panel, so the timeline is shot card by card.
+    // The app scrolls inside its own panel, so the timeline is shot card by card. Today and yesterday are on the first
+    // page; Tuesday and Monday are a page back.
     await today(page).scrollIntoViewIfNeeded();
     await page.getByTestId('timeline-legend').screenshot({ path: path.join(SHOTS, 'timeline-p2-legend.png') });
-    for (const [day, slug] of [['Thu 12 Mar 2026', '12'], ['Tue 10 Mar 2026', '10'], ['Mon 9 Mar 2026', '9'], ['Wed 11 Mar 2026', '11']] as const) {
+    for (const [day, slug] of [['Thu 12 Mar 2026', '12'], ['Wed 11 Mar 2026', '11'], ['Tue 10 Mar 2026', '10'], ['Mon 9 Mar 2026', '9']] as const) {
+      await showDay(page, day);
       await card(page, day).screenshot({ path: path.join(SHOTS, `timeline-p2-${slug}-mar.png`) });
     }
     await page.evaluate(() => {
