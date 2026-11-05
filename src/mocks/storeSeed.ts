@@ -308,7 +308,7 @@ const DATA: Persona = {
       tags: ['tag-prep', 'tag-model', 'tag-eval', 'tag-report'],
       active: 'st-write',
       items: [
-        { id: 'st-clean', text: 'Clean the customer table', checked: true, tags: ['tag-prep'] },
+        { id: 'st-clean', text: 'Clean customer data', checked: true, tags: ['tag-prep'] },
         { id: 'st-feat', text: 'Feature engineering', checked: true, tags: ['tag-prep', 'tag-model'] },
         { id: 'st-train', text: 'Train gradient boosting', checked: true, tags: ['tag-model'] },
         { id: 'st-eval', text: 'Evaluate on the holdout', tags: ['tag-eval'] },
