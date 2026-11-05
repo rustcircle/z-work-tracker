@@ -205,7 +205,11 @@ pub struct Task {
     pub extra: Extra,
 }
 
-/// Fields a later version wrote that this one doesn't know, by name.
+/// Fields a later version wrote that this one doesn't know, by name. Each comes back as it came, with one limit for
+/// a later version to keep to: an integer past the i64 and u64 range is read as the nearest f64 and written back as
+/// one (`18446744073709551616` as `1.8446744073709552e+19`). serde_json's `arbitrary_precision` would lift it, but with
+/// `#[serde(flatten)]` that feature breaks the typed number fields, so it stays off. How these fields merge:
+/// `merge::merge_extra`.
 pub type Extra = BTreeMap<String, Value>;
 
 /// What one subtask's time counts under. Only the subtask's own record changes it, so edits to two subtasks on two
@@ -214,7 +218,8 @@ pub type Extra = BTreeMap<String, Value>;
 #[serde(rename_all = "camelCase")]
 pub struct SubtaskTags {
     /// The subtask's own tags: some of the task's, written in its order. Empty is "No tag". `None` is back to "Same as
-    /// task", kept with its clock so that it reaches every device.
+    /// task", kept with its clock so that it reaches every device. Only an edit of the subtask writes it: a change to
+    /// the task's tags leaves it as it is, and every reader cuts it to them (`subtasks::effective`).
     pub tags: Option<Vec<String>>,
     pub stamp: Stamp,
     #[serde(flatten)]
@@ -1094,5 +1099,23 @@ mod tests {
         // A known field keeps its type: the catch-all never takes a value of the wrong one.
         segment["manual"] = json!("yes");
         assert!(serde_json::from_value::<Segment>(segment).is_err());
+    }
+
+    /// The one limit `Extra` states: an integer past 64 bits comes back as the float nearest to it, those within
+    /// i64 and u64 exactly.
+    #[test]
+    fn a_later_versions_integer_past_64_bits_comes_back_as_a_float() {
+        let text = format!(
+            r#"{},"bigId":18446744073709551616,"maxId":18446744073709551615,"minId":-9223372036854775808}}"#,
+            &TASK_1_3[..TASK_1_3.len() - 1]
+        );
+        let read: Task = serde_json::from_str(&text).unwrap();
+        let written = serde_json::to_string(&read).unwrap();
+        assert!(
+            written.contains(r#""bigId":1.8446744073709552e+19"#),
+            "{written}"
+        );
+        assert!(written.contains(r#""maxId":18446744073709551615"#));
+        assert!(written.contains(r#""minId":-9223372036854775808"#));
     }
 }

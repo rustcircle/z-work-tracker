@@ -2,14 +2,15 @@
 //! maximum under a total order, which makes `merge` idempotent, commutative and associative.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::model::{
     AuditEntry, BillablePause, BillingSummary, DevicePrefix, Extra, IdleGap, PauseRequest, Project,
-    RateVersion, RoundingVersion, Segment, SettingEntry, Shared, ShiftVersion, Stamp, Tag, Task,
-    Template,
+    RateVersion, RoundingVersion, Segment, SettingEntry, Shared, ShiftVersion, Stamp, SubtaskTags,
+    Tag, Task, Template,
 };
 
 fn canonical<T: Serialize>(v: &T) -> String {
@@ -170,10 +171,15 @@ fn merge_task(a: &Task, b: &Task) -> Task {
         &b.active_subtask,
         &b.active_subtask_stamp,
     );
-    // Each subtask's own clock decides it. A copy without the field, as 1.3 writes it, holds no entry and so
-    // takes none away, whatever its other clocks say.
+    // Each subtask's own clock decides its tags. A copy without the field, as 1.3 writes it, holds no entry and so
+    // takes none away, whatever its other clocks say. A later version's fields on an entry merge apart, as a task's do.
     let subtask_tags = merge_map(&a.subtask_tags, &b.subtask_tags, |x, y| {
-        lww(x, &x.stamp, y, &y.stamp).clone()
+        let (tags, stamp) = field(&x.tags, &x.stamp, &y.tags, &y.stamp);
+        SubtaskTags {
+            tags,
+            stamp,
+            extra: merge_extra(&x.extra, &y.extra),
+        }
     });
     // Stopped is final: it outranks any other state whatever the clocks say.
     let state_key = |t: &'_ Task| canonical(&StateKey(&t.state, &t.pause_reason));
@@ -211,16 +217,93 @@ fn merge_task(a: &Task, b: &Task) -> Task {
     }
 }
 
-/// A later version's fields, which this one can't merge one by one: it can't tell a value from its clock. So the
-/// whole set comes from one copy, which keeps each value with its clock, and one that holds more fields wins, so a copy
-/// written without them never displaces them. Then the text decides, so the order stays total.
+/// A later version's fields, which this one passes on, merged one field at a time by the convention every field here
+/// follows: one with a clock of its own keeps it beside it, `budget` in `budgetStamp`.
+///
+/// - A field whose clock is in either copy goes with it as one pair, the pair with the later clock winning as `lww`
+///   has it (the text breaks a tie), and a copy without the clock counting as older than any with it. A newer value
+///   never loses to an older one, and a later version can clear a field by keeping only its clock.
+/// - Any other key is kept from whichever copy has it, the larger text winning between two.
+///
+/// So fields set on two devices both survive, and a copy without them, as every 1.3 and 1.4 copy is, takes none away.
+/// Which keys go together depends on their names alone, and each group is a max under a total order of its own (a pair
+/// with a clock above every one without), so the merge stays a join.
 fn merge_extra(a: &Extra, b: &Extra) -> Extra {
-    let from_a = a
-        .len()
-        .cmp(&b.len())
-        .then_with(|| canonical(a).cmp(&canonical(b)))
-        != Ordering::Less;
-    if from_a { a.clone() } else { b.clone() }
+    if a == b || b.is_empty() {
+        return a.clone();
+    }
+    if a.is_empty() {
+        return b.clone();
+    }
+    let fields: BTreeSet<&str> = a.keys().chain(b.keys()).map(|k| field_of(k)).collect();
+    let mut out = Extra::new();
+    let mut keep = |key: &str, value: Option<&Value>| {
+        if let Some(v) = value {
+            out.insert(key.to_owned(), v.clone());
+        }
+    };
+    for field in fields {
+        match clock_key(field) {
+            Some(clock) => {
+                let (ca, cb) = (clock_of(a.get(&clock)), clock_of(b.get(&clock)));
+                if ca.is_none() && cb.is_none() {
+                    keep(field, larger(a.get(field), b.get(field)));
+                    keep(&clock, larger(a.get(&clock), b.get(&clock)));
+                    continue;
+                }
+                let keys = [field, clock.as_str()];
+                let by_clock = match (&ca, &cb) {
+                    (Some(x), Some(y)) => stamp_cmp(x, y),
+                    _ => ca.is_some().cmp(&cb.is_some()),
+                };
+                let from_a = by_clock
+                    .then_with(|| canonical(&pair(a, keys)).cmp(&canonical(&pair(b, keys))))
+                    != Ordering::Less;
+                let from = if from_a { a } else { b };
+                keep(field, from.get(field));
+                keep(&clock, from.get(&clock));
+            }
+            None => keep(field, larger(a.get(field), b.get(field))),
+        }
+    }
+    out
+}
+
+/// Where a later version's field keeps its clock: `budget` in `budgetStamp`. `None` for a key that can't have one,
+/// the empty one or one named as a clock itself.
+fn clock_key(key: &str) -> Option<String> {
+    (!key.is_empty() && !key.ends_with("Stamp")).then(|| format!("{key}Stamp"))
+}
+
+/// The field a later version's key goes with: `budgetStamp` with `budget`, any other key with itself. A key is always
+/// in exactly one group, so the clock of a field is never merged as a field of its own.
+fn field_of(key: &str) -> &str {
+    key.strip_suffix("Stamp")
+        .filter(|field| clock_key(field).is_some())
+        .unwrap_or(key)
+}
+
+/// A clock as every one here is written: an object that reads as a `Stamp`.
+fn clock_of(value: Option<&Value>) -> Option<Stamp> {
+    value
+        .filter(|v| v.is_object())
+        .and_then(|v| Stamp::deserialize(v).ok())
+}
+
+/// A field and its clock as one copy holds them, the keys it lacks left out: what breaks a tie between two pairs.
+fn pair<'m>(m: &'m Extra, keys: [&str; 2]) -> BTreeMap<&'m str, &'m Value> {
+    keys.into_iter()
+        .filter_map(|k| m.get_key_value(k))
+        .map(|(k, v)| (k.as_str(), v))
+        .collect()
+}
+
+/// Whichever value is there, the larger text between two.
+fn larger<'v>(a: Option<&'v Value>, b: Option<&'v Value>) -> Option<&'v Value> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(if canonical(x) >= canonical(y) { x } else { y }),
+        (x, y) => x.or(y),
+    }
 }
 
 fn field<T: Serialize + Clone>(a: &T, sa: &Stamp, b: &T, sb: &Stamp) -> (T, Stamp) {
@@ -414,17 +497,47 @@ pub(crate) mod strategies {
             )
     }
 
-    /// A later version's fields, few names and values so that copies often disagree.
+    /// A later version's fields, few names and values so that copies often disagree. `zA` keeps its clock in
+    /// `zAStamp`, as a field with one does; the rest have none.
     pub(crate) fn extra() -> impl Strategy<Value = Extra> {
         prop::collection::btree_map(
-            prop::sample::select(vec!["zA", "zB", "zC"]).prop_map(str::to_owned),
+            prop::sample::select(vec!["zA", "zAStamp", "zB", "zC"]).prop_map(str::to_owned),
             prop_oneof![
                 Just(json!(1)),
                 Just(json!("x")),
                 Just(json!({"at": "2026-01-01T00:00:00Z", "by": "a"})),
+                Just(json!({"at": "2026-01-02T00:00:00Z", "by": "b"})),
             ],
-            0..3,
+            0..4,
         )
+    }
+
+    /// A later version's fields with every shape the merge tells apart: fields with their clocks, a clock without its
+    /// field, keys that can't pair (`Stamp`, a clock's clock, the empty key), and values that look like a clock but
+    /// aren't one (a list, a bad time) or are one with more in it.
+    pub(crate) fn later_fields() -> impl Strategy<Value = Extra> {
+        let key = prop::sample::select(vec![
+            "budget",
+            "budgetStamp",
+            "colour",
+            "colourStamp",
+            "note",
+            "Stamp",
+            "noteStampStamp",
+            "",
+        ]);
+        let clock = (0u8..3, prop::sample::select(vec!["a", "b"]))
+            .prop_map(|(h, by)| json!({"at": format!("2026-11-05T0{h}:00:00Z"), "by": by}));
+        let value = prop_oneof![
+            (0i64..3).prop_map(|n| json!(n)),
+            Just(json!("x")),
+            Just(Value::Null),
+            clock,
+            Just(json!(["2026-11-05T01:00:00Z", "a"])),
+            Just(json!({"at": "not a time", "by": "a"})),
+            Just(json!({"at": "2026-11-05T01:00:00Z", "by": "a", "seq": 1})),
+        ];
+        prop::collection::btree_map(key.prop_map(str::to_owned), value, 0..6)
     }
 
     /// Some subtasks' own tags or resets, on a few subtask ids, so copies often hold the same one.
@@ -760,7 +873,7 @@ pub(crate) mod strategies {
 
 #[cfg(test)]
 mod tests {
-    use super::strategies::{project, segment, shared, task};
+    use super::strategies::{later_fields, project, segment, shared, task};
     use super::*;
     use crate::model::{BillingType, TaskState};
     use crate::time::Ts;
@@ -818,7 +931,8 @@ mod tests {
             );
         }
 
-        /// Every subtask either copy has is kept, each with the entry of the latest clock.
+        /// Every subtask either copy has is kept, each with the tags and clock of its latest entry, and a later
+        /// version's fields on the entries merged as a task's are.
         #[test]
         fn each_subtask_keeps_the_entry_with_its_latest_clock(a in task(), b in task()) {
             let m = merge_task(&a, &b);
@@ -831,10 +945,58 @@ mod tests {
                 unique.len()
             });
             for (id, kept) in &m.subtask_tags {
-                let copies: Vec<&crate::model::SubtaskTags> =
+                let copies: Vec<&SubtaskTags> =
                     [a.subtask_tags.get(id), b.subtask_tags.get(id)].into_iter().flatten().collect();
-                prop_assert!(copies.contains(&kept));
+                prop_assert!(copies.iter().any(|c| c.tags == kept.tags && c.stamp == kept.stamp));
                 prop_assert!(copies.iter().all(|c| stamp_cmp(&c.stamp, &kept.stamp) != Ordering::Greater));
+                let extra = copies.iter().map(|c| c.extra.clone()).reduce(|x, y| merge_extra(&x, &y));
+                prop_assert_eq!(Some(&kept.extra), extra.as_ref());
+            }
+        }
+
+        #[test]
+        fn the_laws_hold_for_a_later_versions_fields(
+            a in later_fields(),
+            b in later_fields(),
+            c in later_fields(),
+        ) {
+            prop_assert_eq!(merge_extra(&a, &a), a.clone());
+            prop_assert_eq!(merge_extra(&a, &b), merge_extra(&b, &a));
+            prop_assert_eq!(
+                merge_extra(&merge_extra(&a, &b), &c),
+                merge_extra(&a, &merge_extra(&b, &c))
+            );
+            let m = merge_extra(&a, &b);
+            prop_assert_eq!(merge_extra(&m, &a), m.clone());
+            prop_assert_eq!(merge_extra(&m, &b), m.clone());
+            prop_assert_eq!(merge_extra(&m, &Extra::new()), m.clone());
+            prop_assert_eq!(merge_extra(&Extra::new(), &m), m);
+        }
+
+        /// A field whose clock is in either copy comes whole from a copy with the latest clock. Every other key is
+        /// kept, and every value merged is one a copy holds.
+        #[test]
+        fn a_later_field_keeps_the_value_of_its_latest_clock_and_no_other_key_is_lost(
+            a in later_fields(),
+            b in later_fields(),
+        ) {
+            let m = merge_extra(&a, &b);
+            for (k, v) in &m {
+                prop_assert!(a.get(k) == Some(v) || b.get(k) == Some(v), "{k:?} comes from no copy");
+            }
+            for key in a.keys().chain(b.keys()) {
+                let field = field_of(key);
+                let clocks = clock_key(field).map(|c| (clock_of(a.get(&c)), clock_of(b.get(&c)), c));
+                match clocks {
+                    Some((ca, cb, clock)) if ca.is_some() || cb.is_some() => {
+                        let held = |x: &Extra| (x.get(field).cloned(), x.get(&clock).cloned());
+                        prop_assert!(held(&m) == held(&a) || held(&m) == held(&b), "{field:?} whole");
+                        let latest = ca.into_iter().chain(cb).max_by(stamp_cmp).unwrap();
+                        let kept = clock_of(m.get(&clock)).unwrap();
+                        prop_assert_eq!(stamp_cmp(&kept, &latest), Ordering::Equal);
+                    }
+                    _ => prop_assert!(m.contains_key(key), "{key:?} has no clock and is kept"),
+                }
             }
         }
 
@@ -926,6 +1088,99 @@ mod tests {
                 prop_assert!(!marked || !t.is_live());
             }
         }
+    }
+
+    /// One task with an entry for subtask s1, and one segment, each carrying these fields as a later version writes
+    /// them.
+    fn later_copy(fields: &Value) -> Shared {
+        let old = json!({"at": "2026-11-01T09:00:00Z", "by": "d1"});
+        let with = |mut record: Value| {
+            for (k, v) in fields.as_object().unwrap() {
+                record[k] = v.clone();
+            }
+            record
+        };
+        serde_json::from_value(json!({
+            "tasks": {"t": with(json!({
+                "id": "t", "name": "T", "nameStamp": old, "projectId": "p", "projectStamp": old,
+                "descriptionStamp": old, "deletedStamp": old, "createdAt": "2026-11-01T09:00:00Z",
+                "state": "paused", "stateStamp": old, "tagsStamp": old,
+                "subtaskTags": {"s1": with(json!({"tags": ["g"], "stamp": old}))},
+            }))},
+            "segments": {"s": with(json!({
+                "id": "s", "taskId": "t", "deviceId": "d1",
+                "start": "2026-11-01T09:00:00Z", "end": "2026-11-01T10:00:00Z",
+            }))},
+        }))
+        .unwrap()
+    }
+
+    /// The 1.4.0 review's cases, on a task, a segment and a subtask's entry, through the files as a later version
+    /// writes them: (a) a field set on two devices keeps the later value with its clock, whichever way the copies
+    /// merge; (b) two fields set on two devices both survive.
+    #[test]
+    fn a_later_versions_field_keeps_its_latest_value_and_fields_set_on_two_devices_both_survive() {
+        let clock = |hm: &str, by: &str| json!({"at": format!("2026-11-05T{hm}:00Z"), "by": by});
+        let budget_a = json!({"budget": 90, "budgetStamp": clock("09:00", "dA")});
+        let budget_b = json!({"budget": 120, "budgetStamp": clock("10:00", "dB")});
+        let colour_c = json!({"colour": "#123456", "colourStamp": clock("11:00", "dC")});
+        let both = json!({
+            "budget": 90, "budgetStamp": clock("09:00", "dA"),
+            "colour": "#123456", "colourStamp": clock("11:00", "dC"),
+        });
+        let later_of = |record: &Value| -> Value {
+            record
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(k, _)| {
+                    ["budget", "budgetStamp", "colour", "colourStamp"].contains(&k.as_str())
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        };
+        for (case, x, y, want) in [
+            ("(a)", &budget_a, &budget_b, &budget_b),
+            ("(b)", &budget_a, &colour_c, &both),
+        ] {
+            let (x, y) = (later_copy(x), later_copy(y));
+            for (order, m) in [("x, y", merge(&x, &y)), ("y, x", merge(&y, &x))] {
+                let file = serde_json::to_value(&m).unwrap();
+                for at in ["/tasks/t", "/segments/s", "/tasks/t/subtaskTags/s1"] {
+                    let record = file.pointer(at).unwrap();
+                    assert_eq!(later_of(record), *want, "{case} {order}: {at}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_field_with_its_clock_beats_one_without_and_a_later_clock_alone_clears_it() {
+        let extra = |v: Value| -> Extra { serde_json::from_value(v).unwrap() };
+        let clock = |hm: &str| json!({"at": format!("2026-11-05T{hm}:00Z"), "by": "d"});
+        let unclocked = extra(json!({"budget": 120}));
+        let clocked = extra(json!({"budget": 90, "budgetStamp": clock("09:00")}));
+        let cleared = extra(json!({"budgetStamp": clock("10:00")}));
+        for (x, y, want) in [
+            (&unclocked, &clocked, &clocked),
+            (&clocked, &cleared, &cleared),
+        ] {
+            assert_eq!(merge_extra(x, y), *want);
+            assert_eq!(merge_extra(y, x), *want);
+        }
+        // A list is not a clock, though it reads as a `Stamp`: two keys like any other.
+        let listed = extra(json!({"budget": 1, "budgetStamp": ["2026-11-05T11:00:00Z", "d"]}));
+        assert_eq!(
+            merge_extra(&listed, &unclocked),
+            extra(json!({"budget": 120, "budgetStamp": ["2026-11-05T11:00:00Z", "d"]}))
+        );
+        // Keys with no clock: all kept, the larger text between two.
+        let p = extra(json!({"note": "a", "Stamp": 1}));
+        let q = extra(json!({"note": "b", "other": true}));
+        let want = extra(json!({"note": "b", "Stamp": 1, "other": true}));
+        assert_eq!(merge_extra(&p, &q), want);
+        assert_eq!(merge_extra(&q, &p), want);
     }
 
     #[test]
