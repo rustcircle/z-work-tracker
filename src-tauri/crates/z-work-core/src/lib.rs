@@ -49,6 +49,8 @@ pub mod webview;
 pub mod xlsx;
 
 #[cfg(test)]
+mod cloud_mixed_tests;
+#[cfg(test)]
 mod cloud_roundtrip_tests;
 #[cfg(test)]
 mod scenario_bootstrap_tests;

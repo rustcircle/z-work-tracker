@@ -46,13 +46,13 @@ const NEVER_SET: [&str; 3] = [
     "tasks.continuedFrom",
 ];
 
-fn fixture(rel: &str) -> PathBuf {
+pub(crate) fn fixture(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(rel)
 }
 
-fn lock(m: &Mutex<Service>) -> MutexGuard<'_, Service> {
+pub(crate) fn lock(m: &Mutex<Service>) -> MutexGuard<'_, Service> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -75,7 +75,7 @@ fn files_under(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     out
 }
 
-fn copy_tree(from: &Path, to: &Path) {
+pub(crate) fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
@@ -88,11 +88,11 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
-fn device_path(folder: &Path, id: &str) -> PathBuf {
+pub(crate) fn device_path(folder: &Path, id: &str) -> PathBuf {
     folder.join(format!("zWorkTracker/devices/{id}.json"))
 }
 
-fn read_device(folder: &Path, id: &str) -> (DeviceFile, Vec<u8>) {
+pub(crate) fn read_device(folder: &Path, id: &str) -> (DeviceFile, Vec<u8>) {
     let bytes = fs::read(device_path(folder, id)).unwrap();
     (serde_json::from_slice(&bytes).unwrap(), bytes)
 }
@@ -100,9 +100,9 @@ fn read_device(folder: &Path, id: &str) -> (DeviceFile, Vec<u8>) {
 /// The folder the fixtures were captured in, mapped onto a copy of them, so Studio Mac's 1.3.1 store is used as it is,
 /// `syncTargets` and all. C0's `FolderIo` did the same to write them.
 #[derive(Clone)]
-struct MappedIo {
-    virtual_root: PathBuf,
-    real: PathBuf,
+pub(crate) struct MappedIo {
+    pub(crate) virtual_root: PathBuf,
+    pub(crate) real: PathBuf,
 }
 
 impl MappedIo {
