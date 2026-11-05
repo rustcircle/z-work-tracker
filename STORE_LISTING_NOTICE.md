@@ -1,6 +1,6 @@
 # Microsoft Store listing notes
 
-Text to paste into Partner Center for zWorkTracker, and what to check first. It is written for version 1.3.2, the first version planned for the Store.
+Text to paste into Partner Center for zWorkTracker, and what to check first. It is written for version 1.4.0, the first version planned for the Store.
 
 **Before you paste anything:**
 
@@ -55,19 +55,25 @@ Use this where Partner Center asks for a short summary (about 200 characters is 
 
 ## What's new in this version
 
-Use this where Partner Center asks for "What's new in this version" (1.3.2):
+Use this where Partner Center asks for "What's new in this version" (1.4.0). It is plain text, well under the 1,500 characters the field allows:
 
-> Faster and sturdier storage. Your data on this PC now lives in a database, so saving after each action is about 3 to 5 times faster, more so the longer your history, and a sync with your cloud folder takes a third to half less time. The app also warns you if this computer's clock is behind, so times from your other devices stay in order.
+> Tags for subtasks. A subtask can now count under some of its task's tags instead of all of them. On a task card, press the tags button on the subtask's row and tick the tags it should count under. Select all and Deselect all tick or untick every tag at once, and Same as task puts it back. Analysis, the tag filter, the Tags view of Share of time and the Tags sheet of the Excel export count each subtask's time under its own tags.
+>
+> A new Timeline. Days now sit side by side, the oldest on the left and today on the right. As many days show as fit the window, and the Earlier days and Later days arrows page through the rest.
+>
+> Share of time stays on the level you pick (Projects, Tasks, Subtasks or Tags) until you switch it.
+>
+> A computer still on 1.3.3 can share the same sync folder: it doesn't show subtask tags, and your 1.4 computers keep them.
 
-These figures come from the benchmark in the README's Performance section, which was measured on a Mac. Confirm on Windows before relying on the exact numbers.
+Each line describes something the 1.4.0 build does, and a test covers it: the Playwright specs for subtask tags, the Timeline and Share of time, the Analysis tests, and the core's tests of a folder shared with a 1.3.3 computer. None of it has run on real Windows yet (see the README's Known limitations), and the text names no figures to measure.
 
 ## Functionalities
 
 Use these for the Product features list (up to about 20 items, each kept short):
 
 1. One-click start, pause, resume and stop timers
-2. Projects, tasks, subtasks, tags and templates
-3. Day timeline with a clear view of work and pauses
+2. Projects, tasks, subtasks, tags and templates, with tags you can choose for each subtask
+3. Timeline with the days side by side and a clear view of work and pauses
 4. Corrections and hand-entered time, with a recorded reason and history
 5. Billable and exact time shown side by side
 6. Price per hour by project, with rate history and multiple currencies
@@ -128,7 +134,7 @@ Put the first four in the description or in the Additional information section. 
 | Website | The project page, if you want it public |
 | Support contact | pmrj@rustcircle.com |
 | Privacy policy URL | **You need to provide this:** a public page with the text below |
-| Screenshots | `~/msix-build/store-listing-screenshots/`. Retake them if the UI has changed, and consider replacing `06-data-scientist-task-details.png` |
+| Screenshots | `~/msix-build/store-listing-screenshots-1.4.0/`: ten 1920x1080 PNGs of sample data, made by `ZWT_STORE_SHOTS=1 pnpm exec playwright test e2e/store-shots.spec.ts`. Retake them if the UI changes |
 | Notes for certification | See below |
 
 ## Privacy policy draft
