@@ -24988,7 +24988,6 @@
         ]
       },
       "to": "2026-03-31",
-      "tsSkip": "subtask tags: the UI follows from A2 on",
       "zone": "America/New_York"
     },
     {
@@ -26366,9 +26365,8 @@
         ]
       },
       "to": "2026-03-04",
-      "tsSkip": "subtask tags: the UI follows from A2 on",
       "zone": "America/New_York"
     }
   ],
-  "comment": "Written by the Rust test in analytics.rs, and read by that test and by analyticsParity.test.ts, so both sides give these figures. A case with tsSkip is one the UI does not follow yet, and says why."
+  "comment": "Written by the Rust test in analytics.rs, and read by that test and by analyticsParity.test.ts, so both sides give these figures."
 }

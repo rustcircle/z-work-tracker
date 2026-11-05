@@ -19,7 +19,7 @@ use crate::error::CoreError;
 use crate::model::{BillingType, Shared, ShiftVersion, TaskState};
 use crate::pieces::{Piece, PieceKind};
 use crate::report::{AnalyticsColumn, AnalyticsSheet, CellKind, ExportSource};
-use crate::subtasks::EffectiveTags;
+use crate::subtasks::{self, EffectiveTags};
 use crate::time::Ts;
 use crate::validate::parse_zone;
 
@@ -903,8 +903,9 @@ struct Metrics<'a> {
     selected_days: Option<BTreeSet<i64>>,
     place: String,
     tz: Tz,
-    /// The row pieces of each task some of whose subtasks count under tags of their own, by task.
-    split_pieces: BTreeMap<String, Vec<Piece>>,
+    /// Each task some of whose subtasks count under tags of their own, by id: the tags each of its pieces counts
+    /// under, and its row pieces.
+    split: BTreeMap<&'a str, (EffectiveTags<'a>, Vec<Piece>)>,
 }
 
 fn number(v: f64) -> Value {
@@ -1712,9 +1713,8 @@ impl Metrics<'_> {
         let Some(task) = self.data.tasks.get(&t.id) else {
             return vec![(Vec::new(), t.exact, t.billable)];
         };
-        let effective = EffectiveTags::of(task);
-        let Some(pieces) = self.split_pieces.get(&t.id) else {
-            return vec![(effective.of_subtask(None).to_vec(), t.exact, t.billable)];
+        let Some((effective, pieces)) = self.split.get(t.id.as_str()) else {
+            return vec![(subtasks::effective(&task.tags, None), t.exact, t.billable)];
         };
         let mut parts: BTreeMap<&[&str], (i64, i64)> = BTreeMap::new();
         for sp in self.spans.iter().filter(|sp| sp.task == t.id) {
@@ -2167,21 +2167,20 @@ fn metrics<'a>(
             })
         })
         .collect();
-    // The Tags sheet splits these tasks' rows by the tags each piece counts under.
-    let mut split_pieces: BTreeMap<String, Vec<Piece>> = BTreeMap::new();
-    for t in data
+    // The Tags sheet splits these tasks' rows by the tags each piece counts under: each one's description read once,
+    // and its pieces gathered in one pass.
+    let mut split: BTreeMap<&str, (EffectiveTags<'_>, Vec<Piece>)> = data
         .tasks
         .values()
-        .filter(|t| !t.subtask_tags.is_empty() && !EffectiveTags::of(t).uniform())
-    {
-        split_pieces.insert(
-            t.id.clone(),
-            row_pieces
-                .iter()
-                .filter(|p| p.task_id == t.id)
-                .cloned()
-                .collect(),
-        );
+        .filter(|t| !t.subtask_tags.is_empty())
+        .map(|t| (t.id.as_str(), EffectiveTags::of(t)))
+        .filter(|(_, tags)| !tags.uniform())
+        .map(|(id, tags)| (id, (tags, Vec::new())))
+        .collect();
+    for p in &row_pieces {
+        if let Some((_, list)) = split.get_mut(p.task_id.as_str()) {
+            list.push(p.clone());
+        }
     }
     let rows = task_days_of(data, tz, row_pieces);
     let mut windows = windows_for(data, ext.0, ext.1);
@@ -2234,7 +2233,7 @@ fn metrics<'a>(
         place,
         period,
         tz,
-        split_pieces,
+        split,
     }
 }
 
@@ -2934,13 +2933,8 @@ mod tests {
         let overnight = client_hours("22:00", "06:00");
         let all_day = client_hours("00:00", "00:00");
         let own_tags = source(with_subtask_tags(world()), "2027-02-01T00:00:00Z");
-        // The UI counts subtasks' own tags from A2 on (1.4): until then its parity test skips these cases.
-        let ui_later = |mut c: Value| {
-            c["tsSkip"] = json!("subtask tags: the UI follows from A2 on");
-            c
-        };
         let got = json!({
-            "comment": "Written by the Rust test in analytics.rs, and read by that test and by analyticsParity.test.ts, so both sides give these figures. A case with tsSkip is one the UI does not follow yet, and says why.",
+            "comment": "Written by the Rust test in analytics.rs, and read by that test and by analyticsParity.test.ts, so both sides give these figures.",
             "cases": [
                 case("a month", &full, "2026-03-01", "2026-03-31"),
                 case("one day", &full, "2026-03-03", "2026-03-03"),
@@ -2955,8 +2949,8 @@ mod tests {
                 case("client hours overnight, one day", &overnight, "2026-03-03", "2026-03-03"),
                 case("client hours all day", &all_day, "2026-03-02", "2026-03-08"),
                 case("a selection with client hours overnight", &selected(&overnight), "2026-03-02", "2026-03-04"),
-                ui_later(case("subtasks with tags of their own", &own_tags, "2026-03-01", "2026-03-31")),
-                ui_later(case("a selection with subtasks with tags of their own", &selected(&own_tags), "2026-03-02", "2026-03-04")),
+                case("subtasks with tags of their own", &own_tags, "2026-03-01", "2026-03-31"),
+                case("a selection with subtasks with tags of their own", &selected(&own_tags), "2026-03-02", "2026-03-04"),
             ],
         });
         let body = serde_json::to_string_pretty(&got).unwrap() + "\n";
