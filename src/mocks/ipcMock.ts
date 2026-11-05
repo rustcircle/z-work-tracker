@@ -7,7 +7,7 @@ import { mockIPC } from '@tauri-apps/api/mocks';
 import { PROJECT_PALETTE, distinctColor } from '../lib/color';
 import { RateBook, isCurrency, taskDays } from '../lib/billing';
 import { docHasText, docPlainText } from '../lib/docText';
-import { assignSubtaskIds, resetSubtasks, subtaskItems } from '../lib/subtasks';
+import { assignSubtaskIds, effectiveTags, resetSubtasks, sameOverride, shownTags, subtaskItems } from '../lib/subtasks';
 import { clockAt, isZone, parseIso, toIso } from '../lib/tz';
 import { summaryCsv } from './summaryCsv';
 import { capAtPauseRequest, computePieces, effective, projectFigures, summaryPreview, taskTotals, unconfirmedSecs, type MockSegment, type PieceInput } from './pieces';
@@ -53,6 +53,9 @@ import type {
   ShiftInput,
   ShiftVersion,
   Snapshot,
+  Stamp,
+  SubtaskTagsExpected,
+  SubtaskTagsReply,
   SummaryRequest,
   Tag,
   TagInput,
@@ -92,9 +95,21 @@ export interface MockFolder {
 export type MockProject = Omit<Project, 'figures' | 'hasTasks' | 'billingType' | 'fixedFeeCents' | 'feeCurrency'> &
   Partial<Pick<Project, 'billingType' | 'fixedFeeCents' | 'feeCurrency'>> & { hasTasks?: boolean };
 
+/**
+ * One subtask's stored override (`Task.subtaskTags`): a list is its own tags, `null` is a reset to "Same as task". Each has
+ * its own stamp, as in the backend, so a test can tell which entries a change moved. Entries are never deleted.
+ */
+export interface MockSubtaskTags {
+  tags: string[] | null;
+  stamp: Stamp;
+}
+
 /** A task as the mock stores it. Subtask time, billed seconds and the like are derived at snapshot time. */
 export type MockTask = Omit<Task, 'tags' | 'activeSubtask' | 'subtasks' | 'billedSecs' | 'unbilledSecs' | 'thinkingSecs' | 'pauseSecs' | 'unconfirmedSecs'> &
-  Partial<Pick<Task, 'tags' | 'activeSubtask'>>;
+  Partial<Pick<Task, 'tags' | 'activeSubtask'>> & {
+    /** Only overrides, by subtask id: left out while there are none, as the backend leaves the field out. Not part of the snapshot, which shows each item's `tags`. */
+    subtaskTags?: Record<string, MockSubtaskTags>;
+  };
 
 export type { MockSegment };
 
@@ -682,13 +697,20 @@ function snapshot(s: MockState, read = false): Snapshot {
       feeCurrency: p.feeCurrency ?? null,
       figures: figures.get(p.id) ?? { exactSecs: 0, pauseSecs: 0, billableSecs: 0, thinkingSecs: 0, effectiveHourlyCents: null, timeValueCents: {}, budget: null },
     })),
-    tasks: s.tasks.map((t) => {
+    tasks: s.tasks.map(({ subtaskTags, ...t }) => {
       const tt = totals.get(t.id);
       return {
         ...t,
         tags: t.tags ?? [],
         activeSubtask: t.activeSubtask ?? null,
-        subtasks: subtaskItems(t.description).map((i) => ({ id: i.id, text: i.text, checked: i.checked, secs: tt?.subtaskSecs.get(i.id) ?? 0 })),
+        subtasks: subtaskItems(t.description).map((i) => ({
+          id: i.id,
+          text: i.text,
+          checked: i.checked,
+          secs: tt?.subtaskSecs.get(i.id) ?? 0,
+          // What the editor shows: the stored list cut to the task's tags, or null for "Same as task".
+          tags: shownTags(t.tags ?? [], subtaskTags?.[i.id]?.tags),
+        })),
         billedSecs: tt?.billedSecs ?? 0,
         unbilledSecs: tt?.unbilledSecs ?? 0,
         thinkingSecs: tt?.thinkingSecs ?? 0,
@@ -736,6 +758,59 @@ function snapshot(s: MockState, read = false): Snapshot {
 }
 
 const stamp = (s: MockState) => ({ at: toIso(s.now), by: DEVICE_ID });
+
+/** A stamp later than `old`, as the backend's clock makes one: now, or a second past the old one if that is not yet later. */
+const stampAfter = (s: MockState, old: Stamp): Stamp => ({ at: toIso(Math.max(s.now, parseIso(old.at) + 1)), by: DEVICE_ID });
+
+/**
+ * The task's tags just changed: each subtask's list keeps only tags still on the task, in the same write, and moves its stamp
+ * only if that changed it (`prune_subtask_tags`). A list left empty stays "No tag", and a reset stays a reset.
+ */
+function pruneSubtaskTags(s: MockState, t: MockTask): void {
+  const tags = t.tags ?? [];
+  for (const entry of Object.values(t.subtaskTags ?? {})) {
+    if (entry.tags === null) continue;
+    const kept = entry.tags.filter((tag) => tags.includes(tag));
+    if (kept.length === entry.tags.length) continue;
+    entry.tags = kept;
+    entry.stamp = stampAfter(s, entry.stamp);
+  }
+}
+
+/** `validate.rs`: a subtask id that can carry tags of its own is one a description may hold, and a task has at most this many such entries. */
+const MAX_SUBTASK_ID_BYTES = 64;
+const MAX_SUBTASK_TAG_ENTRIES = 10_000;
+
+/** The same list in the same order, which is what the backend compares to see whether a task's tags changed. */
+const sameTagList = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/**
+ * `Shared::set_subtask_tags`: gives a subtask some of its task's tags (an empty list is "No tag") or, with null, puts it back on
+ * "Same as task". With `expected`, what the row showed, the edit is written only if the subtask still shows that, or already
+ * shows what is asked. A tag the task no longer has is refused the same way, as the row's view is out of date. A refusal writes
+ * nothing and says what the subtask shows now.
+ */
+function setSubtaskTags(s: MockState, taskId: string, subtaskId: string, tags: readonly string[] | null, expected: SubtaskTagsExpected | null | undefined): SubtaskTagsReply {
+  const t = task(s, taskId);
+  if (subtaskId === '' || !subtaskItems(t.description).some((i) => i.id === subtaskId)) throw err('not_found', 'subtask not found');
+  const taskTags = t.tags ?? [];
+  const shownNow = (): string[] | null => shownTags(taskTags, t.subtaskTags?.[subtaskId]?.tags);
+  const outcome = (conflict: boolean): SubtaskTagsReply => {
+    const now = shownNow();
+    return { snapshot: snapshot(s), conflict, tags: now, effective: effectiveTags(taskTags, now) };
+  };
+  const shown = shownNow();
+  if (tags !== null && tags.some((tag) => !taskTags.includes(tag))) return outcome(true);
+  const wanted = tags === null ? null : effectiveTags(taskTags, tags);
+  if (sameOverride(shown, wanted)) return outcome(false);
+  if (expected && !sameOverride(shown, expected.tags ?? null)) return outcome(true);
+  if (new TextEncoder().encode(subtaskId).length > MAX_SUBTASK_ID_BYTES) throw err('validation', 'a subtask id has an invalid length');
+  const stored = (t.subtaskTags ??= {});
+  const entry = stored[subtaskId];
+  if (!entry && Object.keys(stored).length >= MAX_SUBTASK_TAG_ENTRIES) throw err('validation', 'this task has too many subtasks with tags of their own');
+  stored[subtaskId] = { tags: wanted, stamp: entry ? stampAfter(s, entry.stamp) : stamp(s) };
+  return outcome(false);
+}
 
 function newId(s: MockState, prefix: string): string {
   const id = `${prefix}-${s.nextId}`;
@@ -1154,6 +1229,8 @@ function phase2(s: MockState, cmd: string, a: Record<string, unknown>): unknown 
       }
       return snapshot(s);
     }
+    case 'set_subtask_tags':
+      return setSubtaskTags(s, a.taskId as string, a.subtaskId as string, (a.tags ?? null) as string[] | null, a.expected as SubtaskTagsExpected | null | undefined);
     case 'save_tag': {
       const input = a.input as TagInput;
       const name = cleanText(input.name, 'Tag name', 40);
@@ -1393,7 +1470,7 @@ export const READ_ONLY_BLOCKED: ReadonlySet<string> = new Set([
   'create_task', 'update_task', 'patch_task', 'delete_draft', 'delete_task', 'start_task', 'resume_task', 'pause_task', 'stop_task',
   'save_shift', 'delete_shift', 'revert_shift_version', 'set_rate', 'delete_rate_version', 'set_rounding', 'delete_rounding', 'set_setting',
   'add_manual_entry', 'correct_segment', 'void_segment', 'restore_segment', 'settle_lost_segment',
-  'decide_gap', 'mark_billable_pause', 'unmark_billable_pause', 'set_active_subtask',
+  'decide_gap', 'mark_billable_pause', 'unmark_billable_pause', 'set_active_subtask', 'set_subtask_tags',
   'save_tag', 'delete_tag', 'save_template', 'delete_template', 'task_from_template',
   'create_summary', 'void_summary', 'set_device_prefix',
   'restore_backup', 'restore_version', 'save_version_now',
@@ -1980,7 +2057,10 @@ function dispatch(s: MockState, cmd: string, a: Record<string, unknown>): unknow
       t.description = assignSubtaskIds(input.description, t.description, () => newId(s, 'sub'));
       clearMissingActive(t);
       // Like the backend, an empty list here leaves the tags alone; clearing goes through patch_task.
-      if (input.tags && input.tags.length > 0) t.tags = input.tags;
+      if (input.tags && input.tags.length > 0 && !sameTagList(t.tags ?? [], input.tags)) {
+        t.tags = input.tags;
+        pruneSubtaskTags(s, t);
+      }
       return snapshot(s);
     }
     case 'patch_task': {
@@ -2014,7 +2094,10 @@ function dispatch(s: MockState, cmd: string, a: Record<string, unknown>): unknow
         t.description = assignSubtaskIds(description, t.description, () => newId(s, 'sub'));
         clearMissingActive(t);
       }
-      if (tags !== undefined) t.tags = tags;
+      if (tags !== undefined && !sameTagList(t.tags ?? [], tags)) {
+        t.tags = tags;
+        pruneSubtaskTags(s, t);
+      }
       const reply: PatchReply = { snapshot: snapshot(s), conflicts, stored: { name: t.name, projectId: t.projectId, description: t.description, tags: t.tags ?? [] } };
       return reply;
     }

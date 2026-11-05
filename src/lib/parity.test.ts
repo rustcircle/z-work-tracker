@@ -84,7 +84,7 @@ const COMMANDS: Record<string, 'blocked' | 'allowed'> = {
   // Projects and tasks.
   create_project: 'blocked', update_project: 'blocked', set_project_archived: 'blocked', delete_project: 'blocked',
   create_task: 'blocked', update_task: 'blocked', patch_task: 'blocked', delete_draft: 'blocked', delete_task: 'blocked',
-  task_from_template: 'blocked', set_active_subtask: 'blocked',
+  task_from_template: 'blocked', set_active_subtask: 'blocked', set_subtask_tags: 'blocked',
   // The timer.
   start_task: 'blocked', resume_task: 'blocked', pause_task: 'blocked', stop_task: 'blocked',
   // Logged time.
@@ -122,9 +122,6 @@ const allowed = Object.keys(COMMANDS).filter((c) => COMMANDS[c] === 'allowed');
 
 /** The commands the typed wrappers send. */
 const apiCommands = (): string[] => [...apiSource.matchAll(/invoke(?:<[^()]*>)?\('([a-z_]+)'/g)].map((m) => m[1] ?? '');
-
-/** Registered by the shell before the typed wrappers and the mock have them: subtask tags (1.4), until T1 adds both. */
-const NOT_YET_IN_THE_UI: readonly string[] = ['set_subtask_tags'];
 
 /** The commands the shell registers, from every `generate_handler![...]` list. */
 function shellCommands(): string[] {
@@ -169,7 +166,7 @@ describe('the read-only gate', () => {
   it('has a place for every command the shell registers', () => {
     const registered = shellCommands();
     expect(registered.length, 'no command list found in src-tauri/src/lib.rs').toBeGreaterThan(60);
-    expect(registered.filter((c) => !(c in COMMANDS) && !NOT_YET_IN_THE_UI.includes(c))).toEqual([]);
+    expect(registered.filter((c) => !(c in COMMANDS))).toEqual([]);
   });
 
   it('is held by the mock as exactly the commands classified as blocked', () => {

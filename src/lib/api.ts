@@ -36,6 +36,8 @@ import type {
   RoundingInput,
   ShiftInput,
   Snapshot,
+  SubtaskTagsExpected,
+  SubtaskTagsReply,
   SyncProvider,
   TaskInput, TaskPatch,
   Theme,
@@ -101,6 +103,12 @@ export const api = {
   markBillablePause: (input: PauseInput) => invoke<WithId>('mark_billable_pause', { input }),
   unmarkBillablePause: (id: string) => invoke<Snapshot>('unmark_billable_pause', { id }),
   setActiveSubtask: (taskId: string, subtaskId: string | null) => invoke<Snapshot>('set_active_subtask', { taskId, subtaskId }),
+  /**
+   * Gives a subtask some of its task's tags (an empty list is "No tag"), or with `null` puts it back on "Same as task".
+   * With `expected`, what the row showed, a stale edit is refused: the reply says `conflict` and nothing is written.
+   */
+  setSubtaskTags: (taskId: string, subtaskId: string, tags: string[] | null, expected?: SubtaskTagsExpected) =>
+    invoke<SubtaskTagsReply>('set_subtask_tags', expected ? { taskId, subtaskId, tags, expected } : { taskId, subtaskId, tags }),
   // Tags and templates.
   saveTag: (input: TagInput) => invoke<SavedColor>('save_tag', { input }),
   deleteTag: (id: string) => invoke<Snapshot>('delete_tag', { id }),
