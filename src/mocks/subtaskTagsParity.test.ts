@@ -25,6 +25,8 @@ interface PruneCase extends Shape {
   newTaskTags: string[];
   expectOverrides: Lists;
   restamped: string[];
+  /** What each subtask shows afterwards: its list cut to the task's tags in the task's order, or `null` for "Same as task". */
+  expectShown: Lists;
 }
 interface SetCase extends Shape {
   request: { subtask: string; tags: string[] | null; expected?: SubtaskTagsExpected };
@@ -118,12 +120,13 @@ describe('the snapshot shows each subtask’s tags as the shared table says', ()
   });
 });
 
-describe('a change to the task’s tags prunes the lists as the shared table says', () => {
+describe('a change to the task’s tags leaves the lists as the shared table says', () => {
   const stored = (s: MockState): MockTask => {
     const t = s.tasks.find((x) => x.id === 't');
     if (!t) throw new Error('no task');
     return t;
   };
+  const shownBy = (s: MockState): (string[] | null)[] => snapshotTask(s).subtasks.map((i) => i.tags);
 
   it.each(pruneCases.map((c) => [c.name, c] as const))('%s', (_, c) => {
     // `update_task` keeps the tags when it is sent none, so it can only be asked for a list that has some.
@@ -141,14 +144,39 @@ describe('a change to the task’s tags prunes the lists as the shared table say
         .map(([id]) => id)
         .sort();
       expect(moved, how).toEqual(c.restamped);
-      for (const id of moved) expect(((after.subtaskTags ?? {})[id]?.stamp.at ?? '') > (old[id]?.stamp.at ?? ''), `${how}: ${id} moves past its old stamp`).toBe(true);
+      // Only an edit of the subtask moves its entry, so every one is as it was, clock included.
+      expect(after.subtaskTags ?? {}, `${how}: every entry as it was`).toEqual(old);
+      // What each subtask shows now, and what its time counts under: the list cut to the task's tags, or the task's own.
+      const task = snapshotTask(s);
+      expect(Object.fromEntries(task.subtasks.map((i) => [i.id, i.tags])), how).toEqual(c.expectShown);
+      const counted = effectiveTagsOf(task);
+      for (const i of task.subtasks) expect(counted.of(i.id), `${how}: time on ${i.id}`).toEqual(c.expectShown[i.id] ?? c.newTaskTags);
     }
   });
 
-  it('prunes with the next change, even to a list that holds only what the task already has', () => {
+  it('keeps a tag the task lacks in a list through the next change, unseen, and shows the list in the task’s new order', () => {
     const { s } = world({ name: 'x', taskTags: ['tag-a', 'tag-c'], subtasks: ['s1'], overrides: { s1: ['tag-a', 'tag-b', 'tag-c'] } });
     handle(s, 'patch_task', { id: 't', patch: { tags: ['tag-c', 'tag-a'] } });
-    expect(storedLists(stored(s))).toEqual({ s1: ['tag-a', 'tag-c'] });
+    expect(storedLists(stored(s))).toEqual({ s1: ['tag-a', 'tag-b', 'tag-c'] });
+    expect(shownBy(s)).toEqual([['tag-c', 'tag-a']]);
+  });
+
+  it('puts a tag back where a list still holds it: taken off the task and given back, each subtask counts under it again', () => {
+    const { s } = world({ name: 'x', taskTags: ['tag-a', 'tag-b'], subtasks: ['s1', 's2', 's3'], overrides: { s1: ['tag-a', 'tag-b'], s2: ['tag-b'], s3: null } });
+    handle(s, 'patch_task', { id: 't', patch: { tags: ['tag-a'] } });
+    expect(shownBy(s)).toEqual([['tag-a'], [], null]);
+    handle(s, 'patch_task', { id: 't', patch: { tags: ['tag-a', 'tag-b'] } });
+    expect(shownBy(s)).toEqual([['tag-a', 'tag-b'], ['tag-b'], null]);
+    expect(storedLists(stored(s))).toEqual({ s1: ['tag-a', 'tag-b'], s2: ['tag-b'], s3: null });
+  });
+
+  it('keeps an edit made while the tag was off: the list was written from the task’s tags then, so it no longer holds the tag', () => {
+    const { s } = world({ name: 'x', taskTags: ['tag-a', 'tag-b'], subtasks: ['s1'], overrides: { s1: ['tag-a', 'tag-b'] } });
+    handle(s, 'patch_task', { id: 't', patch: { tags: ['tag-a'] } });
+    handle(s, 'set_subtask_tags', { taskId: 't', subtaskId: 's1', tags: [] });
+    handle(s, 'patch_task', { id: 't', patch: { tags: ['tag-a', 'tag-b'] } });
+    expect(storedLists(stored(s))).toEqual({ s1: [] });
+    expect(shownBy(s)).toEqual([[]]);
   });
 
   it('leaves the lists alone when the tags are the same, and when a tag is deleted from the catalogue', () => {
@@ -157,7 +185,7 @@ describe('a change to the task’s tags prunes the lists as the shared table say
     handle(s, 'delete_tag', { id: 'tag-b' });
     expect(storedLists(stored(s))).toEqual({ s1: ['tag-a', 'tag-b'] });
     // The deleted tag stays on the task, so the item still shows it: every reader leaves a deleted tag out where it counts.
-    expect(snapshotTask(s).subtasks[0]?.tags).toEqual(['tag-a', 'tag-b']);
+    expect(shownBy(s)).toEqual([['tag-a', 'tag-b']]);
   });
 });
 

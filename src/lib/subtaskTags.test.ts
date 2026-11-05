@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 
 import table from '../../fixtures/subtask-tags-parity.json';
-import { effectiveTags, effectiveTagsOf, sameOverride, sameTagSet, shownTags } from './subtasks';
+import { effectiveTags, effectiveTagsOf, sameOverride, sameTagOrder, sameTagSet, shownTags } from './subtasks';
 
 /** The shape of a case in `effective`: the JSON import types each case on its own, so the common shape is stated here. */
 interface EffectiveCase {
@@ -80,6 +80,14 @@ describe('the pieces of the rule', () => {
     expect(sameTagSet(['a', 'b'], ['b', 'a'])).toBe(true);
     expect(sameTagSet(['a'], ['a', 'b'])).toBe(false);
     expect(sameOverride(['a', 'b'], ['b', 'a'])).toBe(true);
+  });
+
+  it('compares the tags of a task in their order, a reorder being a change', () => {
+    expect(sameTagOrder(['a', 'b'], ['a', 'b'])).toBe(true);
+    expect(sameTagOrder([], [])).toBe(true);
+    expect(sameTagOrder(['a', 'b'], ['b', 'a'])).toBe(false);
+    expect(sameTagOrder(['a'], ['a', 'b'])).toBe(false);
+    expect(sameTagOrder(['a', 'b'], ['a'])).toBe(false);
   });
 
   it('gives time on no item, or on an item that has no id, the task’s tags', () => {

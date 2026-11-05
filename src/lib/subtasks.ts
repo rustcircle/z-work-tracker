@@ -112,9 +112,9 @@ export function assignSubtaskIds(doc: RichDoc, previous: RichDoc | undefined, fr
 
 /**
  * The tags a piece of a task's time counts under (`subtasks::effective`): the subtask's own list cut to the task's tags, in
- * the task's order, or with no list (`null`: "Same as task") the task's tags. Empty is "No tag". Every reader follows this, so
- * a tag taken off the task on a version that cannot touch the lists drops out of them here, and a list naming a tag twice
- * counts it once.
+ * the task's order, or with no list (`null`: "Same as task") the task's tags. Empty is "No tag". Every reader follows this,
+ * because a change to the task's tags rewrites no list: a tag taken off the task drops out of every list at once, and counts
+ * again where a list still holds it if the task gets it back. A list naming a tag twice counts it once.
  */
 export function effectiveTags(taskTags: readonly string[], own: readonly string[] | null | undefined): string[] {
   return own == null ? [...taskTags] : taskTags.filter((t) => own.includes(t));
@@ -128,6 +128,11 @@ export function shownTags(taskTags: readonly string[], stored: readonly string[]
 /** Tags are a set: their order is no change. */
 export function sameTagSet(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((t) => b.includes(t));
+}
+
+/** The same tags in the same order, which is what the backend compares to see whether a task's tags changed (a reorder is a change). */
+export function sameTagOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((t, i) => t === b[i]);
 }
 
 /** Two states of a subtask's tags, as an editor shows them: `null` ("Same as task") is only the same as `null`, and lists are sets. */
@@ -160,9 +165,8 @@ export function effectiveTagsOf(task: TaggedTask): TaskTagSets {
   for (const item of task.subtasks ?? []) {
     if (item.id !== '' && item.tags != null) own.set(item.id, effectiveTags(task.tags, item.tags));
   }
-  const same = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((t, i) => t === b[i]);
   return {
     of: (subtaskId) => (subtaskId != null ? own.get(subtaskId) : undefined) ?? base,
-    uniform: [...own.values()].every((tags) => same(tags, base)),
+    uniform: [...own.values()].every((tags) => sameTagOrder(tags, base)),
   };
 }

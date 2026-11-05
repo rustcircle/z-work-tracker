@@ -7,7 +7,7 @@ import { mockIPC } from '@tauri-apps/api/mocks';
 import { PROJECT_PALETTE, distinctColor } from '../lib/color';
 import { RateBook, isCurrency, taskDays } from '../lib/billing';
 import { docHasText, docPlainText } from '../lib/docText';
-import { assignSubtaskIds, effectiveTags, resetSubtasks, sameOverride, shownTags, subtaskItems } from '../lib/subtasks';
+import { assignSubtaskIds, effectiveTags, resetSubtasks, sameOverride, sameTagOrder, shownTags, subtaskItems } from '../lib/subtasks';
 import { clockAt, isZone, parseIso, toIso } from '../lib/tz';
 import { summaryCsv } from './summaryCsv';
 import { capAtPauseRequest, computePieces, effective, projectFigures, summaryPreview, taskTotals, unconfirmedSecs, type MockSegment, type PieceInput } from './pieces';
@@ -762,27 +762,9 @@ const stamp = (s: MockState) => ({ at: toIso(s.now), by: DEVICE_ID });
 /** A stamp later than `old`, as the backend's clock makes one: now, or a second past the old one if that is not yet later. */
 const stampAfter = (s: MockState, old: Stamp): Stamp => ({ at: toIso(Math.max(s.now, parseIso(old.at) + 1)), by: DEVICE_ID });
 
-/**
- * The task's tags just changed: each subtask's list keeps only tags still on the task, in the same write, and moves its stamp
- * only if that changed it (`prune_subtask_tags`). A list left empty stays "No tag", and a reset stays a reset.
- */
-function pruneSubtaskTags(s: MockState, t: MockTask): void {
-  const tags = t.tags ?? [];
-  for (const entry of Object.values(t.subtaskTags ?? {})) {
-    if (entry.tags === null) continue;
-    const kept = entry.tags.filter((tag) => tags.includes(tag));
-    if (kept.length === entry.tags.length) continue;
-    entry.tags = kept;
-    entry.stamp = stampAfter(s, entry.stamp);
-  }
-}
-
 /** `validate.rs`: a subtask id that can carry tags of its own is one a description may hold, and a task has at most this many such entries. */
 const MAX_SUBTASK_ID_BYTES = 64;
 const MAX_SUBTASK_TAG_ENTRIES = 10_000;
-
-/** The same list in the same order, which is what the backend compares to see whether a task's tags changed. */
-const sameTagList = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /**
  * `Shared::set_subtask_tags`: gives a subtask some of its task's tags (an empty list is "No tag") or, with null, puts it back on
@@ -2056,11 +2038,9 @@ function dispatch(s: MockState, cmd: string, a: Record<string, unknown>): unknow
       t.projectId = input.projectId;
       t.description = assignSubtaskIds(input.description, t.description, () => newId(s, 'sub'));
       clearMissingActive(t);
-      // Like the backend, an empty list here leaves the tags alone; clearing goes through patch_task.
-      if (input.tags && input.tags.length > 0 && !sameTagList(t.tags ?? [], input.tags)) {
-        t.tags = input.tags;
-        pruneSubtaskTags(s, t);
-      }
+      // Like the backend, an empty list here leaves the tags alone (clearing goes through patch_task), and the tags are written
+      // only if they differ. The subtasks' own lists stay as they are: every reader cuts them to the task's tags.
+      if (input.tags && input.tags.length > 0 && !sameTagOrder(t.tags ?? [], input.tags)) t.tags = input.tags;
       return snapshot(s);
     }
     case 'patch_task': {
@@ -2094,10 +2074,8 @@ function dispatch(s: MockState, cmd: string, a: Record<string, unknown>): unknow
         t.description = assignSubtaskIds(description, t.description, () => newId(s, 'sub'));
         clearMissingActive(t);
       }
-      if (tags !== undefined && !sameTagList(t.tags ?? [], tags)) {
-        t.tags = tags;
-        pruneSubtaskTags(s, t);
-      }
+      // As in update_task, the subtasks' own lists stay as they are.
+      if (tags !== undefined && !sameTagOrder(t.tags ?? [], tags)) t.tags = tags;
       const reply: PatchReply = { snapshot: snapshot(s), conflicts, stored: { name: t.name, projectId: t.projectId, description: t.description, tags: t.tags ?? [] } };
       return reply;
     }
