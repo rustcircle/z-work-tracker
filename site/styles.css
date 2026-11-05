@@ -183,6 +183,8 @@ a.shot:hover { border-color: var(--accent); }
 .notices-title .i { color: var(--warn); }
 .notice-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 48px; margin: 24px 0 0; padding: 0; list-style: none; }
 .notice-list p { margin-top: 8px; }
+.whats-new { margin-top: 32px; padding: 32px; }
+.whats-new .notice-list { margin-top: 0; }
 .more { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 48px; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--warn); font-size: .9375rem; color: var(--ink-2); }
 .more b { color: var(--ink); font-weight: 600; }
 
@@ -262,7 +264,7 @@ body > main { flex: 1 0 auto; width: 100%; }
   .also-label { margin-top: 48px; }
   .also > div { padding: 16px 24px; }
   .also > div + div { border-left: 0; border-top: 1px solid var(--line); }
-  .notices { padding: 24px; }
+  .notices, .whats-new { padding: 24px; }
   .start-card { flex-direction: column; align-items: flex-start; }
   .toc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .doc { padding-top: 32px; }
