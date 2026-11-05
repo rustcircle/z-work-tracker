@@ -116,21 +116,37 @@ test.describe('timeline with the demo data', () => {
     await expectClean(page, found);
   });
 
-  test('older days are paginated', async ({ page }) => {
+  test('the days run oldest to newest, and the arrows page back through a long history and forward again', async ({ page }) => {
     const found = await open(page, 'seed=demo');
     await page.evaluate(() => {
-      // Ten more days of history before the demo data.
+      // Ten more days of history before the demo data: 24 days in all.
       for (let i = 0; i < 10; i += 1) {
         const day = `2026-02-${String(10 + i).padStart(2, '0')}`;
         window.__mock.segments.push({ id: `old${i}`, taskId: 't-box', deviceId: '11111111-1111-4111-8111-111111111111', start: `${day}T10:00:00Z`, end: `${day}T11:00:00Z`, provisionalEnd: null });
       }
     });
     await refresh(page);
-    const days = page.getByRole('article').filter({ has: page.getByTestId('block') });
-    await expect(days).toHaveCount(14);
-    await page.getByRole('button', { name: 'Show older (10 more days)' }).click();
-    await expect(days).toHaveCount(24);
+    const days = page.locator('article[data-day]');
+    const shown = (): Promise<(string | null)[]> => days.evaluateAll((els) => els.map((e) => e.getAttribute('data-day')));
+    const earlier = page.getByRole('button', { name: 'Earlier days' });
+    const later = page.getByRole('button', { name: 'Later days' });
+    // At 1360 px two days fit: yesterday on the left, today on the right, with Later days off.
+    await expect(days).toHaveCount(2);
+    expect(await shown()).toEqual(['2026-03-11', '2026-03-12']);
+    await expect(later).toBeDisabled();
     await expect(page.getByRole('button', { name: /Show older/ })).toHaveCount(0);
+    // Back one page: two days further back, the oldest still on the left.
+    await earlier.click();
+    expect(await shown()).toEqual(['2026-03-09', '2026-03-10']);
+    await expect(later).toBeEnabled();
+    // All the way back: the strip stops at the oldest day with two days still shown.
+    for (let i = 0; i < 30 && (await earlier.isEnabled()); i += 1) await earlier.click();
+    await expect(earlier).toBeDisabled();
+    expect(await shown()).toEqual(['2026-02-10', '2026-02-11']);
+    // And all the way forward: today is the rightmost day again and Later days is off.
+    for (let i = 0; i < 30 && (await later.isEnabled()); i += 1) await later.click();
+    await expect(later).toBeDisabled();
+    expect(await shown()).toEqual(['2026-03-11', '2026-03-12']);
     await expectClean(page, found);
   });
 
@@ -162,7 +178,8 @@ test.describe('timeline with the demo data', () => {
     });
     await refresh(page);
     await page.getByRole('button', { name: 'Client time' }).click();
-    await page.getByRole('button', { name: /Show older/ }).click();
+    // In New York the days are 12 and 11, then 10 and 9, then 8 and 6: two pages back.
+    for (let i = 0; i < 2; i += 1) await page.getByRole('button', { name: 'Earlier days' }).click();
     const day = page.getByRole('article', { name: 'Sun 8 Mar 2026' });
     await expect(day.getByText('23-hour day')).toBeVisible();
     await expect(day.getByText('New York clocks went forward 1h, 8 Mar')).toBeVisible();

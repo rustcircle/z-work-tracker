@@ -23,6 +23,8 @@ const exportsOf = (page: Page) => page.evaluate(() => window.__mock.exports.map(
 
 test.describe('selecting Timeline entries', () => {
   test('click selects, Ctrl+click toggles, Shift+click selects the range across days; none of it opens or times anything', async ({ page }) => {
+    // Three days side by side: Tuesday, Wednesday and today, oldest on the left.
+    await page.setViewportSize({ width: 1920, height: 1000 });
     const found = await open(page, 'seed=demo');
     const callsBefore = await page.evaluate(() => window.__mock.calls.length);
     const yesterday = day(page, YESTERDAY).locator('tr[data-testid="entry"]');
@@ -39,18 +41,33 @@ test.describe('selecting Timeline entries', () => {
     await expect(bar(page).getByTestId('selection-count')).toContainText('1 task selected');
 
     // Shift+click: from the anchor (the last one clicked on its own, yesterday's first) to the last row of
-    // Tuesday, in screen order.
-    await yesterday.first().click();
-    await day(page, TUE).locator('tr[data-testid="entry"]').last().click({ modifiers: ['Shift'] });
+    // Tuesday, in screen order. Days run oldest to newest, left to right, so Tuesday is on the left of Wednesday
+    // and this range runs backward across the days.
+    const left = async (loc: Locator): Promise<number> => (await loc.boundingBox())?.x ?? Number.NaN;
+    expect(await left(day(page, TUE))).toBeLessThan(await left(day(page, YESTERDAY)));
+    expect(await left(day(page, YESTERDAY))).toBeLessThan(await left(day(page, TODAY)));
+    // A narrow column puts a control (the pencil, say) under the middle of a row, and a click on a control never
+    // selects, so these clicks go on the row's first cell, which has none.
+    const cell = { x: 6, y: 6 };
+    const tue = day(page, TUE).locator('tr[data-testid="entry"]');
+    await yesterday.first().click({ position: cell });
+    await tue.last().click({ modifiers: ['Shift'], position: cell });
     const all = await taskDays(rows(page));
     const picked = await taskDays(selected(page));
     expect(picked.length).toBeGreaterThanOrEqual(2);
-    // The range is contiguous on screen: every task-day between the anchor and the target is in.
-    const order = await rows(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-sel-key') ?? ''));
-    const first = order.indexOf(await yesterday.first().getAttribute('data-sel-key') as string);
-    const lastRow = order.lastIndexOf(await day(page, TUE).locator('tr[data-testid="entry"]').last().getAttribute('data-sel-key') as string);
-    expect(new Set(order.slice(first, lastRow + 1))).toEqual(new Set(picked));
+    // The range is contiguous on screen, whichever way it runs: every task-day between the anchor and the target
+    // is in, each task-day standing where its first row is.
+    const order = [...new Set(await rows(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-sel-key') ?? '')))];
+    const between = async (a: Locator, b: Locator): Promise<string[]> => {
+      const [from, to] = [order.indexOf((await a.getAttribute('data-sel-key')) ?? ''), order.indexOf((await b.getAttribute('data-sel-key')) ?? '')].sort((x, y) => x - y) as [number, number];
+      return order.slice(from, to + 1).sort();
+    };
+    expect(picked).toEqual(await between(yesterday.first(), tue.last()));
     expect(all.length).toBeGreaterThan(picked.length);
+    // And forward, left to right: from Tuesday's first row to Wednesday's last.
+    await tue.first().click({ position: cell });
+    await yesterday.last().click({ modifiers: ['Shift'], position: cell });
+    expect(await taskDays(selected(page))).toEqual(await between(tue.first(), yesterday.last()));
 
     // Nothing was opened, started or sent while selecting.
     await expect(page.getByRole('textbox', { name: 'Task name' })).toHaveCount(0);
