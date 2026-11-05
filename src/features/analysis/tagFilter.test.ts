@@ -1,6 +1,7 @@
 // The Analysis tag filter. The owner's rule: no tag chosen counts as choosing all tags, nothing is filtered; with some
 // chosen, only the time of tasks that carry ANY of them is kept (as whole tasks); and the choice "No tag" keeps the
-// tasks that carry none, alone or together with tags. A subtask goes with its task.
+// tasks that carry none, alone or together with tags. A subtask goes with its task, unless it has tags of its own (1.4):
+// then its time counts under those, which subtaskTags.test.tsx covers.
 import { describe, expect, it } from 'vitest';
 
 import { NO_FILTERS, type Filters } from './engine';

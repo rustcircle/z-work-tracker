@@ -101,7 +101,8 @@ function tagRow(env: SecEnv, t: TagStat): HRow {
       tipTime(basisWord(env), t.secs),
       `Share of total time: ${t.share === null ? 'n/a' : fmtPct(t.share, 1)} (shares overlap)`,
       `Exact ${fmtHM(t.exact)} · Billable ${fmtHM(t.billableSecs)}`,
-      `${t.taskCount} task${t.taskCount === 1 ? '' : 's'}, each counted fully`,
+      // With subtasks that have tags of their own a task is in a row by the part of its time under the tag.
+      `${t.taskCount} task${t.taskCount === 1 ? '' : 's'}${env.m.tags.splitTasks > 0 ? '' : ', each counted fully'}`,
       ...(t.delta ? [`Previous period: ${fmtHM(t.delta.prev)}${t.delta.pct === null ? '' : ` (${fmtSignedPct(t.delta.pct)})`}`] : []),
     ],
     onSelect: () => env.drill({ title: t.id === null ? 'Tasks with no tag' : `Tag: ${t.name}`, tagId: t.id }),
@@ -125,7 +126,10 @@ export function TagsSection({ env }: { env: SecEnv }) {
           wide
           note={
             <>
-              Each bar is the full time of every task that carries the tag. {t.multiTagTasks > 0 ? `${t.multiTagTasks} task${t.multiTagTasks === 1 ? ' carries' : 's carry'} more than one tag and ${t.multiTagTasks === 1 ? 'counts' : 'count'} fully in each. ` : ''}
+              {t.splitTasks > 0
+                ? `Each bar is the time that counts under the tag. A subtask with tags of its own counts only under those, and the rest of its task under the task's tags; ${t.splitTasks} task${t.splitTasks === 1 ? ' has' : 's have'} such subtasks. `
+                : 'Each bar is the full time of every task that carries the tag. '}
+              {t.multiTagTasks > 0 ? `${t.multiTagTasks} task${t.multiTagTasks === 1 ? ' carries' : 's carry'} more than one tag and ${t.multiTagTasks === 1 ? 'counts' : 'count'} fully in each. ` : ''}
               Shares are of the total time of all tasks ({fmtHM(t.total)}) and overlap, so they can add up to more than 100%. There is no total across tags.
             </>
           }

@@ -9,6 +9,7 @@ import { drillInto, type DrillResult, type DrillSel } from './drill';
 import { fmtHM, fmtHMS } from './format';
 import { glossaryEntry, searchGlossary, type GlossaryEntry } from './glossary';
 import type { SpanRec } from './engine';
+import { taggingOf } from './tagSets';
 import { MONTH_SHORT, WEEKDAY_SHORT, dayNum, weekdayIndex } from './range';
 import type { Project, Tag, Task } from '../../lib/types';
 
@@ -206,7 +207,7 @@ const MAX_SEGMENTS = 60;
 const PANEL_LAYER = 49;
 
 export function DrillPanel({ sel, ctx, onClose }: { sel: DrillSel; ctx: DrillContext; onClose: () => void }) {
-  const res: DrillResult = useMemo(() => drillInto(ctx.spans, ctx.zone, sel, new Map([...ctx.tasks].map(([id, t]) => [id, t.tags]))), [ctx.spans, ctx.zone, ctx.tasks, sel]);
+  const res: DrillResult = useMemo(() => drillInto(ctx.spans, ctx.zone, sel, taggingOf(ctx.tasks.values(), ctx.tags?.values() ?? [])), [ctx.spans, ctx.zone, ctx.tasks, ctx.tags, sel]);
   const [all, setAll] = useState(false);
   const ref = useRef<HTMLElement>(null);
   // Where focus was before the panel took it, to give it back when the panel closes. A chart mark is an SVG element.

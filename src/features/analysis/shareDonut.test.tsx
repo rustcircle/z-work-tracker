@@ -1056,15 +1056,15 @@ describe('opening the time behind a row of the new levels', () => {
     expect(env.drill).toHaveBeenLastCalledWith({ title: 'Logo (no subtask)', taskId: 'a1', subtaskId: null });
   });
 
-  it('opens a combination with the tasks it counts', async () => {
+  it('opens a combination with the time that counts under exactly it, not whole tasks (a task’s subtasks can differ)', async () => {
     const user = userEvent.setup();
     const env = envOf(LEVELS, 'exact');
     render(<Projects env={env} />);
     await user.click(radio('Tags'));
     await user.click(within(legend('tags')).getByRole('button', { name: 'Design + Client' }));
-    expect(env.drill).toHaveBeenLastCalledWith({ title: 'Design + Client', taskIds: ['b1'] });
+    expect(env.drill).toHaveBeenLastCalledWith({ title: 'Design + Client', tagSet: ['t-d', 't-c'] });
     await user.click(within(legend('tags')).getByRole('button', { name: 'No tag' }));
-    expect(env.drill).toHaveBeenLastCalledWith({ title: 'No tag', taskIds: ['a2'] });
+    expect(env.drill).toHaveBeenLastCalledWith({ title: 'No tag', tagSet: [] });
   });
 });
 

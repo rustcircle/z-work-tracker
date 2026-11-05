@@ -11,7 +11,7 @@ import { clientHoursWindows } from '../../lib/clientHours';
 import { addDays, isZone, offsetAt, startOfDay } from '../../lib/tz';
 import type { PieceKind, Snapshot } from '../../lib/types';
 import { dayNum, dayStr, periodOf, previousRange, weekdayIndex, type Period, type RangeSpec } from './range';
-import { taskPassesTagFilter } from './tagFilter';
+import { tagPassOf, type TagPass } from './tagFilter';
 
 export const OUTSIDE = '__outside';
 export const ALL_BANDS = 4;
@@ -24,8 +24,8 @@ export interface Filters {
   /** A shift id, or OUTSIDE for time in no shift window. */
   shiftKey: string | null;
   /**
-   * Empty means every task. Otherwise whole tasks that carry at least one of these tags; the choice `NO_TAG` (tagFilter.ts)
-   * stands for the tasks that carry none. A subtask goes with its task.
+   * Empty means every task. Otherwise the time that counts under at least one of these tags; the choice `NO_TAG` (tagFilter.ts)
+   * stands for time that counts under none. A subtask counts under its own tags when it has some, else under its task's.
    */
   tagIds: readonly string[];
   /**
@@ -121,8 +121,8 @@ export interface Additive {
 }
 
 export interface Env {
-  /** Ids of the tasks that pass the tag filter, or null when there is none. */
-  tagTasks: ReadonlySet<string> | null;
+  /** Whether time on a task and subtask passes the tag filter, or null when there is none. */
+  tagPass: TagPass | null;
   zone: string;
   myZone: string;
   clientZone: string | null;
@@ -142,6 +142,8 @@ export interface Dataset {
   period: Period;
   zone: string;
   spans: SpanRec[];
+  /** Every span of one task that makes its rows: worked, thinking and billable pause, closed and running, after the filters. */
+  taskSpans: (taskId: string) => readonly SpanRec[];
   /** Ascending session lengths in seconds. */
   lens: Float64Array;
   agg: Agg;
@@ -348,7 +350,7 @@ function windowsNear(windows: readonly ShiftWindow[], maxWindow: number, start: 
 }
 
 /** Segments clipped to `[from, to)` with the project, task, band and shift filters applied. */
-export function buildSpans(segs: readonly KSeg[], from: number, to: number, env: Pick<Env, 'filters' | 'zone' | 'windows' | 'maxWindow' | 'tagTasks'>): SpanRec[] {
+export function buildSpans(segs: readonly KSeg[], from: number, to: number, env: Pick<Env, 'filters' | 'zone' | 'windows' | 'maxWindow' | 'tagPass'>): SpanRec[] {
   const f = env.filters;
   const proj = f.projectIds.length ? new Set(f.projectIds) : null;
   const task = f.taskIds.length ? new Set(f.taskIds) : null;
@@ -357,7 +359,7 @@ export function buildSpans(segs: readonly KSeg[], from: number, to: number, env:
   for (const s of segs) {
     if (proj && !proj.has(s.projectId)) continue;
     if (task && !task.has(s.taskId)) continue;
-    if (env.tagTasks && !env.tagTasks.has(s.taskId)) continue;
+    if (env.tagPass && !env.tagPass(s.taskId, s.subtaskId)) continue;
     const a = Math.max(s.start, from);
     const b = Math.min(s.end, to);
     if (b <= a) continue;
@@ -705,7 +707,8 @@ function gapsFor(snapshot: Snapshot, env: Env): Gap[] {
     if (dayOfInstant(g.start, env.zone) !== dayOfInstant(g.end - 1, env.zone)) continue;
     if (proj && !proj.has(g.projectId)) continue;
     if (task && !task.has(g.taskId)) continue;
-    if (env.tagTasks && !env.tagTasks.has(g.taskId)) continue;
+    // A pause between two sessions belongs to no subtask, so it follows its task's own tags.
+    if (env.tagPass && !env.tagPass(g.taskId, null)) continue;
     if (f.band !== null) {
       let hour = 0;
       walkHours(g.start, g.start + 1, env.zone, (_s, _e, _d, h) => (hour = h));
@@ -719,6 +722,8 @@ function gapsFor(snapshot: Snapshot, env: Env): Gap[] {
   }
   return out;
 }
+
+const NO_SPANS: readonly SpanRec[] = [];
 
 const gapCache = new WeakMap<Snapshot, Gap[]>();
 function cachedGaps(snapshot: Snapshot): Gap[] {
@@ -745,9 +750,8 @@ function makeEnv(snapshot: Snapshot, params: Params, period: Period, full: boole
   const ext = full ? extWindow(period, params.zone) : { from: period.from, to: period.to };
   const windows = windowsFor(snapshot.shifts, ext.from, ext.to);
   const chosen = params.filters.tagIds;
-  const liveTags = new Set(snapshot.tags.filter((t) => !t.deleted).map((t) => t.id));
   return {
-    tagTasks: chosen.length > 0 ? new Set(snapshot.tasks.filter((t) => taskPassesTagFilter(t.tags, chosen, liveTags)).map((t) => t.id)) : null,
+    tagPass: chosen.length > 0 ? tagPassOf(snapshot.tasks, snapshot.tags, chosen) : null,
     zone: params.zone,
     myZone: my,
     clientZone: client,
@@ -835,6 +839,7 @@ function evaluateBase(base: Base, snapshot: Snapshot, zone: string, nowSec: numb
       period: env.period,
       zone,
       spans: base.spans,
+      taskSpans: (taskId) => base.spansByTask.get(taskId) ?? NO_SPANS,
       lens: base.lens,
       agg: base.add.agg,
       rows: base.rowsFlat,
@@ -875,10 +880,16 @@ function evaluateBase(base: Base, snapshot: Snapshot, zone: string, nowSec: numb
     }
     rows = keep;
   }
+  const liveByTask = live.length > 0 ? groupBy(live) : null;
   return {
     period: env.period,
     zone,
     spans,
+    taskSpans: (taskId) => {
+      const closed = base.spansByTask.get(taskId) ?? NO_SPANS;
+      const running = liveByTask?.get(taskId);
+      return running ? [...closed, ...running] : closed;
+    },
     lens,
     agg: add.agg,
     rows,

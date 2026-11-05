@@ -8,7 +8,7 @@ import { UNTAGGED_COLOR } from './fam-p2';
 import type { Basis } from './mctx';
 import { DayInput } from './DayInput';
 import { MAX_CUSTOM_DAYS, defaultRange, shiftRange, spanDays, withCustomEnd, type RangeKind, type RangeSpec } from './range';
-import { NO_TAG, tagFilterHint } from './tagFilter';
+import { NO_TAG, TAG_FILTER_KEEPS, TAG_FILTER_KEEPS_BY_SUBTASK, anySubtaskTags, tagFilterHint } from './tagFilter';
 import { groupVersions } from '../../lib/shifts';
 import type { Snapshot } from '../../lib/types';
 
@@ -46,6 +46,7 @@ export function Controls(p: ControlsProps) {
   const tasks = useMemo(() => p.snapshot.tasks.filter((t) => t.state !== 'draft'), [p.snapshot.tasks]);
   const shifts = useMemo(() => [...groupVersions(p.snapshot.shifts)].map(([id, v]) => ({ id, name: [...v].sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1))[0]?.name ?? id })), [p.snapshot.shifts]);
   const liveTags = useMemo(() => p.snapshot.tags.filter((t) => !t.deleted), [p.snapshot.tags]);
+  const subtaskTags = useMemo(() => anySubtaskTags(p.snapshot.tasks), [p.snapshot.tasks]);
   const filtered = filters.projectIds.length > 0 || filters.taskIds.length > 0 || filters.tagIds.length > 0 || (filters.query ?? '') !== '' || filters.band !== null || filters.shiftKey !== null;
   // Typing waits for a pause before the charts are worked out again.
   const [draft, setDraft] = useState(filters.query ?? '');
@@ -208,7 +209,7 @@ export function Controls(p: ControlsProps) {
             <span className="a-dot-sw" style={{ background: UNTAGGED_COLOR }} aria-hidden="true" />
             <span>No tag</span>
           </label>
-          <span className="muted a-tag-hint">{tagFilterHint(filters.tagIds)}; whole tasks are kept, so Billable stays available.</span>
+          <span className="muted a-tag-hint">{tagFilterHint(filters.tagIds, subtaskTags)}; {subtaskTags ? TAG_FILTER_KEEPS_BY_SUBTASK : TAG_FILTER_KEEPS}</span>
         </div>
       ) : null}
     </div>
