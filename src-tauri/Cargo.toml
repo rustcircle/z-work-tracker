@@ -20,7 +20,7 @@ indexing_slicing = "warn"
 
 [package]
 name = "z-work-tracker"
-version = "1.3.3"
+version = "1.4.0"
 description = "Local-first labor hours tracker"
 license = "MIT"
 authors = ["Pedro Miguel Rodrigues Jorge <pmrj@rustcircle.com>"]
