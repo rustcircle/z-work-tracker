@@ -55,8 +55,8 @@ export interface TagPart {
 /** What `tagPartsOf` reads of the dataset it splits: the task's spans and the task-day rows of the period. */
 export interface TagPartsInput {
   sets: TaskTagSets;
-  /** Every span of the task that makes its rows: worked, thinking and billable pause, closed and running, after the filters. */
-  spans: readonly SpanRec[];
+  /** The task's pieces that make its rows, each apart: worked, thinking and billable pause, closed and running, after the filters and cut to the period. */
+  pieces: readonly SpanRec[];
   rows: readonly TaskDay[];
   zone: string;
   /** The task's figures, which the parts add up to. */
@@ -71,12 +71,13 @@ const key = (tags: readonly string[]): string => tags.join('\u0000');
 /**
  * A task's time split by the tags each piece counts under. One part with the task's tags when no subtask counts differently.
  *
- * Exact time is that of the worked spans. Billable time is that of each task-day row's pieces, the row's rounding going onto
- * the latest piece first, and onto the one before when that would take a piece below nothing, as `allocate` does onto rate
- * buckets in lib/billing.ts. The parts add up to the task's figures. A piece cut by midnight is two pieces, one per row.
+ * Exact time is that of the worked pieces. Billable time is that of each task-day row's pieces, the row's rounding going onto
+ * the latest piece first (by start, end and the piece's id, as the core orders them), and onto the one before when that would
+ * take a piece below nothing, as `allocate` does onto rate buckets in lib/billing.ts. The parts add up to the task's figures.
+ * A piece cut by midnight is two pieces, one per row.
  */
 export function tagPartsOf(input: TagPartsInput): TagPart[] {
-  const { sets: tagSets, spans, rows, zone } = input;
+  const { sets: tagSets, pieces, rows, zone } = input;
   const whole: TagPart[] = [{ tags: tagSets.of(null), exact: input.exact, billable: input.billable }];
   if (tagSets.uniform) return whole;
   const parts = new Map<string, TagPart>();
@@ -92,16 +93,17 @@ export function tagPartsOf(input: TagPartsInput): TagPart[] {
     if (v === undefined) midnights.set(day, (v = startOfDay(addDays(day, 1), zone)));
     return v;
   };
-  const byDay = new Map<string, { start: number; end: number; tags: readonly string[] }[]>();
-  for (const sp of spans) {
+  const byDay = new Map<string, { start: number; end: number; id: string; tags: readonly string[] }[]>();
+  for (const sp of pieces) {
     const tags = tagSets.of(sp.subtaskId);
     if (sp.kind !== 'billablePause') part(tags).exact += sp.end - sp.start;
     for (let cur = sp.start; cur < sp.end; ) {
       const day = dayOf(cur, zone);
       const stop = Math.min(nextMidnight(day), sp.end);
       const list = byDay.get(day);
-      if (list) list.push({ start: cur, end: stop, tags });
-      else byDay.set(day, [{ start: cur, end: stop, tags }]);
+      const cut = { start: cur, end: stop, id: sp.id ?? '', tags };
+      if (list) list.push(cut);
+      else byDay.set(day, [cut]);
       cur = stop;
     }
   }
@@ -109,7 +111,8 @@ export function tagPartsOf(input: TagPartsInput): TagPart[] {
     for (const row of rows) {
       const list = byDay.get(row.day);
       if (!list) continue;
-      list.sort((a, b) => a.start - b.start || a.end - b.end);
+      // The core's order: by start, end and then the piece's id, so the rounding lands on the same piece.
+      list.sort((a, b) => a.start - b.start || a.end - b.end || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const secs = list.map((x) => x.end - x.start);
       let diff = row.billableSecs - secs.reduce((n, s) => n + s, 0);
       for (let i = secs.length - 1; i >= 0 && diff !== 0; i -= 1) {

@@ -105,7 +105,8 @@ function tagRow(env: SecEnv, t: TagStat): HRow {
       `${t.taskCount} task${t.taskCount === 1 ? '' : 's'}${env.m.tags.splitTasks > 0 ? '' : ', each counted fully'}`,
       ...(t.delta ? [`Previous period: ${fmtHM(t.delta.prev)}${t.delta.pct === null ? '' : ` (${fmtSignedPct(t.delta.pct)})`}`] : []),
     ],
-    onSelect: () => env.drill({ title: t.id === null ? 'Tasks with no tag' : `Tag: ${t.name}`, tagId: t.id }),
+    // With subtasks that have tags of their own the time under no tag is not always whole tasks.
+    onSelect: () => env.drill({ title: t.id === null ? (env.m.tags.splitTasks > 0 ? 'Time with no tag' : 'Tasks with no tag') : `Tag: ${t.name}`, tagId: t.id }),
   };
 }
 

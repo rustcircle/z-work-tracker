@@ -9,7 +9,7 @@ import { attributeSpan, windowsFor, type ShiftWindow } from '../../lib/shifts';
 import { toSegs, type BandIndex, type Seg } from '../../lib/split';
 import { clientHoursWindows } from '../../lib/clientHours';
 import { addDays, isZone, offsetAt, startOfDay } from '../../lib/tz';
-import type { PieceKind, Snapshot } from '../../lib/types';
+import type { PieceKind, Segment, Snapshot } from '../../lib/types';
 import { dayNum, dayStr, periodOf, previousRange, weekdayIndex, type Period, type RangeSpec } from './range';
 import { tagPassOf, type TagPass } from './tagFilter';
 
@@ -48,6 +48,8 @@ export interface Params {
 
 /** A stretch of logged time after clipping to the period and applying the filters. */
 export interface SpanRec {
+  /** The piece it was cut from (a stretch has the id of its first piece): where pieces of one task-day tie, they are ordered by it. */
+  id?: string;
   taskId: string;
   projectId: string;
   start: number;
@@ -142,8 +144,11 @@ export interface Dataset {
   period: Period;
   zone: string;
   spans: SpanRec[];
-  /** Every span of one task that makes its rows: worked, thinking and billable pause, closed and running, after the filters. */
-  taskSpans: (taskId: string) => readonly SpanRec[];
+  /**
+   * One task's pieces as they make its rows: worked, thinking and billable pause, closed and running, after the filters and
+   * cut to the period, each recorded piece apart (a stretch joins adjacent pieces, which the rounding of a day can tell apart).
+   */
+  taskPieces: (taskId: string) => readonly SpanRec[];
   /** Ascending session lengths in seconds. */
   lens: Float64Array;
   agg: Agg;
@@ -165,6 +170,8 @@ interface Base {
   add: Additive;
   rowsByTask: Map<string, TaskDay[]>;
   spansByTask: Map<string, SpanRec[]>;
+  /** One task's closed pieces, each apart, as `Dataset.taskPieces` has them. */
+  piecesOf: (taskId: string) => readonly SpanRec[];
   rowsFlat: TaskDay[];
   gaps: Gap[];
 }
@@ -265,28 +272,37 @@ interface SegCache {
 
 const segCache = new WeakMap<Snapshot, SegCache>();
 
-/**
- * The snapshot's pieces as stretches. A subtask switch splits one recorded segment into several
- * adjacent pieces; they are joined back so a session stays one session. A piece without `kind` is work.
- */
-function stretchesOf(snapshot: Snapshot): KSeg[] {
-  const raw = new Map(snapshot.segments.map((p) => [p.id, p]));
-  // The items each task has now. A piece whose item was taken out of the task list counts as time on no item, as it does on the task card.
+/** The items each task has now. A piece whose item was taken out of the task list counts as time on no item, as it does on the task card. */
+function itemsOf(snapshot: Snapshot): Map<string, Set<string>> {
   const items = new Map<string, Set<string>>();
   for (const t of snapshot.tasks) {
     // A task read from an old file or a fixture may come without its list.
     const ids = (t.subtasks ?? []).map((i) => i.id).filter((id) => id !== '');
     if (ids.length > 0) items.set(t.id, new Set(ids));
   }
+  return items;
+}
+
+/** A piece of the snapshot as a counted stretch of its own: its kind (a piece without one is work) and its item, if that is still in the task's list. */
+function kSegOf(s: Seg, piece: Segment | undefined, items: ReadonlyMap<string, ReadonlySet<string>>): KSeg {
+  const on = piece?.subtaskId ?? null;
+  return { ...s, kind: piece?.kind ?? 'work', subtaskId: on !== null && items.get(s.taskId)?.has(on) === true ? on : null };
+}
+
+/**
+ * The snapshot's pieces as stretches. A subtask switch splits one recorded segment into several
+ * adjacent pieces; they are joined back so a session stays one session. A piece without `kind` is work.
+ */
+function stretchesOf(snapshot: Snapshot): KSeg[] {
+  const raw = new Map(snapshot.segments.map((p) => [p.id, p]));
+  const items = itemsOf(snapshot);
   const groups = new Map<string, KSeg[]>();
   for (const s of toSegs(snapshot, 0)) {
     const piece = raw.get(s.id);
-    const kind: PieceKind = piece?.kind ?? 'work';
-    const key = `${s.taskId}\u0000${piece?.segmentId ?? s.id}\u0000${kind}`;
-    const list = groups.get(key);
     // All the pieces of one recorded segment share its subtask, so the joined stretch has one.
-    const on = piece?.subtaskId ?? null;
-    const k: KSeg = { ...s, kind, subtaskId: on !== null && items.get(s.taskId)?.has(on) === true ? on : null };
+    const k = kSegOf(s, piece, items);
+    const key = `${s.taskId}\u0000${piece?.segmentId ?? s.id}\u0000${k.kind}`;
+    const list = groups.get(key);
     if (list) list.push(k);
     else groups.set(key, [k]);
   }
@@ -305,6 +321,29 @@ function stretchesOf(snapshot: Snapshot): KSeg[] {
     out.push(cur);
   }
   return out;
+}
+
+const pieceCache = new WeakMap<Snapshot, Map<string, KSeg[]>>();
+
+/**
+ * One task's pieces, each apart and not joined into stretches. The rounding of a task-day goes onto its latest piece, so the
+ * Tags split needs the order of the pieces (as the core has them), which a joined stretch hides. Grouped once per snapshot.
+ */
+function piecesByTask(snapshot: Snapshot): Map<string, KSeg[]> {
+  let by = pieceCache.get(snapshot);
+  if (!by) {
+    by = new Map();
+    const raw = new Map(snapshot.segments.map((p) => [p.id, p]));
+    const items = itemsOf(snapshot);
+    for (const s of toSegs(snapshot, 0)) {
+      const k = kSegOf(s, raw.get(s.id), items);
+      const list = by.get(k.taskId);
+      if (list) list.push(k);
+      else by.set(k.taskId, [k]);
+    }
+    pieceCache.set(snapshot, by);
+  }
+  return by;
 }
 
 function segsOf(snapshot: Snapshot): SegCache {
@@ -364,7 +403,7 @@ export function buildSpans(segs: readonly KSeg[], from: number, to: number, env:
     const b = Math.min(s.end, to);
     if (b <= a) continue;
     if (!timeFilter) {
-      out.push({ taskId: s.taskId, projectId: s.projectId, start: a, end: b, os: s.start, oe: s.end, live: s.live, day: dayOfInstant(a, env.zone), kind: s.kind, subtaskId: s.subtaskId });
+      out.push({ id: s.id, taskId: s.taskId, projectId: s.projectId, start: a, end: b, os: s.start, oe: s.end, live: s.live, day: dayOfInstant(a, env.zone), kind: s.kind, subtaskId: s.subtaskId });
       continue;
     }
     let parts: [number, number][] = [[a, b]];
@@ -393,7 +432,7 @@ export function buildSpans(segs: readonly KSeg[], from: number, to: number, env:
       }
       parts = next;
     }
-    for (const [x, y] of parts) out.push({ taskId: s.taskId, projectId: s.projectId, start: x, end: y, os: x, oe: y, live: s.live, day: dayOfInstant(x, env.zone), kind: s.kind, subtaskId: s.subtaskId });
+    for (const [x, y] of parts) out.push({ id: s.id, taskId: s.taskId, projectId: s.projectId, start: x, end: y, os: x, oe: y, live: s.live, day: dayOfInstant(x, env.zone), kind: s.kind, subtaskId: s.subtaskId });
   }
   return sortSpans(out);
 }
@@ -723,8 +762,6 @@ function gapsFor(snapshot: Snapshot, env: Env): Gap[] {
   return out;
 }
 
-const NO_SPANS: readonly SpanRec[] = [];
-
 const gapCache = new WeakMap<Snapshot, Gap[]>();
 function cachedGaps(snapshot: Snapshot): Gap[] {
   let g = gapCache.get(snapshot);
@@ -789,6 +826,7 @@ function prepareBase(snapshot: Snapshot, params: Params, period: Period, full: b
   const rowSpans = pauses.length ? [...spans, ...pauses] : spans;
   const rows = taskDays(rowSpans, params.zone, env.book, snapshot.rounding);
   const lens = Float64Array.from(spans, (s) => s.end - s.start).sort();
+  const pieces = new Map<string, readonly SpanRec[]>();
   return {
     env,
     spans,
@@ -798,6 +836,14 @@ function prepareBase(snapshot: Snapshot, params: Params, period: Period, full: b
     spansByTask: groupBy(rowSpans),
     rowsFlat: rows,
     gaps: gapsFor(snapshot, env),
+    piecesOf: (taskId) => {
+      let hit = pieces.get(taskId);
+      if (!hit) {
+        const cut = buildSpans((piecesByTask(snapshot).get(taskId) ?? []).filter((x) => !x.live), env.ext.from, env.ext.to, env);
+        pieces.set(taskId, (hit = full ? clipSpans(cut, period.from, period.to, params.zone) : cut));
+      }
+      return hit;
+    },
   };
 }
 
@@ -839,7 +885,7 @@ function evaluateBase(base: Base, snapshot: Snapshot, zone: string, nowSec: numb
       period: env.period,
       zone,
       spans: base.spans,
-      taskSpans: (taskId) => base.spansByTask.get(taskId) ?? NO_SPANS,
+      taskPieces: (taskId) => base.piecesOf(taskId),
       lens: base.lens,
       agg: base.add.agg,
       rows: base.rowsFlat,
@@ -880,15 +926,16 @@ function evaluateBase(base: Base, snapshot: Snapshot, zone: string, nowSec: numb
     }
     rows = keep;
   }
-  const liveByTask = live.length > 0 ? groupBy(live) : null;
   return {
     period: env.period,
     zone,
     spans,
-    taskSpans: (taskId) => {
-      const closed = base.spansByTask.get(taskId) ?? NO_SPANS;
-      const running = liveByTask?.get(taskId);
-      return running ? [...closed, ...running] : closed;
+    taskPieces: (taskId) => {
+      const closed = base.piecesOf(taskId);
+      const running = (piecesByTask(snapshot).get(taskId) ?? []).filter((x) => x.live).map((x) => ({ ...x, end: Math.max(nowSec, x.start) }));
+      if (running.length === 0) return closed;
+      const cut = buildSpans(running, env.ext.from, env.ext.to, env);
+      return [...closed, ...(env.full ? clipSpans(cut, env.period.from, env.period.to, zone) : cut)];
     },
     lens,
     agg: add.agg,

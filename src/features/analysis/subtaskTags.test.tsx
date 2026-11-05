@@ -20,9 +20,12 @@ import { analyze, type Basis, type Metrics } from './metrics';
 import type { RangeSpec } from './range';
 import type { SecEnv } from './secenv';
 import { Projects } from './SectionsA';
+import { effectiveTagsOf } from '../../lib/subtasks';
+import type { TaskDay } from '../../lib/billing';
 import { TagsSection } from './SectionsP2';
 import { NO_TAG, TAG_FILTER_KEEPS, TAG_FILTER_KEEPS_BY_SUBTASK, anySubtaskTags, tagFilterHint } from './tagFilter';
 import { tagShares } from './shareSlices';
+import { tagPartsOf } from './tagSets';
 import { mkSnapshot, nowOf, params, type Spec } from './testkit';
 
 const NOW = '2026-03-12T12:00:00Z';
@@ -94,7 +97,9 @@ describe('the Tags section counts each piece of time under the tags it counts un
   });
 
   it('has parts that add up to each task’s time, on both bases', () => {
-    for (const snapshot of [exact, rounded]) {
+    // A running segment whose earlier piece is closed (the active subtask was switched, so the segment is two adjacent pieces).
+    const running = mkSnapshot(specOf({ segs: [...SEGS, ['w', '2026-03-12T11:00:00Z', '2026-03-12T11:20:00Z', { segmentId: 'segL', subtaskId: 's1' }], ['w', '2026-03-12T11:20:00Z', null, { segmentId: 'segL', subtaskId: 's1' }]] }));
+    for (const snapshot of [exact, rounded, running]) {
       for (const basis of ['exact', 'billable'] as const) {
         const parts = run(snapshot, {}, basis).tags.parts;
         for (const t of run(snapshot, {}, basis).tasks.list) {
@@ -150,6 +155,42 @@ describe('the Tags section counts each piece of time under the tags it counts un
     const b = run(snapshot, {}, 'billable');
     expect(b.tags.parts.map((p) => [p.tags.join('+'), p.exact / MIN, p.billableSecs / MIN])).toEqual(expect.arrayContaining([['b', 30, 35], ['', 5, 10]]));
     expect(b.tags.parts.reduce((n, p) => n + p.billableSecs, 0)).toBe(45 * MIN);
+  });
+
+  it('puts a day’s rounding on its latest piece, though a joined stretch of another subtask encloses that piece’s neighbours', () => {
+    // Overlapping entries of one task: Draft (tags Design) is 09:00-09:30 work, then 09:30-10:00 and 10:00-10:30 thinking, which are
+    // two adjacent pieces of one recorded segment and so one stretch; Edit (tags Client) is 09:45-09:50. The pieces in order are
+    // Draft, Draft, Edit, Draft, so the rounding of the day goes onto the last of Draft's, and not onto Edit, which the one stretch
+    // 09:30-10:30 would put last.
+    const overlapping = (method: 'up' | 'down') =>
+      mkSnapshot({
+        now: NOW,
+        projects: [{ id: 'p' }],
+        tags: TAGS,
+        tasks: [{ id: 'w', projectId: 'p', tags: ['a', 'b'], subtasks: [{ id: 's1', text: 'Draft', tags: ['a'] }, { id: 's2', text: 'Edit', tags: ['b'] }] }],
+        segs: [
+          ['w', '2026-03-10T09:00:00Z', '2026-03-10T09:30:00Z', { kind: 'work', segmentId: 'segA', subtaskId: 's1' }],
+          ['w', '2026-03-10T09:30:00Z', '2026-03-10T10:00:00Z', { kind: 'thinking', segmentId: 'segA', subtaskId: 's1' }],
+          ['w', '2026-03-10T10:00:00Z', '2026-03-10T10:30:00Z', { kind: 'thinking', segmentId: 'segA', subtaskId: 's1' }],
+          ['w', '2026-03-10T09:45:00Z', '2026-03-10T09:50:00Z', { kind: 'work', segmentId: 'segB', subtaskId: 's2' }],
+        ],
+        rounding: [{ projectId: null, incrementMinutes: 15, method }],
+      });
+    const shown = (m: Metrics) => m.tags.parts.map((p) => [p.tags.join('+'), p.exact / MIN, p.billableSecs / MIN]);
+    // 95 minutes: 105 rounded up, 90 rounded down.
+    expect(shown(run(overlapping('up'), {}, 'billable'))).toEqual(expect.arrayContaining([['a', 90, 100], ['b', 5, 5]]));
+    expect(shown(run(overlapping('down'), {}, 'billable'))).toEqual(expect.arrayContaining([['a', 90, 85], ['b', 5, 5]]));
+  });
+
+  it('orders pieces with the same start and end by their ids, as the core does, whatever order they arrive in', () => {
+    const sets = effectiveTagsOf({ tags: ['a', 'b'], subtasks: [{ id: 's1', tags: ['a'] }, { id: 's2', tags: ['b'] }] });
+    const piece = (id: string, subtaskId: string) => ({ id, taskId: 'w', projectId: 'p', start: 9 * 3600, end: 9 * 3600 + 600, os: 0, oe: 0, live: false, day: 0, kind: 'work' as const, subtaskId });
+    // Two pieces of ten minutes at the same time, a day of 20 minutes rounded up to 30: the ten extra minutes go onto the greater id.
+    const row = { taskId: 'w', projectId: 'p', day: '1970-01-01', billableSecs: 1800 } as unknown as TaskDay;
+    const parts = (pieces: ReturnType<typeof piece>[]) => tagPartsOf({ sets, pieces, rows: [row], zone: 'UTC', exact: 1200, billable: 1800, billableAvailable: true }).map((x) => [x.tags.join('+'), x.billable / MIN]);
+    const expected = expect.arrayContaining([['a', 10], ['b', 20]]);
+    expect(parts([piece('p1', 's1'), piece('p2', 's2')])).toEqual(expected);
+    expect(parts([piece('p2', 's2'), piece('p1', 's1')])).toEqual(expected);
   });
 
   it('counts a billable pause under its task’s tags, as it belongs to no subtask, and a deleted tag nowhere', () => {
@@ -251,6 +292,26 @@ describe('drill-down follows the tags a piece counts under', () => {
     expect(byTask({ title: 'Tag: Client', tagId: 'b' })).toEqual([['w', 95], ['z', 25]]);
     expect(byTask({ title: 'Tag: Design', tagId: 'a' })).toEqual([['w', 35], ['x', 15]]);
     expect(byTask({ title: 'No tag', tagId: null })).toEqual([['w', 30], ['y', 45]]);
+  });
+
+  it('counts a deleted tag nowhere: time whose tags are all deleted is under no tag, as the bar for no tag has it', () => {
+    const gone = mkSnapshot({
+      now: NOW,
+      projects: [{ id: 'p' }],
+      tags: [{ id: 'a', name: 'Design', color: '#7c3aed' }, { id: 'd', name: 'Old', deleted: true }],
+      tasks: [
+        { id: 'w', projectId: 'p', tags: ['a', 'd'], subtasks: [{ id: 's1', text: 'Draft', tags: ['d'] }] },
+        { id: 'x', projectId: 'p', tags: ['d'] },
+      ],
+      rounding: EXACT_ROUNDING,
+      segs: [on('w', '09:00', '10:00', 's1'), on('w', '11:00', '11:20'), on('x', '14:00', '14:30')],
+    });
+    const bar = run(gone).tags.untagged?.exact;
+    expect(bar).toBe(90 * MIN);
+    const inGone = (sel: DrillSel) => drill(gone, params('UTC', WEEK), nowOf(NOW), sel).totalSecs;
+    expect(inGone({ title: 'No tag', tagId: null })).toBe(bar);
+    expect(inGone({ title: 'No tag', tagSet: [] })).toBe(bar);
+    expect(inGone({ title: 'Tag: Design', tagId: 'a' })).toBe(20 * MIN);
   });
 
   it('lists the time of one row of the Tags level: exactly that combination of tags', () => {

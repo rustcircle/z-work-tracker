@@ -68,13 +68,11 @@ export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel
     if (sel.subtaskId !== undefined && sp.subtaskId !== sel.subtaskId) continue;
     if (only && !only.has(sp.taskId)) continue;
     if (tagging && (sel.tagId !== undefined || sel.tagSet !== undefined)) {
-      // The tags the span counts under: its task's, or its subtask's when that has tags of its own.
-      const tags = tagging.of(sp.taskId, sp.subtaskId);
-      if (sel.tagId !== undefined && (sel.tagId === null ? tags.length > 0 : !tags.includes(sel.tagId))) continue;
-      if (sel.tagSet !== undefined) {
-        const own = tags.filter((id) => tagging.live.has(id));
-        if (own.length !== sel.tagSet.length || !own.every((id) => (sel.tagSet ?? []).includes(id))) continue;
-      }
+      // The tags that exist which the span counts under: its task's, or its subtask's when that has tags of its own. A deleted
+      // tag counts nowhere, so time whose tags are all deleted is under no tag, as the Tags section has it.
+      const own = tagging.of(sp.taskId, sp.subtaskId).filter((id) => tagging.live.has(id));
+      if (sel.tagId !== undefined && (sel.tagId === null ? own.length > 0 : !own.includes(sel.tagId))) continue;
+      if (sel.tagSet !== undefined && (own.length !== sel.tagSet.length || !own.every((id) => (sel.tagSet ?? []).includes(id)))) continue;
     }
     let cur: DrillSegment | null = null;
     walkHours(sp.start, sp.end, zone, (s, e, day, hour) => {

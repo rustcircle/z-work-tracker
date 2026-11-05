@@ -209,7 +209,7 @@ function rowsOfTask(ds: Dataset, taskId: string): Dataset['rows'] {
 function partsIn(ctx: Ctx, ds: Dataset, taskId: string, exact: number, billable: number): TagPart[] {
   const task = ctx.tasks.get(taskId);
   if (!task) return [{ tags: [], exact, billable }];
-  return tagPartsOf({ sets: tagSetsOf(task), spans: ds.taskSpans(taskId), rows: rowsOfTask(ds, taskId), zone: ds.zone, exact, billable, billableAvailable: ctx.billableAvailable });
+  return tagPartsOf({ sets: tagSetsOf(task), pieces: ds.taskPieces(taskId), rows: rowsOfTask(ds, taskId), zone: ds.zone, exact, billable, billableAvailable: ctx.billableAvailable });
 }
 
 export function tagsOf(ctx: Ctx, tasks: readonly TaskStat[]): TagsView {
