@@ -598,10 +598,10 @@ impl Shared {
             t.description_stamp = ctx.next(&t.description_stamp);
             clear_missing_active(t, ctx);
         }
+        // The subtasks' own lists stay as they are: every reader cuts them to these tags (`subtasks::effective`).
         if !input.tags.is_empty() && t.tags != input.tags {
             t.tags = input.tags.clone();
             t.tags_stamp = ctx.next(&t.tags_stamp);
-            prune_subtask_tags(t, ctx);
         }
         Ok(())
     }
@@ -711,12 +711,12 @@ impl Shared {
             t.description_stamp = ctx.next(&t.description_stamp);
             clear_missing_active(t, ctx);
         }
+        // As in `update_task`, the subtasks' own lists stay as they are.
         if let Some(tags) = tags
             && t.tags != *tags
         {
             t.tags.clone_from(tags);
             t.tags_stamp = ctx.next(&t.tags_stamp);
-            prune_subtask_tags(t, ctx);
         }
         Ok(PatchOutcome {
             conflicts,
@@ -756,25 +756,14 @@ impl Shared {
             let tags = subtasks::shown(task, subtask_id);
             SubtaskTagsOutcome {
                 conflict,
-                effective: subtasks::effective(&task.tags, tags.as_deref())
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect(),
+                effective: subtasks::effective_owned(&task.tags, tags.as_deref()),
                 tags,
             }
         };
-        let wanted: Option<Vec<String>> = match tags {
-            Some(list) if list.iter().any(|t| !task.tags.contains(t)) => {
-                return Ok(outcome(task, true));
-            }
-            Some(list) => Some(
-                subtasks::effective(&task.tags, Some(list))
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect(),
-            ),
-            None => None,
-        };
+        if tags.is_some_and(|list| list.iter().any(|t| !task.tags.contains(t))) {
+            return Ok(outcome(task, true));
+        }
+        let wanted = tags.map(|list| subtasks::effective_owned(&task.tags, Some(list)));
         if same_override(shown.as_deref(), wanted.as_deref()) {
             return Ok(outcome(task, false));
         }
@@ -1507,23 +1496,6 @@ pub(crate) fn clear_missing_active(t: &mut Task, ctx: &Ctx<'_>) {
     if gone {
         t.active_subtask = None;
         t.active_subtask_stamp = ctx.next(&t.active_subtask_stamp);
-    }
-}
-
-/// The task's tags just changed: each subtask's list keeps only tags still on the task, in the same write, and moves
-/// its clock only if that changed it. A list left empty stays "No tag", and a subtask on "Same as task" stays there.
-pub(crate) fn prune_subtask_tags(t: &mut Task, ctx: &Ctx<'_>) {
-    let Task {
-        tags, subtask_tags, ..
-    } = t;
-    for entry in subtask_tags.values_mut() {
-        if let Some(list) = &mut entry.tags {
-            let before = list.len();
-            list.retain(|tag| tags.contains(tag));
-            if list.len() != before {
-                entry.stamp = ctx.next(&entry.stamp);
-            }
-        }
     }
 }
 
@@ -2713,9 +2685,9 @@ pub(crate) mod tests {
         serde_json::from_value(v.clone()).unwrap()
     }
 
-    /// The same table is meant for the IPC mock. Both ways a task's tags change prune alike.
+    /// The same table is meant for the IPC mock. Both ways a task's tags change leave the lists alike.
     #[test]
-    fn a_change_to_the_tasks_tags_prunes_the_lists_as_the_shared_table_says() {
+    fn a_change_to_the_tasks_tags_leaves_the_lists_as_the_shared_table_says() {
         let table: Value = serde_json::from_str(subtasks::tests::PARITY).unwrap();
         let c = ctx("2026-11-05T09:00:00Z");
         for case in table["prune"].as_array().unwrap() {
@@ -2756,8 +2728,128 @@ pub(crate) mod tests {
                     .map(|(id, _)| id.as_str())
                     .collect();
                 assert_eq!(json!(moved), case["restamped"], "{what} ({how})");
-                for id in &moved {
-                    assert!(new.subtask_tags[*id].stamp.at > old.subtask_tags[*id].stamp.at);
+                assert_eq!(
+                    new.subtask_tags, old.subtask_tags,
+                    "{what} ({how}): every entry as it was"
+                );
+                // What each subtask shows, as the view gives it for every item of the description.
+                let shown: serde_json::Map<String, Value> = subtasks::items(&new.description)
+                    .into_iter()
+                    .map(|i| (i.id.clone(), json!(subtasks::shown(new, &i.id))))
+                    .collect();
+                assert_eq!(Value::Object(shown), case["expectShown"], "{what} ({how})");
+            }
+        }
+    }
+
+    /// Device A takes tag-x off the task at 10:00 while device B, offline, gives subtask s1 tag-b and tag-x, before
+    /// (09:00) or after (11:00) it. Whichever way the copies merge, B's choice stands with its own clock, cut to the
+    /// task's tags as they are now: a change to the task's tags is not an edit of the subtask's.
+    #[test]
+    fn a_change_to_the_tasks_tags_never_outranks_a_subtasks_tags_set_on_another_device() {
+        let case = json!({
+            "name": "two devices", "taskTags": ["tag-a", "tag-b", "tag-x"], "subtasks": ["s1"],
+            "overrides": {"s1": ["tag-a", "tag-x"]},
+        });
+        let (base, t) = subtask_world(&case);
+        let kept = strings(&json!(["tag-a", "tag-b"]));
+        let chosen = strings(&json!(["tag-b", "tag-x"]));
+        for b_at in ["2026-11-05T09:00:00Z", "2026-11-05T11:00:00Z"] {
+            let mut on_a = base.clone();
+            let patch = TaskPatch {
+                tags: Some(kept.clone()),
+                ..TaskPatch::default()
+            };
+            on_a.patch_task(
+                &Ctx::at(Ts::parse("2026-11-05T10:00:00Z").unwrap(), "device-a"),
+                &t,
+                &patch,
+                &TaskExpected::default(),
+            )
+            .unwrap();
+            let mut on_b = base.clone();
+            let b = Ctx::at(Ts::parse(b_at).unwrap(), "device-b");
+            let set = on_b
+                .set_subtask_tags(&b, &t, "s1", Some(&chosen), None)
+                .unwrap();
+            assert!(!set.conflict);
+            let choice = on_b.tasks[&t].subtask_tags["s1"].clone();
+            for (order, m) in [
+                ("A then B", crate::merge::merge(&on_a, &on_b)),
+                ("B then A", crate::merge::merge(&on_b, &on_a)),
+            ] {
+                let task = &m.tasks[&t];
+                assert_eq!(task.tags, kept, "{b_at}, {order}: A's change to the task");
+                assert_eq!(
+                    task.subtask_tags["s1"], choice,
+                    "{b_at}, {order}: B's choice"
+                );
+                assert_eq!(
+                    subtasks::shown(task, "s1"),
+                    Some(strings(&json!(["tag-b"]))),
+                    "{b_at}, {order}: B's list cut to the task's tags"
+                );
+            }
+        }
+    }
+
+    mod no_change_to_the_tasks_tags_outranks_a_choice {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// The tag ids whose bits are set, in the table's order.
+        fn pick(mask: u8) -> Vec<String> {
+            TAG_IDS
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| mask & (1 << i) != 0)
+                .map(|(_, t)| (*t).to_owned())
+                .collect()
+        }
+
+        proptest! {
+            /// Any change to the task's tags on device A, and any choice for subtask s1 on device B, offline, at any
+            /// two clocks: A's change leaves the entry as it was, and in both orders the merge keeps what B left (its
+            /// choice, or the entry as it was when the choice was already shown), cut to the task's tags.
+            #[test]
+            fn at_any_clocks(
+                on_task in 0u8..32,
+                stored in prop::option::of(prop::option::of(0u8..32)),
+                new_tags in 0u8..32,
+                chosen in prop::option::of(0u8..32),
+                a_secs in 0i64..7200,
+                b_secs in 0i64..7200,
+            ) {
+                let task_tags = pick(on_task);
+                let overrides = match stored {
+                    None => json!({}),
+                    Some(list) => json!({"s1": list.map(pick)}),
+                };
+                let case = json!({"taskTags": task_tags, "subtasks": ["s1"], "overrides": overrides});
+                let (base, t) = subtask_world(&case);
+                let first = Ts::parse("2026-11-05T09:00:00Z").unwrap();
+                let mut on_a = base.clone();
+                let patch = TaskPatch { tags: Some(pick(new_tags)), ..TaskPatch::default() };
+                let a = Ctx::at(first.later(a_secs), "device-a");
+                on_a.patch_task(&a, &t, &patch, &TaskExpected::default()).unwrap();
+                prop_assert_eq!(&on_a.tasks[&t].subtask_tags, &base.tasks[&t].subtask_tags);
+                let mut on_b = base.clone();
+                // Only tags on the task: one that is not is refused as a stale view, which writes nothing.
+                let chosen: Option<Vec<String>> =
+                    chosen.map(|m| pick(m).into_iter().filter(|g| task_tags.contains(g)).collect());
+                let b = Ctx::at(first.later(b_secs), "device-b");
+                let reply = on_b.set_subtask_tags(&b, &t, "s1", chosen.as_deref(), None).unwrap();
+                prop_assert!(!reply.conflict);
+                let left = on_b.tasks[&t].subtask_tags.get("s1").cloned();
+                for m in [crate::merge::merge(&on_a, &on_b), crate::merge::merge(&on_b, &on_a)] {
+                    let task = &m.tasks[&t];
+                    prop_assert_eq!(&task.tags, &on_a.tasks[&t].tags);
+                    prop_assert_eq!(task.subtask_tags.get("s1"), left.as_ref());
+                    let list = left.as_ref().and_then(|e| e.tags.as_deref());
+                    prop_assert_eq!(
+                        subtasks::shown(task, "s1"),
+                        list.map(|l| subtasks::effective_owned(&task.tags, Some(l)))
+                    );
                 }
             }
         }

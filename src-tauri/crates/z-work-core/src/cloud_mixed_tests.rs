@@ -210,7 +210,8 @@ fn c1_a_1_4_device_new_to_the_folder_gets_the_overrides_and_the_1_3_3_edits() {
 
 /// 1.3.3 took tag-admin off the task and couldn't touch Copy's list, which held only that tag: Copy counts as No tag,
 /// not as back on "Same as task". Wireframes keeps its own tag, for Office PC's half hour too, and Sign-off follows the
-/// task. The next change to the task's tags on 1.4 prunes the stale tag from the list.
+/// task. A change to the task's tags on 1.4 rewrites no list either: Copy keeps tag-admin, unseen, and counts under it
+/// again once the task has it back.
 #[test]
 fn c1_a_tag_taken_off_the_task_on_1_3_3_drops_out_of_the_subtasks_that_held_it() {
     let run = Run::studio();
@@ -251,18 +252,27 @@ fn c1_a_tag_taken_off_the_task_on_1_3_3_drops_out_of_the_subtasks_that_held_it()
             ("Sign-off".to_owned(), None),
         ]
     );
-    let before = task.subtask_tags[&copy].stamp.clone();
-    let patch = crate::machine::TaskPatch {
-        tags: Some(strings(&["tag-concept", "tag-revision", "tag-client-call"])),
-        ..Default::default()
+    let mut retag = |tags: &[&str]| {
+        let patch = crate::machine::TaskPatch {
+            tags: Some(strings(tags)),
+            ..Default::default()
+        };
+        s.patch_task(&task.id, &patch, &crate::machine::TaskExpected::default())
+            .unwrap();
+        s.file().data.tasks[&task.id].clone()
     };
-    s.patch_task(&task.id, &patch, &crate::machine::TaskExpected::default())
-        .unwrap();
-    let after = &s.file().data.tasks[&task.id].subtask_tags;
-    assert_eq!(after[&copy].tags, Some(Vec::new()));
-    assert!(after[&copy].stamp.at > before.at);
+    let after = retag(&["tag-concept", "tag-revision", "tag-client-call"]);
     assert_eq!(
-        after[&wire], task.subtask_tags[&wire],
-        "nothing to prune there"
+        after.subtask_tags, task.subtask_tags,
+        "every list and clock as it was"
     );
+    assert_eq!(
+        EffectiveTags::of(&after).of_subtask(Some(&copy)),
+        [] as [&str; 0]
+    );
+    let back = retag(&["tag-concept", "tag-revision", "tag-admin"]);
+    assert_eq!(back.subtask_tags, task.subtask_tags);
+    let tags = EffectiveTags::of(&back);
+    assert_eq!(tags.of_subtask(Some(&copy)), ["tag-admin"]);
+    assert_eq!(tags.of_subtask(Some(&wire)), ["tag-concept"]);
 }

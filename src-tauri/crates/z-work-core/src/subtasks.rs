@@ -265,8 +265,10 @@ pub fn stable_ids(task_id: &str, doc: &Value) -> Option<Value> {
 }
 
 /// The tags a piece of a task's time counts under: the subtask's own list cut to the task's tags, in the task's order,
-/// or with no list the task's tags. Empty is "No tag". Every reader follows this, so a tag taken off the task on a
-/// version that can't touch the lists drops out of them here.
+/// or with no list the task's tags. Empty is "No tag". Every reader follows this, and a change to the task's tags never
+/// rewrites the lists: a tag taken off the task drops out of every subtask here, and counts again where a list still
+/// holds it if the task gets it back. So only a person's edit of a subtask moves its clock, and nothing automatic can
+/// outrank one made on another device.
 #[must_use]
 pub fn effective<'a>(task_tags: &'a [String], own: Option<&[String]>) -> Vec<&'a str> {
     task_tags
@@ -276,15 +278,20 @@ pub fn effective<'a>(task_tags: &'a [String], own: Option<&[String]>) -> Vec<&'a
         .collect()
 }
 
+/// `effective`, as owned strings.
+#[must_use]
+pub fn effective_owned(task_tags: &[String], own: Option<&[String]>) -> Vec<String> {
+    effective(task_tags, own)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
 /// A subtask's own tags as an editor shows them, or `None` when it is on "Same as task".
 #[must_use]
 pub fn shown(task: &Task, subtask: &str) -> Option<Vec<String>> {
-    task.subtask_override(subtask).map(|own| {
-        effective(&task.tags, Some(own))
-            .into_iter()
-            .map(str::to_owned)
-            .collect()
-    })
+    task.subtask_override(subtask)
+        .map(|own| effective_owned(&task.tags, Some(own)))
 }
 
 /// The tags each piece of one task's time counts under, worked out once. Only subtasks still in the description keep

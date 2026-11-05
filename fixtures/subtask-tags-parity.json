@@ -1,5 +1,5 @@
 {
-  "comment": "Subtask tags (1.4.0), run against the Rust core and meant for the TS mirror and the IPC mock, so they cannot drift apart. Tags are tag ids; tag-x is a live tag that is not on the task. `subtasks` are the subtask ids in the task's description. `overrides` is the task's stored subtaskTags without stamps: a list is the subtask's own tags, null is a reset to Same as task. In `time`, subtask null is time on no subtask, and an id not in `subtasks` is time on a subtask that is gone. An empty list is No tag.",
+  "comment": "Subtask tags (1.4.0), run against the Rust core and meant for the TS mirror and the IPC mock, so they cannot drift apart. Tags are tag ids; tag-x is a live tag that is not on the task. `subtasks` are the subtask ids in the task's description. `overrides` is the task's stored subtaskTags without stamps: a list is the subtask's own tags, null is a reset to Same as task. In `time`, subtask null is time on no subtask, and an id not in `subtasks` is time on a subtask that is gone. An empty list is No tag. `prune` changes the task's tags, which rewrites no list and moves no clock (`expectOverrides`, `restamped`): `expectShown` is what each subtask shows afterwards, its list cut to the task's tags in the task's order.",
   "effective": [
     {
       "name": "no override: every piece has the task's tags",
@@ -128,52 +128,64 @@
   ],
   "prune": [
     {
-      "name": "removing a tag prunes it from every subset and moves only those entries",
+      "name": "removing a tag changes no list and no clock: each subtask shows its list cut to the task's tags",
       "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1", "s2", "s3"],
       "overrides": { "s1": ["tag-a", "tag-b"], "s2": ["tag-c"], "s3": null },
       "newTaskTags": ["tag-a", "tag-c"],
-      "expectOverrides": { "s1": ["tag-a"], "s2": ["tag-c"], "s3": null },
-      "restamped": ["s1"]
+      "expectOverrides": { "s1": ["tag-a", "tag-b"], "s2": ["tag-c"], "s3": null },
+      "restamped": [],
+      "expectShown": { "s1": ["tag-a"], "s2": ["tag-c"], "s3": null }
     },
     {
-      "name": "removing the last kept tag leaves No tag, not a reset (Q1)",
+      "name": "removing the last tag a list holds shows No tag, not a reset (Q1)",
       "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
       "overrides": { "s1": ["tag-b"] },
       "newTaskTags": ["tag-a", "tag-c"],
-      "expectOverrides": { "s1": [] },
-      "restamped": ["s1"]
+      "expectOverrides": { "s1": ["tag-b"] },
+      "restamped": [],
+      "expectShown": { "s1": [] }
     },
     {
-      "name": "adding a tag changes no entry",
+      "name": "adding a tag changes no list, and a list that still holds it shows it again",
       "taskTags": ["tag-a", "tag-b"],
-      "overrides": { "s1": ["tag-a"], "s2": null },
+      "subtasks": ["s1", "s2", "s3"],
+      "overrides": { "s1": ["tag-a"], "s2": null, "s3": ["tag-a", "tag-c"] },
       "newTaskTags": ["tag-a", "tag-b", "tag-c"],
-      "expectOverrides": { "s1": ["tag-a"], "s2": null },
-      "restamped": []
+      "expectOverrides": { "s1": ["tag-a"], "s2": null, "s3": ["tag-a", "tag-c"] },
+      "restamped": [],
+      "expectShown": { "s1": ["tag-a"], "s2": null, "s3": ["tag-a", "tag-c"] }
     },
     {
       "name": "reordering the task's tags changes no entry",
       "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
       "overrides": { "s1": ["tag-a", "tag-b"] },
       "newTaskTags": ["tag-c", "tag-a", "tag-b"],
       "expectOverrides": { "s1": ["tag-a", "tag-b"] },
-      "restamped": []
+      "restamped": [],
+      "expectShown": { "s1": ["tag-a", "tag-b"] }
     },
     {
-      "name": "a tag that left the task on 1.3.x is pruned with the next change",
+      "name": "a tag that left the task on 1.3.x stays in the list, unseen, through the next change",
       "taskTags": ["tag-a", "tag-c"],
+      "subtasks": ["s1", "s2"],
       "overrides": { "s1": ["tag-a", "tag-b", "tag-c"], "s2": ["tag-a"] },
       "newTaskTags": ["tag-a"],
-      "expectOverrides": { "s1": ["tag-a"], "s2": ["tag-a"] },
-      "restamped": ["s1"]
+      "expectOverrides": { "s1": ["tag-a", "tag-b", "tag-c"], "s2": ["tag-a"] },
+      "restamped": [],
+      "expectShown": { "s1": ["tag-a"], "s2": ["tag-a"] }
     },
     {
-      "name": "removing every tag leaves each subset at No tag and each reset as it is",
+      "name": "removing every tag shows each list as No tag and leaves each reset as it is",
       "taskTags": ["tag-a", "tag-b"],
+      "subtasks": ["s1", "s2"],
       "overrides": { "s1": ["tag-a"], "s2": null },
       "newTaskTags": [],
-      "expectOverrides": { "s1": [], "s2": null },
-      "restamped": ["s1"]
+      "expectOverrides": { "s1": ["tag-a"], "s2": null },
+      "restamped": [],
+      "expectShown": { "s1": [], "s2": null }
     }
   ],
   "set": [
