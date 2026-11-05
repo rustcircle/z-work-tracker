@@ -37,6 +37,15 @@ describe('selection rules', () => {
     expect(selectRange(s, order[4] as string, order, true).keys).toEqual([order[0], order[3], order[4]]);
   });
 
+  it('Ctrl+Shift with an anchor that is not on screen (its day was paged away from) keeps what was chosen and adds the row clicked, which becomes the anchor', () => {
+    const away = { keys: ['x|2026-01-01', order[0] as string], anchor: 'x|2026-01-01' };
+    expect(selectRange(away, order[3] as string, order, true)).toEqual({ keys: ['x|2026-01-01', order[0], order[3]], anchor: order[3] });
+    // A row already chosen is not added twice.
+    expect(selectRange(away, order[0] as string, order, true).keys).toEqual(away.keys);
+    // A plain Shift has no range to run, so it is a plain click.
+    expect(selectRange(away, order[3] as string, order)).toEqual(selectOnly(order[3] as string));
+  });
+
   it('a Shift range with no anchor, or to something not on screen, is safe', () => {
     expect(selectRange(EMPTY_SELECTION, order[2] as string, order).keys).toEqual([order[2]]);
     const s = selectOnly(order[0] as string);

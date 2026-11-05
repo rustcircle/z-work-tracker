@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from 'react';
+import { flushSync } from 'react-dom';
 
 import { useAppState } from '../../app/store';
 import { nextWake, useStepNow, type LiveRow } from '../../app/stepClock';
@@ -6,18 +7,46 @@ import { RateBook, numeratorsOf } from '../../lib/billing';
 import { addDays, dayBounds, dayOf, zoneLabel } from '../../lib/tz';
 import type { Task } from '../../lib/types';
 import { amountText, dayLabel, formatDuration, shortDay } from '../../components/format';
+import { IconNext, IconPrev } from '../../components/icons';
 import { useNav } from '../../components/nav';
-import { Button } from '../../components/ui';
+import { IconButton } from '../../components/ui';
 import { isTaskFilterActive, matchingTaskIds } from '../tasks/taskFilter';
 import { TaskFilterBar, useTaskFilter } from '../tasks/TaskFilterBar';
 import { DayCard } from './DayCard';
+import { UNMEASURED_FIT, settleFit, stripOf } from './dayStrip';
 import { Legend } from './Legend';
 import { SelectionBar } from './SelectionBar';
 import { useSelection } from './selection';
 import { entryOf } from './selectionLogic';
 import { buildClosed, buildOverlay, dayData, growingRows, differs, filteredDayData, rawIndex, timelineSegs, totalsOf, visibleDays, weekStart, type Totals } from './model';
 
-const PAGE = 14;
+/**
+ * How many day columns fit in the element: read before the first paint, and again each time its width changes. The
+ * first render draws one day, which is cheap and is replaced before anything is painted.
+ */
+function useDaysThatFit(el: RefObject<HTMLElement | null>): number {
+  const [fit, setFit] = useState(1);
+  useLayoutEffect(() => {
+    const node = el.current;
+    if (!node) return;
+    // A width of 0 is no layout at all. Where there has never been one (a test) there is nothing to fit, so a fortnight
+    // is drawn; a window hidden later keeps what it showed.
+    let seen = false;
+    const measure = (): void => {
+      const width = node.clientWidth;
+      if (width > 0) {
+        seen = true;
+        setFit((was) => settleFit(was, width));
+      } else if (!seen) setFit(UNMEASURED_FIT);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(node);
+    return () => ro.disconnect();
+  }, [el]);
+  return fit;
+}
 
 function TotalsLine({ label, totals, hide }: { label: string; totals: Totals; hide: boolean }) {
   // Only the Billable amount: it moves in steps. An exact amount would creep up all day.
@@ -45,13 +74,19 @@ function TotalsLine({ label, totals, hide }: { label: string; totals: Totals; hi
   );
 }
 
-/** The Timeline tab: period totals, then days newest first. Time-based figures move in steps, not by the second. */
+/**
+ * The Timeline tab: period totals, then the days side by side, the oldest on the left and the newest (today) on the
+ * right, with arrows to page back and forward. Time-based figures move in steps, not by the second.
+ */
 export function TimelineTab() {
   const { snapshot, zones } = useAppState();
   const nav = useNav();
   const sel = useSelection();
   const { filter } = useTaskFilter();
-  const [count, setCount] = useState(PAGE);
+  const daysRef = useRef<HTMLDivElement>(null);
+  const fit = useDaysThatFit(daysRef);
+  // The day held at the right edge, or null while the strip follows the newest day.
+  const [last, setLast] = useState<string | null>(null);
   const hide = snapshot.prefs.hideEarnings;
   const zone = zones.active;
   const client = zones.showBoth ? zones.client : null;
@@ -95,7 +130,23 @@ export function TimelineTab() {
 
   const today = dayOf(now, zone);
   const days = visibleDays(closed, overlay, matching);
-  const shown = days.slice(0, count);
+  const view = stripOf(days, last, fit);
+  // At the newest end the strip follows the newest day again, however it got there: by paging, or because a wider
+  // window or a filter brought it there. Held on a day, it would jump back to it when the window narrows.
+  if (last !== null && !view.canLater) setLast(null);
+  /**
+   * Moves the strip. An arrow turns itself off at the end of the days, and a button that goes off while it has the
+   * keyboard focus drops the focus to the page, so the other arrow takes it.
+   */
+  const go = (e: ReactMouseEvent<HTMLButtonElement>, to: string | null): void => {
+    const pressed = e.currentTarget;
+    flushSync(() => setLast(to));
+    if (pressed.disabled) pressed.parentElement?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  };
+  const shown = view.shown;
+  const oldest = shown[0];
+  const newest = shown.at(-1);
+  const range = oldest === undefined || newest === undefined ? '' : oldest === newest ? dayLabel(oldest) : `${dayLabel(oldest)} to ${dayLabel(newest)}`;
 
   const todayTotals = totalsOf(filteredDayData(closed, overlay, today, matching).rows);
   const monday = weekStart(today);
@@ -139,7 +190,16 @@ export function TimelineTab() {
       <Legend />
       {shown.length === 0 && !filtering && <p className="muted empty">Nothing is logged yet. Create a task, press Start, and its time appears here as a block on today's axis.</p>}
       {shown.length === 0 && filtering && <p className="muted empty">No logged time matches this filter. Clear it to see every day again.</p>}
-      <div className="days" onKeyDown={sel?.gridKeyDown}>
+      {shown.length > 0 && (
+        <div className="day-nav" role="group" aria-label="Days shown">
+          <IconButton label="Earlier days" icon={<IconPrev />} disabled={!view.canEarlier} onClick={(e) => go(e, view.earlier)} />
+          <p className="day-nav-range muted tabular" aria-live="polite" data-testid="day-range">
+            {range}
+          </p>
+          <IconButton label="Later days" icon={<IconNext />} disabled={!view.canLater} onClick={(e) => go(e, view.later)} />
+        </div>
+      )}
+      <div className="days" ref={daysRef} onKeyDown={sel?.gridKeyDown}>
         {shown.map((d) => (
           <DayCard
             key={d}
@@ -164,11 +224,6 @@ export function TimelineTab() {
           />
         ))}
       </div>
-      {days.length > shown.length && (
-        <div className="more">
-          <Button onClick={() => setCount((c) => c + PAGE)}>Show older ({days.length - shown.length} more days)</Button>
-        </div>
-      )}
       {sel && (
         <div className="visually-hidden" role="status" aria-live="polite" data-testid="selection-live">
           {sel.live}

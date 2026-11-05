@@ -26,6 +26,8 @@ export const IconWarn = () => <Svg><path d="M12 4l9.5 16h-19zM12 10v4.5M12 17.5v
 export const IconArchive = () => <Svg><rect x="3" y="4" width="18" height="4" rx="1" /><path d="M5 8v11h14V8M10 12h4" /></Svg>;
 export const IconRestore = () => <Svg><path d="M4 12a8 8 0 108-8H7M7 4L4 7l3 3" /></Svg>;
 export const IconBack = () => <Svg><path d="M10 6l-6 6 6 6M4 12h16" /></Svg>;
+export const IconPrev = () => <Svg><path d="M15 6l-6 6 6 6" /></Svg>;
+export const IconNext = () => <Svg><path d="M9 6l6 6-6 6" /></Svg>;
 export const IconCheck = () => <Svg><path d="M5 12.5l4.5 4.5L19 7.5" /></Svg>;
 export const IconTag = () => <Svg><path d="M3.5 12.5V4.5h8l8.5 8.5-8 8z" /><circle cx="7.8" cy="8.8" r="1.1" fill="currentColor" /></Svg>;
 export const IconClock = () => <Svg><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></Svg>;

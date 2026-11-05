@@ -28,7 +28,7 @@ export function SelectionBar({ count, hidden, totals, hide, onExport, onClear, o
         </span>
         <span className="muted selection-note">
           A task counts once for each day it has time on.
-          {hidden > 0 && ` ${hidden} of them ${hidden === 1 ? 'is' : 'are'} not on screen now: hidden by the filter, or on a day not shown yet.`}
+          {hidden > 0 && ` ${hidden} of them ${hidden === 1 ? 'is' : 'are'} not on screen now: hidden by the filter, or on a day out of view.`}
         </span>
       </div>
       <div className="selection-actions">
