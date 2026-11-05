@@ -156,6 +156,7 @@
       <h3 id="tags">Tags and templates</h3>
       <p>Tags have a name and a colour, and four starter tags come with the app. <b>New tag</b>, beside the tag picker, opens Settings at the form for a new tag, and <b>Back to task</b> returns you to the form with what you typed. Analysis breaks time down by tag.</p>
       <p>A template keeps a task's name, description, project and tags. Creating a task from it gives you a fresh draft with its subtasks unticked.</p>
+      <p>A subtask counts under its task's tags unless you choose some of them for it. On the task card, press the small tags button under a subtask, which says <b>Same as task</b> by default. In the list that opens, tick the tags it should count under, press <b>Select all</b> or <b>Deselect all</b> to tick or untick every one (none ticked is <b>No tag</b>), or press <b>Same as task</b> to put it back. Each change is saved at once. The keyboard works too: Enter or Space opens the list, the arrow keys move, Space or Enter ticks, and Esc closes it. Analysis, the tag filter and the Excel analytics count the subtask's time under the tags you chose. A copy of a task or a task made from a template starts every subtask on <b>Same as task</b>.</p>
       <p class="back"><a href="#contents">Back to contents</a></p>
     </section>
 
@@ -213,10 +214,10 @@
       <ul class="plain">
         <li><b>Projects</b>, <b>Tasks</b>, <b>Subtasks</b> or <b>Tags</b> chooses what each slice is. The chart starts at the level your filter leaves open: projects with no project filter, tasks for one project, subtasks for one task. Once you pick a level yourself, it stays until you switch it.</li>
         <li>Rows name only what the filter leaves open, such as <b>Task · Project</b> across projects or just the task within one. Subtask time with no subtask shows as <b>(no subtask)</b>.</li>
-        <li>With <b>Tags</b>, each slice is a tag combination, such as <b>Design + Client</b>, and time without tags is <b>No tag</b>. A task with several tags is counted once, under its combination.</li>
+        <li>With <b>Tags</b>, each slice is a tag combination, such as <b>Design + Client</b>, and time without tags is <b>No tag</b>. Each piece of time is counted once, under the tags its subtask counts under, so a task whose subtasks have different tags can appear in several slices.</li>
         <li>With many tasks, subtasks or combinations, the smallest are grouped as <b>Other</b>. View data lists every one.</li>
       </ul>
-      <p>To filter by tag, tick the tags you want: with none ticked, every task counts, and with some ticked, tasks with any of them count. <b>No tag</b> selects untagged tasks.</p>
+      <p>To filter by tag, tick the tags you want: with none ticked, every task counts, and with some ticked, tasks with any of them count. <b>No tag</b> selects time that counts under no tag. A subtask with tags of its own is kept or left out by those.</p>
       <figure class="doc-figure doc-figure-sm">
         <picture><source media="(max-width: 640px)" srcset="assets/analysis-phone.webp" width="244" height="298"><img src="assets/analysis.webp" width="757" height="298" loading="lazy" decoding="async" alt="Analysis cards for total time, active days, average per active day, earnings, fixed fee and weekly target, with changes compared with the previous period."></picture>
         <figcaption>Metric cards in Analysis, with sample data.</figcaption>
