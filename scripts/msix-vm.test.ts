@@ -71,6 +71,10 @@ import {
 } from './msix-vm.mjs';
 
 const root = resolve(import.meta.dirname, '..');
+// The runs below pack with the repo's own package-msix.mjs, which reads the repo's src-tauri/tauri.conf.json and not the stand-in app's,
+// so the stand-in app and the names of the packages follow the repo's version.
+const APP_VERSION: string = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8')).version;
+const PACKAGE = `zWorkTracker_${APP_VERSION}.0_x64`;
 const script = join(root, 'scripts', 'msix-vm.mjs');
 const kinds: readonly PackageKind[] = ['store', 'test'];
 const sha256 = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
@@ -1383,8 +1387,8 @@ describe('the script itself', () => {
     it('rebuilds both packages with the indexes, gates them, and publishes them by renaming the earlier ones, in the run\'s own folder and never in ~/msix-build', () => {
       expect(result.said).toContain('Checking the packages (60 images, resources.pri at the root');
       expect(result.said.match(/^\s+PASS (store|test): /gm)).toHaveLength(20);
-      expect(result.said).toMatch(/renamed .*zWorkTracker_1\.3\.3\.0_x64_store\.msix\n\s+to .*zWorkTracker_1\.3\.3\.0_x64_store\.no-pri\.msix/);
-      expect(result.said).toMatch(/renamed .*zWorkTracker_1\.3\.3\.0_x64_test-unsigned\.msix\n\s+to .*zWorkTracker_1\.3\.3\.0_x64_test-unsigned\.no-pri\.msix/);
+      expect(result.said).toMatch(new RegExp(`renamed .*${PACKAGE.replaceAll('.', '\\.')}_store\\.msix\\n\\s+to .*${PACKAGE.replaceAll('.', '\\.')}_store\\.no-pri\\.msix`));
+      expect(result.said).toMatch(new RegExp(`renamed .*${PACKAGE.replaceAll('.', '\\.')}_test-unsigned\\.msix\\n\\s+to .*${PACKAGE.replaceAll('.', '\\.')}_test-unsigned\\.no-pri\\.msix`));
       expect(homeListing()).toBe(homeBefore);
       expect(existsSync(join(root, 'packaging'))).toBe(packagingBefore);
     });
@@ -1416,7 +1420,7 @@ describe('the script itself', () => {
       expect(runs).toHaveLength(1);
       const folder = join(work, 'out', runs[0] ?? '');
       expect(readdirSync(folder).sort()).toEqual(
-        ['d.ps1', 'dry-run-install', 'msix-build', 'msix-vm.log', 'packages', 'vm-files', 'vm-status-history.jsonl', 'vm-status.json', 'wack-report.xml', 'wack-summary.json', 'wack-summary.txt', 'zWorkTracker-store-wack.cer', 'zWorkTracker_1.3.3.0_x64_store-wack.msix'].sort(),
+        ['d.ps1', 'dry-run-install', 'msix-build', 'msix-vm.log', 'packages', 'vm-files', 'vm-status-history.jsonl', 'vm-status.json', 'wack-report.xml', 'wack-summary.json', 'wack-summary.txt', 'zWorkTracker-store-wack.cer', `${PACKAGE}_store-wack.msix`].sort(),
       );
       expect(keyMaterialIn(folder)).toEqual([]);
       expect(readFileSync(join(folder, 'msix-vm.log'), 'utf8')).toContain('Dry run done');
@@ -1424,8 +1428,8 @@ describe('the script itself', () => {
       expect(readFileSync(join(folder, 'wack-report.xml'), 'utf8')).toBe(sampleWackReport());
       expect(readFileSync(join(folder, 'd.ps1'), 'utf8')).toContain('$base = \'http://127.0.0.1:');
       // The unsigned Store package in the (temporary) place it was published is not the WACK copy, and is unsigned.
-      expect(packageEntries(join(folder, 'msix-build', 'zWorkTracker_1.3.3.0_x64_store.msix'))).not.toContain('AppxSignature.p7x');
-      expect(packageEntries(join(folder, 'zWorkTracker_1.3.3.0_x64_store-wack.msix'))).toContain('AppxSignature.p7x');
+      expect(packageEntries(join(folder, 'msix-build', `${PACKAGE}_store.msix`))).not.toContain('AppxSignature.p7x');
+      expect(packageEntries(join(folder, `${PACKAGE}_store-wack.msix`))).toContain('AppxSignature.p7x');
       expect(statSync(join(folder, 'zWorkTracker-store-wack.cer')).size).toBeGreaterThan(500);
     });
   });
@@ -1461,11 +1465,11 @@ describe('the script itself', () => {
       app = join(work, 'app');
       mkdirSync(join(app, 'src-tauri', 'icons'), { recursive: true });
       copyFileSync(join(root, 'src-tauri', 'icons', 'icon.png'), join(app, 'src-tauri', 'icons', 'icon.png'));
-      writeFileSync(join(app, 'src-tauri', 'tauri.conf.json'), JSON.stringify({ productName: 'zWorkTracker', version: '1.3.3', bundle: { shortDescription: 'Labor hours tracker' } }));
+      writeFileSync(join(app, 'src-tauri', 'tauri.conf.json'), JSON.stringify({ productName: 'zWorkTracker', version: APP_VERSION, bundle: { shortDescription: 'Labor hours tracker' } }));
       target = join(work, 'target');
       const release = join(target, 'x86_64-pc-windows-gnu', 'release');
       mkdirSync(release, { recursive: true });
-      writeFileSync(join(release, EXECUTABLE), standInExe('1.3.3'));
+      writeFileSync(join(release, EXECUTABLE), standInExe(APP_VERSION));
       writeFileSync(join(release, 'WebView2Loader.dll'), 'stand-in');
       // The owner's test key, as a throwaway: a .pfx for the test package's publisher, and a file with its password.
       const keys = join(work, 'keys');
@@ -1584,7 +1588,7 @@ describe('the script itself', () => {
           rmSync(dir, { recursive: true, force: true });
         }
       };
-      for (const name of ['zWorkTracker_1.3.3.0_x64_store.msix', 'zWorkTracker_1.3.3.0_x64_test-unsigned.msix', 'zWorkTracker_1.3.2.0_x64_store.msix']) zip(name);
+      for (const name of [`${PACKAGE}_store.msix`, `${PACKAGE}_test-unsigned.msix`, 'zWorkTracker_1.3.2.0_x64_store.msix']) zip(name);
       mkdirSync(join(publish, 'vm-test'));
       writeFileSync(join(publish, 'vm-test', 'd.ps1'), 'not yours');
       return Object.fromEntries(['zWorkTracker_1.3.2.0_x64_store.msix', 'vm-test/d.ps1'].map((name) => [name, sha256(readFileSync(join(publish, name)))]));
@@ -1647,19 +1651,19 @@ describe('the script itself', () => {
       expect(result.code, said).toBe(2);
       expect(said).toContain('The server stopped: the VM finished.');
       expect(said).toContain("Not a clean pass (exit status 2): the report's overall result is FAIL and 1 required test(s) failed.");
-      expect(said).toContain(`To upload in Partner Center: ${join(publish, 'zWorkTracker_1.3.3.0_x64_store.msix')} (unsigned, SHA-256 `);
+      expect(said).toContain(`To upload in Partner Center: ${join(publish, `${PACKAGE}_store.msix`)} (unsigned, SHA-256 `);
       // The indexes: saved where package-msix.mjs looks, and are what the VM sent.
       for (const kind of kinds) expect(readFileSync(join(app, 'packaging', 'msix', kind, 'resources.pri')).equals(pris[kind]), kind).toBe(true);
       // The packages: the earlier ones kept under a new name, the new ones with the index in them, nothing else of the folder touched.
       expect(readdirSync(publish).sort()).toEqual([
         'vm-test',
         'zWorkTracker_1.3.2.0_x64_store.msix',
-        'zWorkTracker_1.3.3.0_x64_store.msix',
-        'zWorkTracker_1.3.3.0_x64_store.no-pri.msix',
-        'zWorkTracker_1.3.3.0_x64_test-unsigned.msix',
-        'zWorkTracker_1.3.3.0_x64_test-unsigned.no-pri.msix',
+        `${PACKAGE}_store.msix`,
+        `${PACKAGE}_store.no-pri.msix`,
+        `${PACKAGE}_test-unsigned.msix`,
+        `${PACKAGE}_test-unsigned.no-pri.msix`,
       ]);
-      for (const kind of kinds) expect(packageEntries(join(publish, `zWorkTracker_1.3.3.0_x64_${kind === 'store' ? 'store' : 'test-unsigned'}.msix`))).toContain('resources.pri');
+      for (const kind of kinds) expect(packageEntries(join(publish, `${PACKAGE}_${kind === 'store' ? 'store' : 'test-unsigned'}.msix`))).toContain('resources.pri');
       for (const [name, hash] of Object.entries(result.untouched)) expect(sha256(readFileSync(join(publish, name))), name).toBe(hash);
       expect(said).toContain('PASS store: the package family name is PedroMiguelRodriguesJorge.zWorkTracker_54k2cbaqgvhqp');
       expect(said).toContain('PASS test: the package family name is rustcircle.zWorkTracker.Test_ym7m1j5c19s9r');
@@ -1674,12 +1678,12 @@ describe('the script itself', () => {
       expect(plan.seen?.wackVerified).toBe(true);
       expect(plan.seen?.testDownloaded).toBe(true);
       expect(plan.seen?.mac?.wack.certificate?.subject).toBe(STORE_PUBLISHER);
-      expect(plan.seen?.mac?.packages?.store.sha256).toBe(sha256(readFileSync(join(publish, 'zWorkTracker_1.3.3.0_x64_store.msix'))));
+      expect(plan.seen?.mac?.packages?.store.sha256).toBe(sha256(readFileSync(join(publish, `${PACKAGE}_store.msix`))));
       expect(plan.seen?.mac?.testPackage?.signerSubject).toBe('CN=zWorkTracker Test Signing');
-      expect(readdirSync(folder)).toContain('zWorkTracker_1.3.3.0_x64_test-signed.msix');
+      expect(readdirSync(folder)).toContain(`${PACKAGE}_test-signed.msix`);
       expect(said).toContain('Test package signed with the key in ');
       // The Store package that is published is the unsigned one, whole, and the WACK copy is a different file.
-      expect(packageEntries(join(publish, 'zWorkTracker_1.3.3.0_x64_store.msix'))).not.toContain('AppxSignature.p7x');
+      expect(packageEntries(join(publish, `${PACKAGE}_store.msix`))).not.toContain('AppxSignature.p7x');
       expect(said).toMatch(/unsigned and untouched: SHA-256 ([0-9a-f]{64}) before, \1 after\./);
       // The VM's news was printed as it came, the last one included, and kept.
       expect(said).toContain('  VM OK   [cleanup] the WACK-only certificate was removed from TrustedPeople; the package the kit installed was removed  (the last news from the VM)');
