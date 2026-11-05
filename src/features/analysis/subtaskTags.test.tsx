@@ -186,6 +186,7 @@ describe('the Tags section counts each piece of time under the tags it counts un
     const sets = effectiveTagsOf({ tags: ['a', 'b'], subtasks: [{ id: 's1', tags: ['a'] }, { id: 's2', tags: ['b'] }] });
     const piece = (id: string, subtaskId: string) => ({ id, taskId: 'w', projectId: 'p', start: 9 * 3600, end: 9 * 3600 + 600, os: 0, oe: 0, live: false, day: 0, kind: 'work' as const, subtaskId });
     // Two pieces of ten minutes at the same time, a day of 20 minutes rounded up to 30: the ten extra minutes go onto the greater id.
+    // Only the fields `tagPartsOf` reads of a row: the day and what it bills.
     const row = { taskId: 'w', projectId: 'p', day: '1970-01-01', billableSecs: 1800 } as unknown as TaskDay;
     const parts = (pieces: ReturnType<typeof piece>[]) => tagPartsOf({ sets, pieces, rows: [row], zone: 'UTC', exact: 1200, billable: 1800, billableAvailable: true }).map((x) => [x.tags.join('+'), x.billable / MIN]);
     const expected = expect.arrayContaining([['a', 10], ['b', 20]]);

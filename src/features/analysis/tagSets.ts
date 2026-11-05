@@ -116,11 +116,12 @@ export function tagPartsOf(input: TagPartsInput): TagPart[] {
       const secs = list.map((x) => x.end - x.start);
       let diff = row.billableSecs - secs.reduce((n, s) => n + s, 0);
       for (let i = secs.length - 1; i >= 0 && diff !== 0; i -= 1) {
-        const applied = Math.max(diff, -(secs[i] as number));
-        secs[i] = (secs[i] as number) + applied;
+        const have = secs[i] ?? 0;
+        const applied = Math.max(diff, -have);
+        secs[i] = have + applied;
         diff -= applied;
       }
-      list.forEach((x, i) => (part(x.tags).billable += secs[i] as number));
+      list.forEach((x, i) => (part(x.tags).billable += secs[i] ?? 0));
     }
   } else {
     for (const p of parts.values()) p.billable = p.exact;
