@@ -1,0 +1,277 @@
+{
+  "comment": "Subtask tags (1.4.0), run against the Rust core and meant for the TS mirror and the IPC mock, so they cannot drift apart. Tags are tag ids; tag-x is a live tag that is not on the task. `subtasks` are the subtask ids in the task's description. `overrides` is the task's stored subtaskTags without stamps: a list is the subtask's own tags, null is a reset to Same as task. In `time`, subtask null is time on no subtask, and an id not in `subtasks` is time on a subtask that is gone. An empty list is No tag.",
+  "effective": [
+    {
+      "name": "no override: every piece has the task's tags",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1", "s2"],
+      "overrides": {},
+      "time": [
+        { "subtask": "s1", "tags": ["tag-a", "tag-b", "tag-c"] },
+        { "subtask": "s2", "tags": ["tag-a", "tag-b", "tag-c"] },
+        { "subtask": null, "tags": ["tag-a", "tag-b", "tag-c"] }
+      ]
+    },
+    {
+      "name": "a subset on one subtask, its sibling keeps the task's tags",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1", "s2"],
+      "overrides": { "s1": ["tag-b"] },
+      "time": [
+        { "subtask": "s1", "tags": ["tag-b"] },
+        { "subtask": "s2", "tags": ["tag-a", "tag-b", "tag-c"] },
+        { "subtask": null, "tags": ["tag-a", "tag-b", "tag-c"] }
+      ]
+    },
+    {
+      "name": "a subset is read in the task's order",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-c", "tag-a"] },
+      "time": [{ "subtask": "s1", "tags": ["tag-a", "tag-c"] }]
+    },
+    {
+      "name": "a tag removed from the task on 1.3.x drops out at read time",
+      "taskTags": ["tag-a", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-a", "tag-b"] },
+      "time": [{ "subtask": "s1", "tags": ["tag-a"] }]
+    },
+    {
+      "name": "an empty subset is No tag (Q1)",
+      "taskTags": ["tag-a", "tag-b"],
+      "subtasks": ["s1", "s2"],
+      "overrides": { "s1": [] },
+      "time": [
+        { "subtask": "s1", "tags": [] },
+        { "subtask": "s2", "tags": ["tag-a", "tag-b"] }
+      ]
+    },
+    {
+      "name": "a subset whose every tag left the task is No tag (Q1)",
+      "taskTags": ["tag-a", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-b"] },
+      "time": [{ "subtask": "s1", "tags": [] }]
+    },
+    {
+      "name": "a reset is Same as task",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": null },
+      "time": [{ "subtask": "s1", "tags": ["tag-a", "tag-b", "tag-c"] }]
+    },
+    {
+      "name": "a subtask no longer in the description falls back to the task's tags",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s2"],
+      "overrides": { "s1": ["tag-b"] },
+      "time": [
+        { "subtask": "s1", "tags": ["tag-a", "tag-b", "tag-c"] },
+        { "subtask": "s2", "tags": ["tag-a", "tag-b", "tag-c"] }
+      ]
+    },
+    {
+      "name": "time on no subtask keeps the task's tags",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1", "s2"],
+      "overrides": { "s1": ["tag-b"], "s2": ["tag-c"] },
+      "time": [{ "subtask": null, "tags": ["tag-a", "tag-b", "tag-c"] }]
+    },
+    {
+      "name": "a task without tags gives No tag whatever its subtasks hold",
+      "taskTags": [],
+      "subtasks": ["s1", "s2"],
+      "overrides": { "s1": ["tag-a"], "s2": [] },
+      "time": [
+        { "subtask": "s1", "tags": [] },
+        { "subtask": "s2", "tags": [] },
+        { "subtask": null, "tags": [] }
+      ]
+    },
+    {
+      "name": "a tag added to the task reaches Same as task only",
+      "taskTags": ["tag-a", "tag-b", "tag-c", "tag-d"],
+      "subtasks": ["s1", "s2", "s3"],
+      "overrides": { "s1": ["tag-a", "tag-b", "tag-c"], "s2": null },
+      "time": [
+        { "subtask": "s1", "tags": ["tag-a", "tag-b", "tag-c"] },
+        { "subtask": "s2", "tags": ["tag-a", "tag-b", "tag-c", "tag-d"] },
+        { "subtask": "s3", "tags": ["tag-a", "tag-b", "tag-c", "tag-d"] }
+      ]
+    },
+    {
+      "name": "reordering the task's tags reorders every subset",
+      "taskTags": ["tag-c", "tag-b", "tag-a"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-a", "tag-b"] },
+      "time": [{ "subtask": "s1", "tags": ["tag-b", "tag-a"] }]
+    },
+    {
+      "name": "several subtasks, each with its own subset",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1", "s2", "s3"],
+      "overrides": { "s1": ["tag-a"], "s2": ["tag-b", "tag-c"], "s3": [] },
+      "time": [
+        { "subtask": "s1", "tags": ["tag-a"] },
+        { "subtask": "s2", "tags": ["tag-b", "tag-c"] },
+        { "subtask": "s3", "tags": [] }
+      ]
+    },
+    {
+      "name": "a damaged list naming a tag twice counts it once",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-b", "tag-b", "tag-a"] },
+      "time": [{ "subtask": "s1", "tags": ["tag-a", "tag-b"] }]
+    }
+  ],
+  "prune": [
+    {
+      "name": "removing a tag prunes it from every subset and moves only those entries",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "overrides": { "s1": ["tag-a", "tag-b"], "s2": ["tag-c"], "s3": null },
+      "newTaskTags": ["tag-a", "tag-c"],
+      "expectOverrides": { "s1": ["tag-a"], "s2": ["tag-c"], "s3": null },
+      "restamped": ["s1"]
+    },
+    {
+      "name": "removing the last kept tag leaves No tag, not a reset (Q1)",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "overrides": { "s1": ["tag-b"] },
+      "newTaskTags": ["tag-a", "tag-c"],
+      "expectOverrides": { "s1": [] },
+      "restamped": ["s1"]
+    },
+    {
+      "name": "adding a tag changes no entry",
+      "taskTags": ["tag-a", "tag-b"],
+      "overrides": { "s1": ["tag-a"], "s2": null },
+      "newTaskTags": ["tag-a", "tag-b", "tag-c"],
+      "expectOverrides": { "s1": ["tag-a"], "s2": null },
+      "restamped": []
+    },
+    {
+      "name": "reordering the task's tags changes no entry",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "overrides": { "s1": ["tag-a", "tag-b"] },
+      "newTaskTags": ["tag-c", "tag-a", "tag-b"],
+      "expectOverrides": { "s1": ["tag-a", "tag-b"] },
+      "restamped": []
+    },
+    {
+      "name": "a tag that left the task on 1.3.x is pruned with the next change",
+      "taskTags": ["tag-a", "tag-c"],
+      "overrides": { "s1": ["tag-a", "tag-b", "tag-c"], "s2": ["tag-a"] },
+      "newTaskTags": ["tag-a"],
+      "expectOverrides": { "s1": ["tag-a"], "s2": ["tag-a"] },
+      "restamped": ["s1"]
+    },
+    {
+      "name": "removing every tag leaves each subset at No tag and each reset as it is",
+      "taskTags": ["tag-a", "tag-b"],
+      "overrides": { "s1": ["tag-a"], "s2": null },
+      "newTaskTags": [],
+      "expectOverrides": { "s1": [], "s2": null },
+      "restamped": ["s1"]
+    }
+  ],
+  "set": [
+    {
+      "name": "a subset is stored in the task's order",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1", "s2"],
+      "overrides": {},
+      "request": { "subtask": "s1", "tags": ["tag-c", "tag-a"] },
+      "expect": { "conflict": false, "tags": ["tag-a", "tag-c"], "effective": ["tag-a", "tag-c"], "stored": { "s1": ["tag-a", "tag-c"] }, "written": true }
+    },
+    {
+      "name": "an empty subset is stored as No tag",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": {},
+      "request": { "subtask": "s1", "tags": [] },
+      "expect": { "conflict": false, "tags": [], "effective": [], "stored": { "s1": [] }, "written": true }
+    },
+    {
+      "name": "select all is a list of every tag, not Same as task",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": {},
+      "request": { "subtask": "s1", "tags": ["tag-a", "tag-b", "tag-c"] },
+      "expect": { "conflict": false, "tags": ["tag-a", "tag-b", "tag-c"], "effective": ["tag-a", "tag-b", "tag-c"], "stored": { "s1": ["tag-a", "tag-b", "tag-c"] }, "written": true }
+    },
+    {
+      "name": "a reset over a subset writes a null entry",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-b"] },
+      "request": { "subtask": "s1", "tags": null },
+      "expect": { "conflict": false, "tags": null, "effective": ["tag-a", "tag-b", "tag-c"], "stored": { "s1": null }, "written": true }
+    },
+    {
+      "name": "a reset where nothing is stored writes nothing",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": {},
+      "request": { "subtask": "s1", "tags": null },
+      "expect": { "conflict": false, "tags": null, "effective": ["tag-a", "tag-b", "tag-c"], "stored": {}, "written": false }
+    },
+    {
+      "name": "the store still shows what the UI showed: the edit goes",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-b"] },
+      "request": { "subtask": "s1", "tags": ["tag-a", "tag-b"], "expected": { "tags": ["tag-b"] } },
+      "expect": { "conflict": false, "tags": ["tag-a", "tag-b"], "effective": ["tag-a", "tag-b"], "stored": { "s1": ["tag-a", "tag-b"] }, "written": true }
+    },
+    {
+      "name": "the store moved on since the UI showed it: refused",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-c"] },
+      "request": { "subtask": "s1", "tags": ["tag-a"], "expected": { "tags": null } },
+      "expect": { "conflict": true, "tags": ["tag-c"], "effective": ["tag-c"], "stored": { "s1": ["tag-c"] }, "written": false }
+    },
+    {
+      "name": "the store already shows what is asked: no conflict and no write",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-a"] },
+      "request": { "subtask": "s1", "tags": ["tag-a"], "expected": { "tags": ["tag-b"] } },
+      "expect": { "conflict": false, "tags": ["tag-a"], "effective": ["tag-a"], "stored": { "s1": ["tag-a"] }, "written": false }
+    },
+    {
+      "name": "expected is compared with what the task still shows",
+      "taskTags": ["tag-a", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-a", "tag-b"] },
+      "request": { "subtask": "s1", "tags": ["tag-c"], "expected": { "tags": ["tag-a"] } },
+      "expect": { "conflict": false, "tags": ["tag-c"], "effective": ["tag-c"], "stored": { "s1": ["tag-c"] }, "written": true }
+    },
+    {
+      "name": "the order of the UI's expected list does not matter",
+      "taskTags": ["tag-a", "tag-b", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": { "s1": ["tag-a", "tag-b"] },
+      "request": { "subtask": "s1", "tags": ["tag-b"], "expected": { "tags": ["tag-b", "tag-a"] } },
+      "expect": { "conflict": false, "tags": ["tag-b"], "effective": ["tag-b"], "stored": { "s1": ["tag-b"] }, "written": true }
+    },
+    {
+      "name": "a tag no longer on the task is refused as a stale view",
+      "taskTags": ["tag-a", "tag-c"],
+      "subtasks": ["s1"],
+      "overrides": {},
+      "request": { "subtask": "s1", "tags": ["tag-x"] },
+      "expect": { "conflict": true, "tags": null, "effective": ["tag-a", "tag-c"], "stored": {}, "written": false }
+    },
+    {
+      "name": "a subtask not in the description is not found",
+      "taskTags": ["tag-a", "tag-b"],
+      "subtasks": ["s1"],
+      "overrides": {},
+      "request": { "subtask": "gone", "tags": ["tag-a"] },
+      "expectError": "subtask not found"
+    }
+  ]
+}

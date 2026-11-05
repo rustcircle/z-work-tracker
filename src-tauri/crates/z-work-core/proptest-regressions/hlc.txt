@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 04bbb074514df1207cffd3aa17b2ce176e2e83982bc8e274b7bb71b1d4375937 # shrinks to data = Shared { projects: {}, tasks: {"t0": Task { id: "t0", name: "name0", name_stamp: Stamp { at: Ts(0), by: "a" }, project_id: "p0", project_stamp: Stamp { at: Ts(0), by: "a" }, description: Null, description_stamp: Stamp { at: Ts(0), by: "a" }, deleted: false, deleted_stamp: Stamp { at: Ts(0), by: "a" }, discarded: None, continued_from: None, created_at: Ts(0), state: Draft, pause_reason: None, state_stamp: Stamp { at: Ts(0), by: "a" }, stopped_at: None, tags: [], tags_stamp: Stamp { at: Ts(0), by: "a" }, active_subtask: None, active_subtask_stamp: Stamp { at: Ts(0), by: "a" }, subtask_tags: {}, extra: {"zA": Object {"at": String("2026-01-01T00:00:00Z"), "by": String("a")}} }}, segments: {}, settings: {}, shifts: {}, rates: {}, rounding: {}, gaps: {}, pauses: {}, tags: {}, templates: {}, summaries: {}, prefixes: {}, audit_log: {}, pause_requests: {} }, device = "a"

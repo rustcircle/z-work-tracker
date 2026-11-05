@@ -196,6 +196,29 @@ pub struct Task {
     pub active_subtask: Option<String>,
     #[serde(default)]
     pub active_subtask_stamp: Stamp,
+    /// Subtasks whose tags are not simply the task's, by subtask id, each with its own clock (1.4). Left out when
+    /// empty, so a task without any is written exactly as 1.3 wrote it. See `subtasks::effective`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub subtask_tags: BTreeMap<String, SubtaskTags>,
+    /// Fields of a later version, kept as they came and written back, so this version passes them on unchanged.
+    #[serde(flatten)]
+    pub extra: Extra,
+}
+
+/// Fields a later version wrote that this one doesn't know, by name.
+pub type Extra = BTreeMap<String, Value>;
+
+/// What one subtask's time counts under. Only the subtask's own record changes it, so edits to two subtasks on two
+/// devices both survive a merge.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskTags {
+    /// The subtask's own tags: some of the task's, written in its order. Empty is "No tag". `None` is back to "Same as
+    /// task", kept with its clock so that it reaches every device.
+    pub tags: Option<Vec<String>>,
+    pub stamp: Stamp,
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 impl Task {
@@ -204,6 +227,12 @@ impl Task {
     #[must_use]
     pub fn is_live(&self) -> bool {
         self.discarded.is_none() && (!self.deleted || self.state != TaskState::Draft)
+    }
+
+    /// The tags a subtask keeps, as stored: `None` when it has the task's.
+    #[must_use]
+    pub fn subtask_override(&self, subtask: &str) -> Option<&[String]> {
+        self.subtask_tags.get(subtask)?.tags.as_deref()
     }
 }
 
@@ -228,6 +257,9 @@ pub struct Segment {
     pub edit: Option<SegmentEdit>,
     #[serde(default)]
     pub edit_stamp: Stamp,
+    /// Fields of a later version, kept and written back as they came.
+    #[serde(flatten)]
+    pub extra: Extra,
 }
 
 impl Segment {
@@ -994,5 +1026,73 @@ mod tests {
         ] {
             assert_eq!(reason.word(), word);
         }
+    }
+
+    /// A task as 1.3 writes it, every field in its order.
+    const TASK_1_3: &str = r#"{"id":"t1","name":"Design","nameStamp":{"at":"2026-11-01T09:00:00Z","by":"d1"},"projectId":"p1","projectStamp":{"at":"2026-11-01T09:00:00Z","by":"d1"},"description":null,"descriptionStamp":{"at":"2026-11-01T09:00:00Z","by":"d1"},"deleted":false,"deletedStamp":{"at":"2026-11-01T09:00:00Z","by":"d1"},"discarded":null,"continuedFrom":null,"createdAt":"2026-11-01T09:00:00Z","state":"paused","pauseReason":{"kind":"user"},"stateStamp":{"at":"2026-11-01T09:00:00Z","by":"d1"},"stoppedAt":null,"tags":["tag-a","tag-b"],"tagsStamp":{"at":"2026-11-01T09:00:00Z","by":"d1"},"activeSubtask":"s1","activeSubtaskStamp":{"at":"2026-11-01T09:00:00Z","by":"d1"}}"#;
+    /// A segment as 1.3 writes it.
+    const SEGMENT_1_3: &str = r#"{"id":"g1","taskId":"t1","deviceId":"d1","start":"2026-11-01T09:00:00Z","end":"2026-11-01T10:00:00Z","manual":false,"subtaskId":"s1","edit":null,"editStamp":{"at":"2000-01-01T00:00:00Z","by":""}}"#;
+
+    #[test]
+    fn a_task_and_a_segment_without_new_fields_are_written_as_1_3_wrote_them() {
+        let task: Task = serde_json::from_str(TASK_1_3).unwrap();
+        assert!(task.subtask_tags.is_empty() && task.extra.is_empty());
+        assert_eq!(serde_json::to_string(&task).unwrap(), TASK_1_3);
+        let segment: Segment = serde_json::from_str(SEGMENT_1_3).unwrap();
+        assert!(segment.extra.is_empty());
+        assert_eq!(serde_json::to_string(&segment).unwrap(), SEGMENT_1_3);
+    }
+
+    #[test]
+    fn subtask_tags_are_written_after_the_1_3_fields_with_a_reset_as_null() {
+        let mut task: Task = serde_json::from_str(TASK_1_3).unwrap();
+        let stamp = Stamp {
+            at: Ts::parse("2026-11-05T10:00:00Z").unwrap(),
+            by: "d2".into(),
+        };
+        for (id, tags) in [("s1", Some(vec!["tag-b".to_owned()])), ("s2", None)] {
+            task.subtask_tags.insert(
+                id.into(),
+                SubtaskTags {
+                    tags,
+                    stamp: stamp.clone(),
+                    extra: Extra::new(),
+                },
+            );
+        }
+        let text = serde_json::to_string(&task).unwrap();
+        let entry = r#"{"at":"2026-11-05T10:00:00Z","by":"d2"}"#;
+        let added = format!(
+            r#","subtaskTags":{{"s1":{{"tags":["tag-b"],"stamp":{entry}}},"s2":{{"tags":null,"stamp":{entry}}}}}}}"#
+        );
+        assert_eq!(text, format!("{}{added}", &TASK_1_3[..TASK_1_3.len() - 1]));
+        let back: Task = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, task);
+        assert_eq!(back.subtask_override("s1"), Some(&["tag-b".to_owned()][..]));
+        assert_eq!(back.subtask_override("s2"), None);
+        assert_eq!(back.subtask_override("s3"), None);
+    }
+
+    /// What a later version adds to a task, one of its subtask entries or a segment is kept and written back.
+    #[test]
+    fn fields_of_a_later_version_come_back_out_unchanged() {
+        let mut task: Value = serde_json::from_str(TASK_1_3).unwrap();
+        task["subtaskTags"] = json!({"s1": {"tags": ["tag-a"], "stamp": {"at": "2026-11-05T10:00:00Z", "by": "d2"},
+                                            "colour": "#123456"}});
+        task["budgetMinutes"] = json!(90);
+        task["budgetMinutesStamp"] = json!({"at": "2026-11-05T10:00:00Z", "by": "d3"});
+        let read: Task = serde_json::from_value(task.clone()).unwrap();
+        assert_eq!(read.extra.len(), 2);
+        assert_eq!(read.subtask_tags["s1"].extra["colour"], json!("#123456"));
+        assert_eq!(serde_json::to_value(&read).unwrap(), task);
+
+        let mut segment: Value = serde_json::from_str(SEGMENT_1_3).unwrap();
+        segment["billableNote"] = json!({"text": "on site", "n": [1, 2.5, null, true]});
+        let read: Segment = serde_json::from_value(segment.clone()).unwrap();
+        assert_eq!(read.extra.len(), 1);
+        assert_eq!(serde_json::to_value(&read).unwrap(), segment);
+        // A known field keeps its type: the catch-all never takes a value of the wrong one.
+        segment["manual"] = json!("yes");
+        assert!(serde_json::from_value::<Segment>(segment).is_err());
     }
 }

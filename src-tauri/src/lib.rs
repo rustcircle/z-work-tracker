@@ -28,8 +28,8 @@ use z_work_core::lease_io::{
     self, TakeOverExpected, TakeOverMode, TakeOverPreview, TakeOverResult, TickOutcome,
 };
 use z_work_core::machine::{
-    PatchOutcome, ProjectInput, RateInput, RoundingInput, ShiftInput, TaskExpected, TaskInput,
-    TaskPatch,
+    PatchOutcome, ProjectInput, RateInput, RoundingInput, ShiftInput, SubtaskTagsExpected,
+    SubtaskTagsOutcome, TaskExpected, TaskInput, TaskPatch,
 };
 use z_work_core::model::{AuditEntry, GapDecision, SyncProvider, SyncTarget, Theme};
 use z_work_core::pdf::{self, PdfRequest};
@@ -867,6 +867,32 @@ fn set_active_subtask(
             s.set_active_subtask(&task_id, subtask_id.as_deref())
         })?
         .1)
+}
+
+/// The snapshot and the outcome come from one hold of the store's lock, as with `PatchReply`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubtaskTagsReply {
+    snapshot: Snapshot,
+    #[serde(flatten)]
+    outcome: SubtaskTagsOutcome,
+}
+
+/// Gives a subtask some of its task's tags, or with `tags` null puts it back on "Same as task". With `expected`, what
+/// the row showed, a stale edit is refused (`conflict`) and nothing is written.
+#[tauri::command(async)]
+fn set_subtask_tags(
+    app: AppHandle,
+    core: CoreState<'_>,
+    task_id: String,
+    subtask_id: String,
+    tags: Option<Vec<String>>,
+    expected: Option<SubtaskTagsExpected>,
+) -> CmdResult<SubtaskTagsReply> {
+    let (outcome, snapshot) = core.change(&app, |s| {
+        s.set_subtask_tags(&task_id, &subtask_id, tags.as_deref(), expected.as_ref())
+    })?;
+    Ok(SubtaskTagsReply { snapshot, outcome })
 }
 
 #[tauri::command(async)]
@@ -2080,6 +2106,7 @@ pub fn run() {
         mark_billable_pause,
         unmark_billable_pause,
         set_active_subtask,
+        set_subtask_tags,
         save_tag,
         delete_tag,
         save_template,
@@ -2168,6 +2195,7 @@ pub fn run() {
         mark_billable_pause,
         unmark_billable_pause,
         set_active_subtask,
+        set_subtask_tags,
         save_tag,
         delete_tag,
         save_template,

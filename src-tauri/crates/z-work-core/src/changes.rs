@@ -562,7 +562,7 @@ impl ChangeRecord {
 mod tests {
     use super::*;
     use crate::machine::Ctx;
-    use crate::model::{Project, SegmentEdit, Stamp, Task, TaskState};
+    use crate::model::{Extra, Project, SegmentEdit, Stamp, Task, TaskState};
     use serde_json::json;
 
     const ME: &str = "11111111-1111-4111-8111-111111111111";
@@ -623,6 +623,8 @@ mod tests {
             tags_stamp: stamp(),
             active_subtask: None,
             active_subtask_stamp: stamp(),
+            subtask_tags: BTreeMap::new(),
+            extra: Extra::new(),
         }
     }
 
@@ -782,6 +784,23 @@ mod tests {
              \n\
              Now: 2 projects, 2 tasks, 1 time segment.\n"
         );
+    }
+
+    /// A subtask given tags of its own changes its task, and the record says so.
+    #[test]
+    fn a_subtasks_own_tags_count_as_a_changed_task() {
+        let prev = before();
+        let mut cur = prev.clone();
+        cur.tasks.get_mut("t1").unwrap().subtask_tags.insert(
+            "s".into(),
+            crate::model::SubtaskTags {
+                tags: Some(Vec::new()),
+                stamp: stamp(),
+                extra: Extra::new(),
+            },
+        );
+        let record = diff(Some(&prev), &cur, &names());
+        assert_eq!(record.changes, Some(vec!["1 task changed".to_owned()]));
     }
 
     #[test]

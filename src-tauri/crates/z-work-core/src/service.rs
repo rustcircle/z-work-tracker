@@ -18,7 +18,8 @@ use crate::idle::{ClockStep, IdleTracker, NewGap};
 use crate::lease::{LOST_DEVICE_SILENCE_SECS, LeaseState, LeaseStateName};
 use crate::machine::{
     Ctx, PatchOutcome, PauseRequestDue, ProjectInput, RateInput, RequiredField, RoundingInput,
-    ShiftInput, TaskExpected, TaskInput, TaskPatch, Transition, cold_required, doc_has_text,
+    ShiftInput, SubtaskTagsExpected, SubtaskTagsOutcome, TaskExpected, TaskInput, TaskPatch,
+    Transition, cold_required, doc_has_text,
 };
 use crate::merge::merge;
 use crate::model::{
@@ -884,6 +885,16 @@ impl Service {
     ) -> Result<(), CoreError> {
         self.settle_away()?;
         self.mutate(|f, c| f.data.set_active_subtask(c, task, subtask))
+    }
+    /// See `Shared::set_subtask_tags`.
+    pub fn set_subtask_tags(
+        &mut self,
+        task: &str,
+        subtask: &str,
+        tags: Option<&[String]>,
+        expected: Option<&SubtaskTagsExpected>,
+    ) -> Result<SubtaskTagsOutcome, CoreError> {
+        self.mutate(|f, c| f.data.set_subtask_tags(c, task, subtask, tags, expected))
     }
     pub fn save_tag(&mut self, input: &TagInput) -> Result<String, CoreError> {
         let own = input.id.as_deref();
@@ -2498,6 +2509,7 @@ impl Service {
                             .and_then(|x| x.subtask_secs.get(&i.id))
                             .copied()
                             .unwrap_or(0),
+                        tags: subtasks::shown(t, &i.id),
                         id: i.id,
                         text: i.text,
                         checked: i.checked,
@@ -3724,6 +3736,50 @@ mod tests {
                 .values()
                 .all(|x| x.subtask_id.is_none())
         );
+    }
+
+    /// Subtask tags (1.4) go through the store like any edit: kept after a restart, shown on each subtask row, and a
+    /// stale edit leaves the store as it was.
+    #[test]
+    fn a_subtasks_own_tags_are_saved_shown_and_guarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = ManualClock::at(T0);
+        let mut s = open(dir.path(), &clock);
+        let p = s.create_project(&pinput("P")).unwrap();
+        let input = TaskInput {
+            description: crate::subtasks::tests::list_of(&["one", "two"]),
+            tags: vec!["tag-concept".into(), "tag-admin".into()],
+            ..tinput("T", &p)
+        };
+        let t = s.create_task(&input).unwrap();
+        let one = vec!["tag-admin".to_owned()];
+        let out = s.set_subtask_tags(&t, "one", Some(&one), None).unwrap();
+        assert!(!out.conflict);
+        assert_eq!(
+            (out.tags.as_ref(), out.effective.as_slice()),
+            (Some(&one), one.as_slice())
+        );
+        let stale = SubtaskTagsExpected { tags: None };
+        let refused = s.set_subtask_tags(&t, "one", None, Some(&stale)).unwrap();
+        assert!(refused.conflict);
+        assert_eq!(refused.tags, Some(one.clone()));
+        drop(s);
+        let mut s = open(dir.path(), &clock);
+        let shown: Vec<Option<Vec<String>>> = s
+            .snapshot()
+            .tasks
+            .into_iter()
+            .find(|x| x.id == t)
+            .unwrap()
+            .subtasks
+            .into_iter()
+            .map(|v| v.tags)
+            .collect();
+        assert_eq!(shown, [Some(one.clone()), None]);
+        assert!(matches!(
+            s.set_subtask_tags(&t, "three", None, None),
+            Err(CoreError::NotFound("subtask"))
+        ));
     }
 
     #[test]

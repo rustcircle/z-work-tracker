@@ -279,6 +279,11 @@ pub const MAX_SEGMENT_SECS: i64 = 366 * 86_400;
 const MAX_RECORDS: usize = 1_000_000;
 const MAX_ID_LEN: usize = 64;
 pub(crate) const MAX_EPOCH: u64 = 1 << 40;
+/// How many subtasks of one task may have tags of their own, far past what a description holds. The writer stops here
+/// too, so no device writes a task that a reader refuses.
+pub const MAX_SUBTASK_TAG_ENTRIES: usize = 10_000;
+/// As many tags as a task may carry.
+const MAX_TASK_TAGS: usize = 64;
 
 /// `YYYY-MM-DD` in UTC, for naming a date in a message.
 fn day_text(t: Ts) -> String {
@@ -791,10 +796,34 @@ fn check_task_record(key: &str, t: &Task, now: Ts) -> Result<(), CoreError> {
     if let Some(at) = t.stopped_at {
         check_time(at, now, "a stop time")?;
     }
-    if t.tags.len() > 64 {
+    if t.tags.len() > MAX_TASK_TAGS {
         return Err(bad("a task has too many tags"));
     }
+    if t.subtask_tags.len() > MAX_SUBTASK_TAG_ENTRIES {
+        return Err(bad("a task has too many subtasks with tags of their own"));
+    }
+    for (id, entry) in &t.subtask_tags {
+        check_subtask_key(id)?;
+        check_stamp(&entry.stamp, now)?;
+        if let Some(list) = &entry.tags {
+            if list.len() > MAX_TASK_TAGS {
+                return Err(bad("a subtask has too many tags"));
+            }
+            for tag in list {
+                check_id(tag)?;
+            }
+        }
+    }
     Ok(())
+}
+
+/// A subtask id that can carry tags of its own, on entry and in the reader alike: one a description may hold.
+pub(crate) fn check_subtask_key(id: &str) -> Result<(), CoreError> {
+    if id.is_empty() || id.len() > MAX_ID_LEN {
+        Err(bad("a subtask id has an invalid length"))
+    } else {
+        Ok(())
+    }
 }
 
 fn check_segment_record(key: &str, seg: &Segment, now: Ts) -> Result<(), CoreError> {
@@ -1293,5 +1322,75 @@ mod tests {
             by: "x".repeat(MAX_ID_LEN + 1),
         });
         assert!(check_shared(&s, c.now).is_err(), "too long a device id");
+    }
+
+    /// Each subtask's entry is checked as a record's fields are: what fails costs the task, as any bad field does.
+    #[test]
+    fn a_subtasks_tags_are_checked_like_the_tasks_own() {
+        use crate::machine::tests::{ctx, project_input, task_input};
+        use crate::model::SubtaskTags;
+        let c = ctx("2026-01-01T08:00:00Z");
+        let mut s = Shared::default();
+        let p = s.create_project(&c, &project_input("A")).unwrap();
+        let t = s.create_task(&c, &task_input("T", &p)).unwrap();
+        let entry = |tags: Option<Vec<String>>, stamp: Stamp| SubtaskTags {
+            tags,
+            stamp,
+            extra: crate::model::Extra::new(),
+        };
+        let fine = || entry(Some(vec!["tag-a".into()]), c.stamp());
+        let with = |key: &str, e: SubtaskTags| {
+            let mut s = s.clone();
+            s.tasks
+                .get_mut(&t)
+                .unwrap()
+                .subtask_tags
+                .insert(key.into(), e);
+            s
+        };
+        check_shared(&with("s1", fine()), c.now).unwrap();
+        check_shared(&with("s1", entry(None, c.stamp())), c.now).unwrap();
+        check_shared(&with("s1", entry(Some(Vec::new()), c.stamp())), c.now).unwrap();
+        check_shared(&with(&"s".repeat(MAX_ID_LEN), fine()), c.now).unwrap();
+        let ahead = Stamp {
+            at: c.now.later(MAX_SKEW_SECS + 1),
+            by: "x".into(),
+        };
+        for (what, bad) in [
+            ("an empty subtask id", with("", fine())),
+            (
+                "too long a subtask id",
+                with(&"s".repeat(MAX_ID_LEN + 1), fine()),
+            ),
+            ("a far future clock", with("s1", entry(None, ahead))),
+            (
+                "too many tags",
+                with(
+                    "s1",
+                    entry(Some(vec!["tag-a".into(); MAX_TASK_TAGS + 1]), c.stamp()),
+                ),
+            ),
+            (
+                "an empty tag id",
+                with("s1", entry(Some(vec![String::new()]), c.stamp())),
+            ),
+            (
+                "too long a tag id",
+                with(
+                    "s1",
+                    entry(Some(vec!["g".repeat(MAX_ID_LEN + 1)]), c.stamp()),
+                ),
+            ),
+        ] {
+            let records = bad_records(&bad, c.now);
+            assert_eq!(records.len(), 1, "{what}");
+            assert_eq!(records[0].kind, RecordKind::Task, "{what}");
+        }
+        let mut many = s.clone();
+        let task = many.tasks.get_mut(&t).unwrap();
+        for i in 0..=MAX_SUBTASK_TAG_ENTRIES {
+            task.subtask_tags.insert(format!("s{i}"), fine());
+        }
+        assert!(check_shared(&many, c.now).is_err(), "too many entries");
     }
 }

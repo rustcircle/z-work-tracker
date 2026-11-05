@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::model::{
-    AuditEntry, BillablePause, BillingSummary, DevicePrefix, IdleGap, PauseRequest, Project,
+    AuditEntry, BillablePause, BillingSummary, DevicePrefix, Extra, IdleGap, PauseRequest, Project,
     RateVersion, RoundingVersion, Segment, SettingEntry, Shared, ShiftVersion, Stamp, Tag, Task,
     Template,
 };
@@ -170,6 +170,11 @@ fn merge_task(a: &Task, b: &Task) -> Task {
         &b.active_subtask,
         &b.active_subtask_stamp,
     );
+    // Each subtask's own clock decides it. A copy without the field, as 1.3 writes it, holds no entry and so
+    // takes none away, whatever its other clocks say.
+    let subtask_tags = merge_map(&a.subtask_tags, &b.subtask_tags, |x, y| {
+        lww(x, &x.stamp, y, &y.stamp).clone()
+    });
     // Stopped is final: it outranks any other state whatever the clocks say.
     let state_key = |t: &'_ Task| canonical(&StateKey(&t.state, &t.pause_reason));
     let state_from_a = a
@@ -201,7 +206,21 @@ fn merge_task(a: &Task, b: &Task) -> Task {
         tags_stamp,
         active_subtask,
         active_subtask_stamp,
+        subtask_tags,
+        extra: merge_extra(&a.extra, &b.extra),
     }
+}
+
+/// A later version's fields, which this one can't merge one by one: it can't tell a value from its clock. So the
+/// whole set comes from one copy, which keeps each value with its clock, and one that holds more fields wins, so a copy
+/// written without them never displaces them. Then the text decides, so the order stays total.
+fn merge_extra(a: &Extra, b: &Extra) -> Extra {
+    let from_a = a
+        .len()
+        .cmp(&b.len())
+        .then_with(|| canonical(a).cmp(&canonical(b)))
+        != Ordering::Less;
+    if from_a { a.clone() } else { b.clone() }
 }
 
 fn field<T: Serialize + Clone>(a: &T, sa: &Stamp, b: &T, sb: &Stamp) -> (T, Stamp) {
@@ -214,13 +233,15 @@ fn field<T: Serialize + Clone>(a: &T, sa: &Stamp, b: &T, sb: &Stamp) -> (T, Stam
 }
 
 /// The recorded times: a closed copy beats an open copy, and between closed copies the later end
-/// wins. A correction merges separately, so it survives whichever copy closed the segment.
+/// wins. A correction merges separately, so it survives whichever copy closed the segment, and so do a
+/// later version's fields.
 fn merge_segment(a: &Segment, b: &Segment) -> Segment {
     let rank = |s: &Segment| (s.end.is_some(), s.end);
     let raw = |s: &Segment| {
         let mut r = s.clone();
         r.edit = None;
         r.edit_stamp = Stamp::default();
+        r.extra = Extra::new();
         canonical(&r)
     };
     let base = match rank(a).cmp(&rank(b)).then_with(|| raw(a).cmp(&raw(b))) {
@@ -231,6 +252,7 @@ fn merge_segment(a: &Segment, b: &Segment) -> Segment {
     Segment {
         edit,
         edit_stamp,
+        extra: merge_extra(&a.extra, &b.extra),
         ..base.clone()
     }
 }
@@ -392,17 +414,54 @@ pub(crate) mod strategies {
             )
     }
 
-    fn task() -> impl Strategy<Value = Task> {
+    /// A later version's fields, few names and values so that copies often disagree.
+    pub(crate) fn extra() -> impl Strategy<Value = Extra> {
+        prop::collection::btree_map(
+            prop::sample::select(vec!["zA", "zB", "zC"]).prop_map(str::to_owned),
+            prop_oneof![
+                Just(json!(1)),
+                Just(json!("x")),
+                Just(json!({"at": "2026-01-01T00:00:00Z", "by": "a"})),
+            ],
+            0..3,
+        )
+    }
+
+    /// Some subtasks' own tags or resets, on a few subtask ids, so copies often hold the same one.
+    pub(crate) fn subtask_tags()
+    -> impl Strategy<Value = BTreeMap<String, crate::model::SubtaskTags>> {
+        prop::collection::btree_map(
+            prop::sample::select(vec!["s0", "s1", "s2"]).prop_map(str::to_owned),
+            (
+                prop::option::of(prop::collection::vec(
+                    prop::sample::select(vec!["g0", "g1", "g2"]).prop_map(str::to_owned),
+                    0..3,
+                )),
+                stamp(),
+                prop::option::weighted(0.2, extra()),
+            )
+                .prop_map(|(tags, stamp, extra)| crate::model::SubtaskTags {
+                    tags,
+                    stamp,
+                    extra: extra.unwrap_or_default(),
+                }),
+            0..3,
+        )
+    }
+
+    pub(crate) fn task() -> impl Strategy<Value = Task> {
         (
             (0u8..3, 0u8..3, any::<bool>(), stamp(), stamp(), stamp()),
             (stamp(), 0u8..4, stamp(), prop::option::of(0i64..4), 0u8..3),
             (stamp(), stamp(), 0u8..3, 0u8..3, prop::option::of(stamp())),
+            (subtask_tags(), prop::option::weighted(0.3, extra())),
         )
             .prop_map(
                 |(
                     (id, n, deleted, name_stamp, project_stamp, description_stamp),
                     (deleted_stamp, st, state_stamp, stopped, m),
                     (tags_stamp, active_subtask_stamp, tag, active, discarded),
+                    (subtask_tags, extra),
                 )| Task {
                     id: format!("t{id}"),
                     name: format!("name{n}"),
@@ -433,18 +492,21 @@ pub(crate) mod strategies {
                     tags_stamp,
                     active_subtask: (active > 0).then(|| format!("a{active}")),
                     active_subtask_stamp,
+                    subtask_tags,
+                    extra: extra.unwrap_or_default(),
                 },
             )
     }
 
-    fn segment() -> impl Strategy<Value = Segment> {
+    pub(crate) fn segment() -> impl Strategy<Value = Segment> {
         (
             0u8..4,
             prop::option::of(1i64..5),
             prop::option::of((1i64..5, any::<bool>())),
             stamp(),
+            prop::option::weighted(0.3, extra()),
         )
-            .prop_map(|(id, end, edit, edit_stamp)| Segment {
+            .prop_map(|(id, end, edit, edit_stamp, extra)| Segment {
                 id: format!("s{id}"),
                 task_id: "t0".into(),
                 device_id: "a".into(),
@@ -458,6 +520,7 @@ pub(crate) mod strategies {
                     settled,
                 }),
                 edit_stamp,
+                extra: extra.unwrap_or_default(),
                 ..Segment::default()
             })
     }
@@ -697,7 +760,7 @@ pub(crate) mod strategies {
 
 #[cfg(test)]
 mod tests {
-    use super::strategies::{project, shared};
+    use super::strategies::{project, segment, shared, task};
     use super::*;
     use crate::model::{BillingType, TaskState};
     use crate::time::Ts;
@@ -728,6 +791,68 @@ mod tests {
             let m = merge(&a, &b);
             prop_assert_eq!(merge(&m, &a), m.clone());
             prop_assert_eq!(merge(&m, &b), m);
+        }
+
+        /// Copies of one task, so that subtask tags and a later version's fields always meet.
+        #[test]
+        fn the_laws_hold_for_copies_of_one_task(a in task(), b in task(), c in task()) {
+            let one = |t: Task| Task { id: "t".into(), ..t };
+            let (a, b, c) = (one(a), one(b), one(c));
+            prop_assert_eq!(merge_task(&a, &a), a.clone());
+            prop_assert_eq!(merge_task(&a, &b), merge_task(&b, &a));
+            prop_assert_eq!(
+                merge_task(&merge_task(&a, &b), &c),
+                merge_task(&a, &merge_task(&b, &c))
+            );
+        }
+
+        #[test]
+        fn the_laws_hold_for_copies_of_one_segment(a in segment(), b in segment(), c in segment()) {
+            let one = |s: Segment| Segment { id: "s".into(), ..s };
+            let (a, b, c) = (one(a), one(b), one(c));
+            prop_assert_eq!(merge_segment(&a, &a), a.clone());
+            prop_assert_eq!(merge_segment(&a, &b), merge_segment(&b, &a));
+            prop_assert_eq!(
+                merge_segment(&merge_segment(&a, &b), &c),
+                merge_segment(&a, &merge_segment(&b, &c))
+            );
+        }
+
+        /// Every subtask either copy has is kept, each with the entry of the latest clock.
+        #[test]
+        fn each_subtask_keeps_the_entry_with_its_latest_clock(a in task(), b in task()) {
+            let m = merge_task(&a, &b);
+            let ids: Vec<&String> = a.subtask_tags.keys().chain(b.subtask_tags.keys()).collect();
+            prop_assert!(ids.iter().all(|id| m.subtask_tags.contains_key(*id)));
+            prop_assert_eq!(m.subtask_tags.len(), {
+                let mut unique = ids.clone();
+                unique.sort();
+                unique.dedup();
+                unique.len()
+            });
+            for (id, kept) in &m.subtask_tags {
+                let copies: Vec<&crate::model::SubtaskTags> =
+                    [a.subtask_tags.get(id), b.subtask_tags.get(id)].into_iter().flatten().collect();
+                prop_assert!(copies.contains(&kept));
+                prop_assert!(copies.iter().all(|c| stamp_cmp(&c.stamp, &kept.stamp) != Ordering::Greater));
+            }
+        }
+
+        /// As 1.3 writes a task: no subtask tags and no later fields, whatever its own clocks say. It takes none away.
+        #[test]
+        fn a_copy_written_without_the_new_fields_takes_none_away(a in task(), b in task()) {
+            let old = Task { id: a.id.clone(), subtask_tags: BTreeMap::new(), extra: Extra::new(), ..b };
+            let m = merge_task(&a, &old);
+            prop_assert_eq!(&m.subtask_tags, &a.subtask_tags);
+            prop_assert_eq!(&m.extra, &a.extra);
+            prop_assert_eq!(merge_task(&old, &a), m);
+        }
+
+        #[test]
+        fn a_segment_copy_without_a_later_versions_fields_takes_none_away(a in segment(), b in segment()) {
+            let old = Segment { id: a.id.clone(), extra: Extra::new(), ..b };
+            prop_assert_eq!(&merge_segment(&a, &old).extra, &a.extra);
+            prop_assert_eq!(&merge_segment(&old, &a).extra, &a.extra);
         }
 
         #[test]
@@ -859,6 +984,8 @@ mod tests {
             tags_stamp: Default::default(),
             active_subtask: None,
             active_subtask_stamp: Default::default(),
+            subtask_tags: BTreeMap::new(),
+            extra: Extra::new(),
         };
         let later = Task {
             name: "new".into(),
@@ -907,6 +1034,8 @@ mod tests {
             tags_stamp: Default::default(),
             active_subtask: None,
             active_subtask_stamp: Default::default(),
+            subtask_tags: BTreeMap::new(),
+            extra: Extra::new(),
         };
         let mut on_a = base.clone();
         on_a.name = "renamed on A".into();
@@ -947,6 +1076,8 @@ mod tests {
             tags_stamp: Default::default(),
             active_subtask: None,
             active_subtask_stamp: Default::default(),
+            subtask_tags: BTreeMap::new(),
+            extra: Extra::new(),
         };
         // Every clock of the other copy is later, and its build may not even know of the marker.
         let later = Task {
@@ -1341,6 +1472,8 @@ mod tests {
             tags_stamp: stamp.clone(),
             active_subtask: None,
             active_subtask_stamp: stamp.clone(),
+            subtask_tags: BTreeMap::new(),
+            extra: Extra::new(),
         };
         let mut old = Shared::default();
         old.tasks.insert("t".into(), task(doc));
