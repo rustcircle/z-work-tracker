@@ -13,7 +13,7 @@ import { Button } from '../../components/ui';
 import { api } from '../../lib/api';
 import { readableText } from '../../lib/color';
 import { errorMessage } from '../../lib/errorMessage';
-import { sameOverride } from '../../lib/subtasks';
+import { effectiveTags, sameOverride } from '../../lib/subtasks';
 import type { Tag } from '../../lib/types';
 import './tasksP2.css';
 
@@ -25,14 +25,9 @@ export const DESELECT_ALL = 'Deselect all';
 export const CONFLICT_NOTE = 'The tags of this item changed since you last looked, so nothing was saved. The list shows the tags it has now.';
 const HINT = "This item's time counts under the ticked tags.";
 
-/** The tags ticked for an item, in the task's order: its own list, or every tag of the task while it is on "Same as task". */
-export function tickedOf(live: readonly string[], shown: readonly string[] | null): string[] {
-  return shown === null ? [...live] : live.filter((id) => shown.includes(id));
-}
-
 /** The list after one tag is ticked or unticked, as the task's tags in the task's order. Unticking the last one is "No tag". */
 export function toggled(live: readonly string[], shown: readonly string[] | null, id: string): string[] {
-  const on = new Set(tickedOf(live, shown));
+  const on = new Set(effectiveTags(live, shown));
   if (!on.delete(id)) on.add(id);
   return live.filter((t) => on.has(t));
 }
@@ -42,7 +37,7 @@ export function toggled(live: readonly string[], shown: readonly string[] | null
  * all is a list of every tag and not "Same as task": the item then keeps those tags if the task is given another later.
  */
 export function allToggled(live: readonly string[], shown: readonly string[] | null): string[] {
-  return tickedOf(live, shown).length === live.length ? [] : [...live];
+  return effectiveTags(live, shown).length === live.length ? [] : [...live];
 }
 
 /** What the button says in words, for a screen reader. */
@@ -88,7 +83,8 @@ export function SubtaskTags({ taskId, item, tags, ro }: Props) {
 
   const live = tags.map((t) => t.id);
   const shown = intent ? intent.tags : item.tags;
-  const ticked = new Set(tickedOf(live, shown));
+  // What is ticked is what the item's time counts under: its own list, or every tag of the task while it is on "Same as task".
+  const ticked = new Set(effectiveTags(live, shown));
   const on = tags.filter((t) => ticked.has(t.id));
   const name = item.text.trim() === '' ? 'Untitled item' : item.text.trim();
   const allOn = on.length === tags.length;

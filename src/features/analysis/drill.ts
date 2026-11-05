@@ -2,6 +2,7 @@
 import { drillSpans, prepare, walkHours, type Params, type SpanRec } from './engine';
 import { weekdayIndex } from './range';
 import { taggingOf, type Tagging } from './tagSets';
+import { sameTagSet } from '../../lib/subtasks';
 import type { Snapshot } from '../../lib/types';
 
 export interface DrillSel {
@@ -72,7 +73,7 @@ export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel
       // tag counts nowhere, so time whose tags are all deleted is under no tag, as the Tags section has it.
       const own = tagging.of(sp.taskId, sp.subtaskId).filter((id) => tagging.live.has(id));
       if (sel.tagId !== undefined && (sel.tagId === null ? own.length > 0 : !own.includes(sel.tagId))) continue;
-      if (sel.tagSet !== undefined && (own.length !== sel.tagSet.length || !own.every((id) => (sel.tagSet ?? []).includes(id)))) continue;
+      if (sel.tagSet !== undefined && !sameTagSet(own, sel.tagSet)) continue;
     }
     let cur: DrillSegment | null = null;
     walkHours(sp.start, sp.end, zone, (s, e, day, hour) => {

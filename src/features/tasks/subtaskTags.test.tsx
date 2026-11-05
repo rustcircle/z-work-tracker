@@ -10,10 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readOnlyMessage } from '../../app/useReadOnly';
 import { boot as bootApp, polyfillDom } from '../../components/testKit';
 import { api } from '../../lib/api';
+import { effectiveTags } from '../../lib/subtasks';
 import type { SubtaskTagsReply } from '../../lib/types';
 import { demoP2State, subtaskDoc } from '../../mocks/demoSeed';
 import { DEVICE_ID, seedLease, type MockState } from '../../mocks/ipcMock';
-import { CONFLICT_NOTE, allToggled, tickedOf, toggled } from './SubtaskTags';
+import { CONFLICT_NOTE, allToggled, toggled } from './SubtaskTags';
 
 beforeEach(polyfillDom);
 afterEach(() => {
@@ -48,11 +49,11 @@ describe('the rules of the checklist', () => {
   const live = ['a', 'b', 'c'];
 
   it('ticks every tag of the task while an item is on "Same as task", and its own list otherwise, in the task’s order', () => {
-    expect(tickedOf(live, null)).toEqual(['a', 'b', 'c']);
-    expect(tickedOf(live, ['c', 'a'])).toEqual(['a', 'c']);
-    expect(tickedOf(live, [])).toEqual([]);
+    expect(effectiveTags(live, null)).toEqual(['a', 'b', 'c']);
+    expect(effectiveTags(live, ['c', 'a'])).toEqual(['a', 'c']);
+    expect(effectiveTags(live, [])).toEqual([]);
     // A tag that no longer exists is not shown ticked.
-    expect(tickedOf(live, ['gone', 'b'])).toEqual(['b']);
+    expect(effectiveTags(live, ['gone', 'b'])).toEqual(['b']);
   });
 
   it('ticks and unticks one tag, giving a list in the task’s order; the last one unticked is No tag, not a reset', () => {

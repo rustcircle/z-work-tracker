@@ -289,19 +289,38 @@ function kSegOf(s: Seg, piece: Segment | undefined, items: ReadonlyMap<string, R
   return { ...s, kind: piece?.kind ?? 'work', subtaskId: on !== null && items.get(s.taskId)?.has(on) === true ? on : null };
 }
 
+/** One piece of the snapshot as a counted stretch of its own, with the recorded segment it came from (the piece itself when it names none). */
+interface Counted {
+  k: KSeg;
+  segmentId: string;
+}
+
+const countedCache = new WeakMap<Snapshot, Counted[]>();
+
+/** Every piece of the snapshot, as the snapshot has them, worked out once: the stretches and each task's pieces are both made from this. */
+function countedPieces(snapshot: Snapshot): Counted[] {
+  let list = countedCache.get(snapshot);
+  if (!list) {
+    const raw = new Map(snapshot.segments.map((p) => [p.id, p]));
+    const items = itemsOf(snapshot);
+    list = toSegs(snapshot, 0).map((s) => {
+      const piece = raw.get(s.id);
+      return { k: kSegOf(s, piece, items), segmentId: piece?.segmentId ?? s.id };
+    });
+    countedCache.set(snapshot, list);
+  }
+  return list;
+}
+
 /**
  * The snapshot's pieces as stretches. A subtask switch splits one recorded segment into several
  * adjacent pieces; they are joined back so a session stays one session. A piece without `kind` is work.
  */
 function stretchesOf(snapshot: Snapshot): KSeg[] {
-  const raw = new Map(snapshot.segments.map((p) => [p.id, p]));
-  const items = itemsOf(snapshot);
   const groups = new Map<string, KSeg[]>();
-  for (const s of toSegs(snapshot, 0)) {
-    const piece = raw.get(s.id);
+  for (const { k, segmentId } of countedPieces(snapshot)) {
     // All the pieces of one recorded segment share its subtask, so the joined stretch has one.
-    const k = kSegOf(s, piece, items);
-    const key = `${s.taskId}\u0000${piece?.segmentId ?? s.id}\u0000${k.kind}`;
+    const key = `${k.taskId}\u0000${segmentId}\u0000${k.kind}`;
     const list = groups.get(key);
     if (list) list.push(k);
     else groups.set(key, [k]);
@@ -333,10 +352,7 @@ function piecesByTask(snapshot: Snapshot): Map<string, KSeg[]> {
   let by = pieceCache.get(snapshot);
   if (!by) {
     by = new Map();
-    const raw = new Map(snapshot.segments.map((p) => [p.id, p]));
-    const items = itemsOf(snapshot);
-    for (const s of toSegs(snapshot, 0)) {
-      const k = kSegOf(s, raw.get(s.id), items);
+    for (const { k } of countedPieces(snapshot)) {
       const list = by.get(k.taskId);
       if (list) list.push(k);
       else by.set(k.taskId, [k]);
