@@ -7,8 +7,14 @@
 .summary-running { color: var(--success); font-weight: 600; font-size: 15px; }
 .summary-detail { margin: 2px 0 0; font-size: 13px; }
 .summary-zone { flex-basis: 100%; margin: 0; font-size: 12.5px; }
-.days { display: flex; flex-direction: column; gap: 16px; }
-.more { display: flex; justify-content: center; }
+/* The days side by side, the oldest on the left and the newest on the right. How many fit is decided in dayStrip.ts, from the width. */
+.days { display: flex; align-items: flex-start; gap: 16px; }
+.days > .day { flex: 1 1 0; min-width: 0; }
+.day-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.day-nav-range { flex: 1; margin: 0; text-align: center; font-size: 13px; }
+.day-nav .icon-btn { border-color: var(--border-strong); background: var(--surface); color: var(--text); }
+.day-nav .icon-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, var(--surface)); }
+.day-nav .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .day { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px 18px 8px; display: flex; flex-direction: column; gap: 10px; }
 .day-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 8px 24px; }
@@ -62,6 +68,8 @@
 .entries tbody tr:last-child td { border-bottom: 0; }
 .entries tbody:last-of-type tr:last-child td { border-bottom: 0; }
 .entries .badge { margin-left: 8px; }
+/* A task name with no spaces in it (a URL) breaks where it must, so it cannot stretch the table over the next day. */
+.entries .link { overflow-wrap: anywhere; }
 .entry-task { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .entry-edit { width: 24px; height: 24px; }
 .chain { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: var(--text-muted); }

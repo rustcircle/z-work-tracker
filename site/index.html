@@ -17,7 +17,7 @@
   <meta property="og:image" content="https://z.rustcircle.com/assets/og-image.jpg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="The zWorkTracker Timeline tab with a running timer and a day of tracked work.">
+  <meta property="og:image:alt" content="The zWorkTracker Timeline tab with a running timer, subtask tags and three days of tracked work side by side.">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
   <link rel="icon" type="image/png" sizes="64x64" href="assets/icon-64.png">
@@ -46,11 +46,11 @@
         <a class="btn-outline" href="https://github.com/rustcircle/z-work-tracker">View on GitHub</a>
       </div>
       <p class="req">Free, with no in-app purchases. Windows 10 version 2004 or later, and Windows 11 (x64). <a href="#notices">Read the notices before you install.</a></p>
-      <p class="req"><b>New in 1.3.2:</b> saving is about 3 to 5 times faster, and a sync with your cloud folder takes a third to half less time.</p>
+      <p class="req"><b>New in 1.4.0:</b> tags for subtasks, and a Timeline with its days side by side. <a href="#new">See what's new.</a></p>
     </section>
 
     <figure class="wrap stage">
-      <a class="shot" href="assets/timeline.webp"><picture><source media="(max-width: 640px)" srcset="assets/timeline-phone.webp" width="394" height="690"><img src="assets/timeline.webp" width="1920" height="1080" fetchpriority="high" alt="The zWorkTracker Timeline tab. A running task shows its session timer with exact and billable time. Beside it, the day's summary shows earnings, a coloured timeline of work and pauses, and a table of time entries."></picture></a>
+      <a class="shot" href="assets/timeline.webp"><picture><source media="(max-width: 640px)" srcset="assets/timeline-phone.webp" width="394" height="770"><img src="assets/timeline.webp" width="1920" height="1080" fetchpriority="high" alt="The zWorkTracker Timeline tab. A running task shows its session timer with exact and billable time, and a tags button on each subtask. Beside it, three days sit side by side, each with its earnings, a coloured axis of work and pauses, and a table of time entries, and arrows page through the days."></picture></a>
       <figcaption>The Timeline tab. Screenshots show sample projects and figures.</figcaption>
     </figure>
 
@@ -61,6 +61,18 @@
           <p>Set it up, create a project and a task, and press Start. The how-to walks through it, then billing, analysis and your data.</p>
         </div>
         <a class="btn-outline" href="howto.html">How to use zWorkTracker</a>
+      </div>
+    </section>
+
+    <section id="new" class="wrap section" aria-labelledby="new-title">
+      <h2 id="new-title" class="label">What's new in 1.4.0</h2>
+      <div class="card whats-new">
+        <ul class="notice-list">
+          <li><h3>Tags for subtasks</h3><p>A subtask can count under some of its task's tags instead of all of them. Press the tags button on its row and tick the ones it counts under; Select all and Deselect all do every tag at once, and Same as task puts it back. Analysis, the tag filter, Share of time by Tags and the Excel export's Tags sheet all follow them.</p></li>
+          <li><h3>A new Timeline</h3><p>Days sit side by side, the oldest on the left and today on the right. As many days show as fit the window, and the Earlier days and Later days arrows page through the rest.</p></li>
+          <li><h3>Share of time keeps its level</h3><p>Share of time stays on the level you pick (Projects, Tasks, Subtasks or Tags) until you switch it.</p></li>
+          <li><h3>Works alongside 1.3.3</h3><p>A computer still on 1.3.3 can share the same sync folder. It doesn't show subtask tags, and your 1.4 computers keep them.</p></li>
+        </ul>
       </div>
     </section>
 

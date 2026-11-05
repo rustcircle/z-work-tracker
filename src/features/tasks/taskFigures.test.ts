@@ -17,8 +17,8 @@ describe('taskTime', () => {
     state: 'running',
     activeSubtask: 'b',
     subtasks: [
-      { id: 'a', text: 'A', checked: true, secs: 3600 },
-      { id: 'b', text: 'B', checked: false, secs: 1800 },
+      { id: 'a', text: 'A', checked: true, secs: 3600, tags: null },
+      { id: 'b', text: 'B', checked: false, secs: 1800, tags: null },
     ],
     billedSecs: 0,
     unbilledSecs: 3600 + 1800 + 600 + 900,
@@ -80,7 +80,7 @@ describe('taskTime', () => {
   });
 
   it('an item without an id cannot be made active', () => {
-    const t = taskTime({ ...task, subtasks: [{ id: '', text: 'typed', checked: false, secs: 0 }] }, [], snapshotAt, snapshotAt);
+    const t = taskTime({ ...task, subtasks: [{ id: '', text: 'typed', checked: false, secs: 0, tags: null }] }, [], snapshotAt, snapshotAt);
     expect(t.subtasks[0]?.canActivate).toBe(false);
   });
 

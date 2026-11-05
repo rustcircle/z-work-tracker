@@ -1,6 +1,8 @@
 // Drill-down: the tasks and segments behind one chart mark, after the active filters.
 import { drillSpans, prepare, walkHours, type Params, type SpanRec } from './engine';
 import { weekdayIndex } from './range';
+import { taggingOf, type Tagging } from './tagSets';
+import { sameTagSet } from '../../lib/subtasks';
 import type { Snapshot } from '../../lib/types';
 
 export interface DrillSel {
@@ -17,10 +19,12 @@ export interface DrillSel {
   taskId?: string;
   /** Time on this subtask (an item of the task's list); `null` is the time on no subtask. Used with `taskId`. */
   subtaskId?: string | null;
-  /** Only these tasks, such as the ones counted in one row of the Tags level. */
+  /** Only these tasks. */
   taskIds?: readonly string[];
-  /** Tasks that carry this tag (a task with two tags is behind both marks). `null` means tasks with no tag. */
+  /** Time that counts under this tag (time under two tags is behind both marks). `null` means time that counts under no tag. */
   tagId?: string | null;
+  /** Time that counts under exactly this combination of tags that exist, such as one row of the Tags level; none is "No tag". */
+  tagSet?: readonly string[];
 }
 
 export interface DrillSegment {
@@ -53,8 +57,8 @@ function matches(sel: DrillSel, day: number, hour: number): boolean {
   return true;
 }
 
-/** `taskTags` maps a task to its tag ids; it is needed only for a `tagId` selection. */
-export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel, taskTags?: ReadonlyMap<string, readonly string[]>): DrillResult {
+/** `tagging` says which tags each span counts under; it is needed only for a `tagId` or `tagSet` selection. */
+export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel, tagging?: Tagging): DrillResult {
   const segments: DrillSegment[] = [];
   const byTask = new Map<string, DrillTask>();
   const only = sel.taskIds ? new Set(sel.taskIds) : null;
@@ -64,9 +68,12 @@ export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel
     if (sel.taskId && sp.taskId !== sel.taskId) continue;
     if (sel.subtaskId !== undefined && sp.subtaskId !== sel.subtaskId) continue;
     if (only && !only.has(sp.taskId)) continue;
-    if (sel.tagId !== undefined && taskTags) {
-      const tags = taskTags.get(sp.taskId) ?? [];
-      if (sel.tagId === null ? tags.length > 0 : !tags.includes(sel.tagId)) continue;
+    if (tagging && (sel.tagId !== undefined || sel.tagSet !== undefined)) {
+      // The tags that exist which the span counts under: its task's, or its subtask's when that has tags of its own. A deleted
+      // tag counts nowhere, so time whose tags are all deleted is under no tag, as the Tags section has it.
+      const own = tagging.of(sp.taskId, sp.subtaskId).filter((id) => tagging.live.has(id));
+      if (sel.tagId !== undefined && (sel.tagId === null ? own.length > 0 : !own.includes(sel.tagId))) continue;
+      if (sel.tagSet !== undefined && !sameTagSet(own, sel.tagSet)) continue;
     }
     let cur: DrillSegment | null = null;
     walkHours(sp.start, sp.end, zone, (s, e, day, hour) => {
@@ -98,6 +105,6 @@ export function drillInto(spans: readonly SpanRec[], zone: string, sel: DrillSel
 }
 
 export function drill(snapshot: Snapshot, params: Params, nowSec: number, sel: DrillSel): DrillResult {
-  return drillInto(drillSpans(prepare(snapshot, params), nowSec), params.zone, sel, new Map(snapshot.tasks.map((t) => [t.id, t.tags])));
+  return drillInto(drillSpans(prepare(snapshot, params), nowSec), params.zone, sel, taggingOf(snapshot.tasks, snapshot.tags));
 }
 

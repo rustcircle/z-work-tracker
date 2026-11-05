@@ -9,6 +9,7 @@ import { drillInto, type DrillResult, type DrillSel } from './drill';
 import { fmtHM, fmtHMS } from './format';
 import { glossaryEntry, searchGlossary, type GlossaryEntry } from './glossary';
 import type { SpanRec } from './engine';
+import { taggingOf } from './tagSets';
 import { MONTH_SHORT, WEEKDAY_SHORT, dayNum, weekdayIndex } from './range';
 import type { Project, Tag, Task } from '../../lib/types';
 
@@ -174,8 +175,8 @@ export function GlossaryDialog({ open, focusId, onClose }: { open: boolean; focu
 // ------------------------------------------------------------------ drill-down
 
 /** Tag names with their colour as a swatch; the name is always written out. */
-export function TagChips({ ids, tags }: { ids: readonly string[]; tags: ReadonlyMap<string, Tag> | undefined }) {
-  const live = ids.map((id) => tags?.get(id)).filter((t): t is Tag => t !== undefined && !t.deleted);
+export function TagChips({ ids, tags }: { ids: readonly string[]; tags: ReadonlyMap<string, Tag> }) {
+  const live = ids.map((id) => tags.get(id)).filter((t): t is Tag => t !== undefined && !t.deleted);
   if (live.length === 0) return null;
   return (
     <span className="a-tags">
@@ -196,8 +197,12 @@ export interface DrillContext {
   nowSec: number;
   projects: ReadonlyMap<string, Project>;
   tasks: ReadonlyMap<string, Task>;
-  /** Live tags by id, for the tag names on the task rows. */
-  tags?: ReadonlyMap<string, Tag>;
+  /**
+   * Every tag by id, deleted ones too: the task rows name their tags, and the drill counts time under the tags that exist
+   * (`taggingOf` and `TagChips` leave a deleted tag out). Not optional: with none, no tag would exist and a drill by tag
+   * would find nothing.
+   */
+  tags: ReadonlyMap<string, Tag>;
 }
 
 const MAX_SEGMENTS = 60;
@@ -206,7 +211,7 @@ const MAX_SEGMENTS = 60;
 const PANEL_LAYER = 49;
 
 export function DrillPanel({ sel, ctx, onClose }: { sel: DrillSel; ctx: DrillContext; onClose: () => void }) {
-  const res: DrillResult = useMemo(() => drillInto(ctx.spans, ctx.zone, sel, new Map([...ctx.tasks].map(([id, t]) => [id, t.tags]))), [ctx.spans, ctx.zone, ctx.tasks, sel]);
+  const res: DrillResult = useMemo(() => drillInto(ctx.spans, ctx.zone, sel, taggingOf(ctx.tasks.values(), ctx.tags.values())), [ctx.spans, ctx.zone, ctx.tasks, ctx.tags, sel]);
   const [all, setAll] = useState(false);
   const ref = useRef<HTMLElement>(null);
   // Where focus was before the panel took it, to give it back when the panel closes. A chart mark is an SVG element.

@@ -1,17 +1,18 @@
 // Parts of a task card added in phase 2, kept out of TaskCard.tsx so that file stays easy to merge:
 // tag chips, billed and unbilled time, and the task-list items with their time and "Make active".
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useMemo, useRef } from 'react';
 
 import { useApp, useAppState } from '../../app/store';
 import { nextMarkIn, useStepNow } from '../../app/stepClock';
 import { useReadOnly, type ReadOnly } from '../../app/useReadOnly';
 import { api } from '../../lib/api';
 import { parseIso } from '../../lib/tz';
-import type { Segment, Task } from '../../lib/types';
+import type { Segment, Tag, Task } from '../../lib/types';
 import { clockWithAbbr, formatDuration } from '../../components/format';
 import { TimerButton } from '../../components/TimerButton';
 import { Badge, Button } from '../../components/ui';
 import { useCommands } from '../../components/useCommands';
+import { SubtaskTags } from './SubtaskTags';
 import { TagChips } from './TagPicker';
 import { hasOpenPiece, piecesOf, taskTime, type SubtaskRow } from './taskFigures';
 import { waitingPauseRequest } from './taskLogic';
@@ -80,7 +81,10 @@ function TimeParts({ task, pieces, nowSec, snapshotSec }: { task: Task; pieces: 
 
 function Subtasks({ task, rows, noSubtaskSecs, noneActive, workedSecs, orphanSecs, running }: { task: Task; rows: SubtaskRow[]; noSubtaskSecs: number; noneActive: boolean; workedSecs: number; orphanSecs: number; running: boolean }) {
   const { act } = useCommands();
+  const { snapshot } = useAppState();
   const ro = useReadOnly();
+  // What an item can be given: the task's own tags that exist, in the task's order. A task with none leaves nothing to choose.
+  const taskTags = useMemo(() => task.tags.map((id) => snapshot.tags.find((t) => t.id === id && !t.deleted)).filter((t): t is Tag => t !== undefined), [task.tags, snapshot.tags]);
   const headId = useId();
   const listRef = useRef<HTMLUListElement | null>(null);
   /** The row to give focus to once the switch is saved: the clicked button turns into a badge. */
@@ -113,7 +117,7 @@ function Subtasks({ task, rows, noSubtaskSecs, noneActive, workedSecs, orphanSec
       </div>
       <ul className="subtask-list" ref={listRef}>
         {rows.map((r) => (
-          <SubtaskItemRow key={r.id || r.text} row={r} ro={ro} onMakeActive={() => choose(r.id)} />
+          <SubtaskItemRow key={r.id || r.text} row={r} ro={ro} taskId={task.id} taskTags={taskTags} onMakeActive={() => choose(r.id)} />
         ))}
         <li className={`subtask-row subtask-none${noneActive ? ' subtask-active' : ''}`} data-row="none" tabIndex={-1} aria-current={noneActive ? 'true' : undefined}>
           <span className="subtask-mark" aria-hidden="true">–</span>
@@ -139,7 +143,7 @@ function Subtasks({ task, rows, noSubtaskSecs, noneActive, workedSecs, orphanSec
   );
 }
 
-function SubtaskItemRow({ row, ro, onMakeActive }: { row: SubtaskRow; ro: ReadOnly; onMakeActive: () => void }) {
+function SubtaskItemRow({ row, ro, taskId, taskTags, onMakeActive }: { row: SubtaskRow; ro: ReadOnly; taskId: string; taskTags: readonly Tag[]; onMakeActive: () => void }) {
   const textId = useId();
   return (
     <li className={`subtask-row${row.active ? ' subtask-active' : ''}${row.checked ? ' subtask-done' : ''}`} data-row={row.id || undefined} tabIndex={-1} aria-current={row.active ? 'true' : undefined}>
@@ -163,6 +167,7 @@ function SubtaskItemRow({ row, ro, onMakeActive }: { row: SubtaskRow; ro: ReadOn
         </Button>
       )}
       {!row.canActivate && <span className="subtask-note subtask-saved-only">Saved items only</span>}
+      {row.canActivate && taskTags.length > 0 && <SubtaskTags taskId={taskId} item={{ id: row.id, text: row.text, tags: row.tags }} tags={taskTags} ro={ro} />}
     </li>
   );
 }

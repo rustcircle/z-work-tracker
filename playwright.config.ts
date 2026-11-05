@@ -8,7 +8,8 @@ export default defineConfig({
   testDir: 'e2e',
   timeout: 60_000,
   fullyParallel: true,
-  workers: 32,
+  // 32 suits a fast local machine; CI runners have 2-4 cores, and 32 tabs there miss the 5 s first-screen waits.
+  workers: process.env.CI ? 2 : 32,
   reporter: [['list']],
   use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${port}`, viewport: { width: 1360, height: 900 } },
   webServer: {

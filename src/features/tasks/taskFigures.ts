@@ -14,6 +14,8 @@ export interface SubtaskRow {
   active: boolean;
   /** Only saved items (those with an id) can carry time. */
   canActivate: boolean;
+  /** The item's own tags (some of the task's, an empty list is "No tag"), or null for "Same as task". */
+  tags: string[] | null;
 }
 
 export interface TaskTime {
@@ -88,6 +90,8 @@ export function taskTime(task: Task, pieces: readonly Segment[], nowSec: number,
     secs: i.secs + (open && i.id !== '' && open.subtaskId === i.id ? growth : 0),
     active: activeId !== null && i.id === activeId,
     canActivate: i.id !== '',
+    // A task read from an old file or a fixture may come without the field.
+    tags: i.tags ?? null,
   }));
   const withItems = subtasks.reduce((n, r) => n + r.secs, 0);
 

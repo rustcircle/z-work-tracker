@@ -58,8 +58,12 @@ export interface ShareTag {
   color: string;
 }
 
-/** A task with time, and the ids of the tags it carries, for the Tags level. */
+/**
+ * A task's time under one set of tags, for the Tags level: all of the task's time with the task's tags, or when some of its
+ * subtasks have tags of their own, one entry for each set its time counts under. The entries of a task add up to its time.
+ */
 export interface ShareTagTask {
+  /** The task's id. */
   id: string;
   /** For the basis in use. */
   secs: number;
@@ -106,7 +110,7 @@ type RowKind =
       projectId: null;
       /** The tags, in the order the label writes them; none for the row "No tag". */
       tagIds: readonly string[];
-      /** The tasks counted in this row. */
+      /** The tasks counted in this row, each once. */
       taskIds: readonly string[];
     }
   | {
@@ -148,7 +152,7 @@ export interface ShareModel {
   lines: readonly TagLine[];
 }
 
-/** A combination of tags with the tasks that carry exactly it. */
+/** A combination of tags with the tasks that have time under exactly it. */
 export interface TagLine {
   key: string;
   label: string;
@@ -460,7 +464,8 @@ export interface TagRowKey {
 /**
  * The row of a task: the exact set of tags it carries, named in the order of `tags` (the Settings list), so
  * "Design + Client" is that row whichever order the task was tagged in. One tag is that tag's row; a task with none is
- * "No tag". A tag that no longer exists is not counted. A subtask has the tags of its task.
+ * "No tag". A tag that no longer exists is not counted. The tags are those the time counts under: its task's, or for time
+ * on a subtask with tags of its own, the subtask's.
  */
 export function tagKeyOf(taskTagIds: readonly string[], tags: readonly ShareTag[]): TagRowKey {
   const mine = tags.filter((t) => taskTagIds.includes(t.id));
@@ -476,8 +481,8 @@ export interface TagWeight {
 }
 
 /**
- * THE counting rule of the Tags level, in one place (owner decision "B"): a task's time counts once, under the
- * combination of tags it carries, so the rows add up to the total in the centre and to 100%.
+ * THE counting rule of the Tags level, in one place (owner decision "B"): a piece of time counts once, under the
+ * combination of tags it counts under, so the rows add up to the total in the centre and to 100%.
  *
  * To count another way, change only this function. An even split, for example, would return one entry per tag:
  *   `mine.map((t) => ({ row: tagKeyOf([t.id], tags), weight: 1 / mine.length }))`
@@ -499,7 +504,8 @@ export function tagShares(tasks: readonly ShareTagTask[], tags: readonly ShareTa
     for (const { row, weight } of tagWeightsOf(t.tagIds, tags)) {
       let line = lines.get(row.key);
       if (!line) lines.set(row.key, (line = { key: row.key, label: row.label, tagIds: row.tagIds, taskIds: [], secs: 0, exact: 0, billableSecs: 0, colors: row.colors }));
-      line.taskIds.push(t.id);
+      // A task can reach one row through several of its parts (two sets that differ only by a tag that was deleted).
+      if (!line.taskIds.includes(t.id)) line.taskIds.push(t.id);
       line.secs += t.secs * weight;
       line.exact += t.exact * weight;
       line.billableSecs += t.billableSecs * weight;

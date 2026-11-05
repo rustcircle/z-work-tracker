@@ -4,7 +4,7 @@
   "license": "MIT",
   "author": "Pedro Miguel Rodrigues Jorge <pmrj@rustcircle.com>",
   "repository": "https://github.com/rustcircle/z-work-tracker",
-  "version": "1.3.3",
+  "version": "1.4.0",
   "type": "module",
   "packageManager": "pnpm@12.16.1",
   "engines": {

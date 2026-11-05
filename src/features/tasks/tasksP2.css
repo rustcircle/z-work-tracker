@@ -42,3 +42,19 @@
 .editor-buttons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; flex: none; margin-left: auto; }
 .subtask-saved-only { grid-column: 2 / -1; }
 .ticker-sub { font-size: 11.5px; font-weight: 400; display: block; }
+
+/* The tags of a subtask: a button on a line of its own under the item, and the checklist that opens from it. */
+.subtask-tags { grid-column: 2 / -1; position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+.subtask-tags-btn { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 100%; min-height: 26px; padding: 1px 8px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.subtask-tags-btn:hover:not(:disabled) { border-color: var(--text-muted); }
+.subtask-tags-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.subtask-tags-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.subtask-tags-btn[aria-expanded='true'] { border-color: var(--accent); }
+.subtask-tags-text { color: var(--text-muted); white-space: nowrap; }
+.subtask-tags-btn .tag-chip { font-size: 11.5px; padding: 0 7px; line-height: 1.45; }
+.subtask-tags-pop { position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 8px; width: max-content; min-width: 13rem; max-width: min(22rem, 100%); padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); box-shadow: var(--shadow-lg); }
+.subtask-tags-head { display: flex; flex-wrap: wrap; gap: 6px; }
+.subtask-tags-head .btn[aria-pressed='true'] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.subtask-tags-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.subtask-tags-pop .field-hint { margin: 0; }
+.subtask-tags-note { flex-basis: 100%; color: var(--danger); }

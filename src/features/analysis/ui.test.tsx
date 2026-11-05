@@ -14,7 +14,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-const CTX: DrillContext = { spans: [], zone: 'UTC', clientZone: null, nowSec: 0, projects: new Map(), tasks: new Map() };
+const CTX: DrillContext = { spans: [], zone: 'UTC', clientZone: null, nowSec: 0, projects: new Map(), tasks: new Map(), tags: new Map() };
 
 function Page() {
   const [glossary, setGlossary] = useState(false);

@@ -58,12 +58,17 @@ export interface Project {
   figures: ProjectFigures;
 }
 
-/** One task-list item of a task description, the unit that can carry its own tracked time. */
+/** One task-list item of a task description, the unit that can carry its own tracked time and some of the task's tags. */
 export interface Subtask {
   id: string;
   text: string;
   checked: boolean;
   secs: number;
+  /**
+   * The subtask's own tags: some of its task's tags, in the task's order, where an empty list is "No tag"; or `null` for
+   * "Same as task". Its time counts under these, or under the task's tags when `null` (`effectiveTags` in lib/subtasks.ts).
+   */
+  tags: string[] | null;
 }
 
 /** TipTap JSON. Only ever rendered through the editor. */
@@ -788,6 +793,22 @@ export interface PatchReply {
   /** The fields refused because the store has moved on. The rest of the patch went. */
   conflicts: ('name' | 'project' | 'description' | 'tags')[];
   stored: StoredFields;
+}
+
+/** What a subtask row showed for its tags when an edit was made: `null` is "Same as task", else the list it showed. */
+export interface SubtaskTagsExpected {
+  tags: string[] | null;
+}
+
+/** The answer to `set_subtask_tags`: the snapshot and the outcome come from one hold of the store's lock. */
+export interface SubtaskTagsReply {
+  snapshot: Snapshot;
+  /** Refused because the store or the task's tags have moved on since the row showed them. Nothing was written. */
+  conflict: boolean;
+  /** The subtask's own tags afterwards, as `Subtask.tags` shows them: `null` is "Same as task". */
+  tags: string[] | null;
+  /** The tags its time counts under afterwards. A tag that was deleted is not filtered out here. */
+  effective: string[];
 }
 
 export interface ShiftInput {

@@ -20,7 +20,7 @@ export interface SelectionApi {
   entries: SelectedEntry[];
   /** The row that holds the one tab stop of the entries. */
   tabRow: string | null;
-  /** Selected task-days not drawn right now: filtered out, or in days not loaded yet. */
+  /** Selected task-days not drawn right now: filtered out, or on days paged out of view. */
   hidden: number;
   /** For the live region. */
   live: string;
@@ -75,9 +75,9 @@ export function SelectionProvider({ zone, children }: { zone: string; children: 
     });
   }, []);
 
-  // The rows on screen, newest day first, and the task-days they stand for in the same order.
+  // The rows on screen, oldest day first (left to right, as the days are drawn), and the task-days they stand for in the same order.
   const { rows, order, visible } = useMemo(() => {
-    const days = [...registry.keys()].sort().reverse();
+    const days = [...registry.keys()].sort();
     const rows = days.flatMap((d) => registry.get(d) ?? []);
     const order: string[] = [];
     for (const r of rows) if (!order.includes(r.key)) order.push(r.key);

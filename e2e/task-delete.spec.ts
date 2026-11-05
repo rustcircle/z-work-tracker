@@ -11,6 +11,9 @@ import { SHOTS, advance, card, expectClean, open, refresh } from './support';
 
 const WED = 'Wed 11 Mar 2026';
 const TUE = 'Tue 10 Mar 2026';
+// These flows start from entries on Tuesday and Wednesday at once, so the window is wide enough for three days side
+// by side: Tuesday, Wednesday and today, the oldest on the left.
+test.use({ viewport: { width: 1920, height: 1000 } });
 const THEMES = [
   ['light', 'light'],
   ['solarizedLight', 'solarized-light'],
@@ -58,15 +61,18 @@ test.describe('deleting a task', () => {
     const name = 'Homepage layout';
     const rows = entriesOf(page, page, name);
     const before = await rows.count();
-    expect(before).toBeGreaterThan(5);
+    // Three days are on screen and two of them have entries of this task: four rows, more than one day holds.
+    expect(before).toBeGreaterThan(3);
     const wed = day(page, WED);
     const wedBefore = minutes(await wed.getByTestId('day-exact').innerText());
     const wedOwn = (await entriesOf(wed, page, name).locator('td.num').allInnerTexts()).map(minutes).reduce((n, m) => n + m, 0);
     expect(wedOwn).toBeGreaterThan(0);
-    // Two entries of this task and one of another are selected.
-    await entriesOf(wed, page, name).first().click();
-    await entriesOf(day(page, TUE), page, name).first().click({ modifiers: ['ControlOrMeta'] });
-    await wed.getByTestId('entry').filter({ hasNot: page.getByRole('button', { name, exact: true }) }).first().click({ modifiers: ['ControlOrMeta'] });
+    // Two entries of this task and one of another are selected. A narrow column can put a control (the pencil, say)
+    // under the middle of a row, and a click on a control never selects, so these clicks go on the row's first cell.
+    const cell = { x: 6, y: 6 };
+    await entriesOf(wed, page, name).first().click({ position: cell });
+    await entriesOf(day(page, TUE), page, name).first().click({ modifiers: ['ControlOrMeta'], position: cell });
+    await wed.getByTestId('entry').filter({ hasNot: page.getByRole('button', { name, exact: true }) }).first().click({ modifiers: ['ControlOrMeta'], position: cell });
     await expect(bar(page).getByTestId('selection-count')).toContainText('3 tasks selected');
     await expect(page.getByRole('button', { name: 'Export (3 selected)' })).toBeVisible();
 
@@ -128,8 +134,9 @@ test.describe('deleting a task', () => {
     expect(await deletes(page)).toBe(1);
     expect(await taskIds(page)).not.toContain('t-home');
     await expect(page.getByText('Deleted “Homepage layout” and everything logged on it.')).toBeVisible();
-    // The entries are gone from every day, and the totals of the day are the others'.
+    // The entries are gone from the days on screen, and the records of every other day with them. The totals of the day are the others'.
     await expect(entriesOf(page, page, name)).toHaveCount(0);
+    expect(await loggedOf(page, 't-home')).toEqual({ secs: 0, days: 0 });
     expect(minutes(await wed.getByTestId('day-exact').innerText())).toBe(wedBefore - wedOwn);
     // The selection kept the one entry of another task, and the bar says so.
     await expect(bar(page).getByTestId('selection-count')).toContainText('1 task selected');

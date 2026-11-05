@@ -1,6 +1,11 @@
-//! Extracts list items from a TipTap document for the spreadsheet's Subtasks column.
+//! Extracts list items from a TipTap document for the spreadsheet's Subtasks column, and works out the tags each
+//! subtask's time counts under (1.4).
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
+
+use crate::model::Task;
 
 fn inline_text(node: &Value, out: &mut String) {
     match node.get("type").and_then(Value::as_str) {
@@ -259,8 +264,86 @@ pub fn stable_ids(task_id: &str, doc: &Value) -> Option<Value> {
     changed.then_some(out)
 }
 
+/// The tags a piece of a task's time counts under: the subtask's own list cut to the task's tags, in the task's order,
+/// or with no list the task's tags. Empty is "No tag". Every reader follows this, and a change to the task's tags never
+/// rewrites the lists: a tag taken off the task drops out of every subtask here, and counts again where a list still
+/// holds it if the task gets it back. So only a person's edit of a subtask moves its clock, and nothing automatic can
+/// outrank one made on another device.
+#[must_use]
+pub fn effective<'a>(task_tags: &'a [String], own: Option<&[String]>) -> Vec<&'a str> {
+    task_tags
+        .iter()
+        .filter(|t| own.is_none_or(|keep| keep.contains(t)))
+        .map(String::as_str)
+        .collect()
+}
+
+/// `effective`, as owned strings.
+#[must_use]
+pub fn effective_owned(task_tags: &[String], own: Option<&[String]>) -> Vec<String> {
+    effective(task_tags, own)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A subtask's own tags as an editor shows them, or `None` when it is on "Same as task".
+#[must_use]
+pub fn shown(task: &Task, subtask: &str) -> Option<Vec<String>> {
+    task.subtask_override(subtask)
+        .map(|own| effective_owned(&task.tags, Some(own)))
+}
+
+/// The tags each piece of one task's time counts under, worked out once. Only subtasks still in the description keep
+/// their own: time on one that is gone counts under the task's tags, as time on no subtask does.
+#[derive(Clone, Debug)]
+pub struct EffectiveTags<'t> {
+    task: Vec<&'t str>,
+    own: BTreeMap<&'t str, Vec<&'t str>>,
+}
+
+impl<'t> EffectiveTags<'t> {
+    #[must_use]
+    pub fn of(task: &'t Task) -> Self {
+        let live: BTreeSet<String> = if task.subtask_tags.is_empty() {
+            BTreeSet::new()
+        } else {
+            items(&task.description).into_iter().map(|i| i.id).collect()
+        };
+        let own = task
+            .subtask_tags
+            .iter()
+            .filter(|(id, _)| live.contains(id.as_str()))
+            .filter_map(|(id, entry)| {
+                Some((
+                    id.as_str(),
+                    effective(&task.tags, Some(entry.tags.as_deref()?)),
+                ))
+            })
+            .collect();
+        Self {
+            task: effective(&task.tags, None),
+            own,
+        }
+    }
+
+    /// For time on `subtask`, or on no subtask.
+    #[must_use]
+    pub fn of_subtask(&self, subtask: Option<&str>) -> &[&'t str] {
+        subtask
+            .and_then(|id| self.own.get(id))
+            .map_or(self.task.as_slice(), Vec::as_slice)
+    }
+
+    /// Every piece of the task counts under the task's own tags.
+    #[must_use]
+    pub fn uniform(&self) -> bool {
+        self.own.values().all(|tags| *tags == self.task)
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
@@ -451,5 +534,96 @@ mod tests {
             extract(&doc),
             "[ ] One Two\n[ ] Three Four\n[ ] Own\n    \u{2022} Nested"
         );
+    }
+
+    /// The table the TS mirror shares, `fixtures/subtask-tags-parity.json`.
+    pub(crate) const PARITY: &str = include_str!("../../../../fixtures/subtask-tags-parity.json");
+
+    /// A task list holding these subtask ids, as the editor writes one.
+    pub(crate) fn list_of(ids: &[&str]) -> Value {
+        let item = |id: &&str| {
+            json!({"type": "taskItem", "attrs": {"checked": false, "subtaskId": id},
+                   "content": [{"type": "paragraph", "content": [{"type": "text", "text": format!("Item {id}")}]}]})
+        };
+        json!({"type": "doc", "content": [{"type": "taskList", "content": ids.iter().map(item).collect::<Vec<_>>()}]})
+    }
+
+    /// A task with a case's tags, subtasks and stored lists, read from JSON as a device file holds it.
+    pub(crate) fn task_of(case: &Value) -> Task {
+        let stamp = json!({"at": "2026-11-01T09:00:00Z", "by": "d"});
+        let ids: Vec<&str> = case["subtasks"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let overrides: serde_json::Map<String, Value> = case["overrides"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(id, tags)| (id.clone(), json!({"tags": tags, "stamp": stamp})))
+            .collect();
+        serde_json::from_value(json!({
+            "id": "t", "name": "T", "nameStamp": stamp, "projectId": "p", "projectStamp": stamp,
+            "description": list_of(&ids), "descriptionStamp": stamp, "deletedStamp": stamp,
+            "createdAt": "2026-11-01T09:00:00Z", "state": "paused", "stateStamp": stamp,
+            "tags": case["taskTags"], "tagsStamp": stamp, "subtaskTags": overrides,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn effective_tags_follow_the_table_shared_with_the_ui() {
+        let table: Value = serde_json::from_str(PARITY).unwrap();
+        let cases = table["effective"].as_array().unwrap();
+        assert!(cases.len() >= 12);
+        for case in cases {
+            let what = case["name"].as_str().unwrap();
+            let task = task_of(case);
+            let tags = EffectiveTags::of(&task);
+            let live: Vec<String> = items(&task.description).into_iter().map(|i| i.id).collect();
+            for time in case["time"].as_array().unwrap() {
+                let subtask = time["subtask"].as_str();
+                let want: Vec<&str> = time["tags"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.as_str().unwrap())
+                    .collect();
+                assert_eq!(tags.of_subtask(subtask), want, "{what}: {subtask:?}");
+                // What an editor shows for a subtask still in the description says the same.
+                if let Some(id) = subtask.filter(|id| live.iter().any(|l| l == id)) {
+                    let own = shown(&task, id);
+                    assert_eq!(effective(&task.tags, own.as_deref()), want, "{what}: {id}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_task_counts_as_one_set_of_tags_unless_a_subtask_has_a_different_one() {
+        let table: Value = serde_json::from_str(PARITY).unwrap();
+        let uniform: Vec<(String, bool)> = table["effective"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["name"].as_str().unwrap().to_owned(),
+                    EffectiveTags::of(&task_of(c)).uniform(),
+                )
+            })
+            .collect();
+        let by_name = |name: &str| uniform.iter().find(|(n, _)| n == name).unwrap().1;
+        assert!(by_name("no override: every piece has the task's tags"));
+        assert!(by_name("a reset is Same as task"));
+        assert!(by_name(
+            "a subtask no longer in the description falls back to the task's tags"
+        ));
+        assert!(by_name(
+            "a task without tags gives No tag whatever its subtasks hold"
+        ));
+        assert!(!by_name(
+            "a subset on one subtask, its sibling keeps the task's tags"
+        ));
+        assert!(!by_name("an empty subset is No tag (Q1)"));
     }
 }

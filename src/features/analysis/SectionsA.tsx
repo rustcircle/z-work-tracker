@@ -237,13 +237,12 @@ function shareModelOf(level: ShareLevel, env: SecEnv): ShareModel {
         env.pcolor,
       );
     }
-    case 'tags': {
-      const tagsOf = new Map(snapshot.tasks.map((t) => [t.id, t.tags]));
+    case 'tags':
+      // Each task's time by the tags its pieces count under: all of it with the task's tags, unless some subtasks have tags of their own.
       return tagShares(
-        m.tasks.list.map((t) => ({ id: t.id, secs: t.secs, exact: t.exact, billableSecs: t.billableSecs, tagIds: tagsOf.get(t.id) ?? [] })),
+        m.tags.parts.map((p) => ({ id: p.taskId, secs: p.secs, exact: p.exact, billableSecs: p.billableSecs, tagIds: p.tags })),
         snapshot.tags.filter((t) => !t.deleted).map((t) => ({ id: t.id, name: t.name, color: t.color })),
       );
-    }
   }
 }
 
@@ -302,7 +301,7 @@ function ShareOfTime({ env }: { env: SecEnv }) {
         const n = row.taskIds.length;
         return {
           tip: [row.label, `${n} task${n === 1 ? '' : 's'}`, ...time, ...(line ? otherBasisLine(env, line.exact, line.billableSecs) : [])],
-          select: () => env.drill({ title: row.label, taskIds: row.taskIds }),
+          select: () => env.drill({ title: row.label, tagSet: row.tagIds }),
         };
       }
       case 'other':

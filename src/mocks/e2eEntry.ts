@@ -1,4 +1,4 @@
-// Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty` or `?seed=many-tasks` (the demo plus six tasks, with tags and subtasks, so the Share of time donut groups the rest as Other and has every level to show), `?theme=`, `?firstRun=1` (the wizard; `&step=N` resumes at a saved step, `&pc=2` is a second computer whose OneDrive folder already holds data) or `?firstRun=legacy` (the old prompts), `?launch=cold`.
+// Entry for the e2e build. `?seed=demo` (default), `?seed=p2` (the demo plus every phase 2 feature) or `?seed=empty` or `?seed=many-tasks` (the demo plus six tasks, with tags and subtasks, so the Share of time donut groups the rest as Other and has every level to show), `?seed=store-web`, `?seed=store-swe` or `?seed=store-data` (a person's store at 6 Nov 2026 for the Store screenshots: src/mocks/storeSeed.ts), `?theme=`, `?firstRun=1` (the wizard; `&step=N` resumes at a saved step, `&pc=2` is a second computer whose OneDrive folder already holds data) or `?firstRun=legacy` (the old prompts), `?launch=cold`.
 // Single-device lease: `?lease=live|stale|unknown|mine` (another computer holds it, looks inactive, no folder can be read, this computer holds it), or `free`,
 // `checking`, `unknown-writable`; each connects a folder when none is. `?versions=1` (two folders and seven saved versions), `?packaged=1` (a Microsoft Store build),
 // `?autostart=offByUser|offByPolicy|onByPolicy|unavailable|on|off` (Start with Windows as Windows reports it) and `?join=1` (a folder waiting for a choice).
@@ -12,6 +12,7 @@ import type { LeaseHolderView, Theme } from '../lib/types';
 import { demoP2State, demoState } from './demoSeed';
 import { fullProject } from './factories';
 import { manyTasksState } from './manyTasksSeed';
+import { isStoreSeed, storeSeedState } from './storeSeed';
 import { DEVICE_ID, OTHER_DEVICE_NAME, crashRelaunch, emptyState, installMock, isAutostartState, isLeaseSeed, loseLease, relaunch, seedJoinPending, seedLease, seedVersions, type MockState } from './ipcMock';
 
 declare global {
@@ -58,7 +59,7 @@ function seedSecondPc(state: MockState): void {
 export function installE2eBackend(): void {
   const q = new URLSearchParams(window.location.search);
   const seed = q.get('seed');
-  const state = seed === 'empty' ? emptyState() : seed === 'p2' ? demoP2State() : seed === 'many-tasks' ? manyTasksState() : demoState();
+  const state = seed === 'empty' ? emptyState() : seed === 'p2' ? demoP2State() : seed === 'many-tasks' ? manyTasksState() : isStoreSeed(seed) ? storeSeedState(seed) : demoState();
   const theme = q.get('theme');
   if (theme) state.theme = theme as Theme;
   if (q.get('hide') === '1') state.hideEarnings = true;

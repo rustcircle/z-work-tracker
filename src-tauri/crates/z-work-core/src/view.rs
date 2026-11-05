@@ -70,6 +70,9 @@ pub struct SubtaskView {
     pub text: String,
     pub checked: bool,
     pub secs: i64,
+    /// The subtask's own tags, some of the task's in its order (empty is "No tag"), or `None` for "Same as task". Its
+    /// time counts under these, or under the task's tags when `None`.
+    pub tags: Option<Vec<String>>,
 }
 
 /// One recorded segment with its correction, for the corrections screen.

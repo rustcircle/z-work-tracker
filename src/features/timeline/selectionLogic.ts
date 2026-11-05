@@ -33,14 +33,16 @@ export function toggle(sel: Sel, key: string): Sel {
 
 /**
  * Shift+click or Shift+Arrow: everything from the anchor to `key` in the order on screen (days run across,
- * newest first). The range replaces the selection, unless `keep` (Ctrl+Shift) adds it to what is chosen.
- * The anchor stays where it was, so Shift+click again moves only the far end.
+ * oldest first). The range replaces the selection, unless `keep` (Ctrl+Shift) adds it to what is chosen.
+ * The anchor stays where it was, so Shift+click again moves only the far end. An anchor that is not on screen
+ * (its day was paged away from, or a filter hides it) leaves no range to run: the row clicked is then chosen on its
+ * own, or added to what is chosen with `keep`, and becomes the anchor.
  */
 export function selectRange(sel: Sel, key: string, order: readonly string[], keep = false): Sel {
   const to = order.indexOf(key);
   const from = sel.anchor === null ? -1 : order.indexOf(sel.anchor);
   if (to < 0) return sel;
-  if (from < 0) return selectOnly(key);
+  if (from < 0) return keep ? { keys: has(sel, key) ? sel.keys : [...sel.keys, key], anchor: key } : selectOnly(key);
   const [a, b] = from <= to ? [from, to] : [to, from];
   const range = order.slice(a, b + 1);
   const keys = keep ? [...sel.keys, ...range.filter((k) => !has(sel, k))] : range;

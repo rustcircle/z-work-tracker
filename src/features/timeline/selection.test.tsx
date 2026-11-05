@@ -117,22 +117,26 @@ describe('pointer selection', () => {
     expect(b).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('Shift+click selects the contiguous range in the order on screen, across days', async () => {
+  it('Shift+click selects the contiguous range in the order on screen, across days, from either side', async () => {
     const user = await open();
-    const todayRows = rowsOf(TODAY);
-    const last = rowsOf('Tue 10 Mar 2026').at(-1) as HTMLElement;
-    await user.click(todayRows[0] as HTMLElement);
-    await shift(user, last);
-    const taskDays = new Set(screen.getAllByTestId('entry').filter((r) => r.getAttribute('aria-selected') === 'true').map((r) => r.getAttribute('data-sel-key')));
-    const expected = new Set(
-      screen
-        .getAllByTestId('entry')
-        .map((r) => r.getAttribute('data-sel-key'))
-        .filter((k): k is string => k !== null)
-        .slice(0, screen.getAllByTestId('entry').findIndex((r) => r === last) + 1),
-    );
-    expect(taskDays).toEqual(expected);
-    expect(taskDays.size).toBeGreaterThan(2);
+    // The days run oldest to newest, left to right: Tue 10, Wed 11, Thu 12 (today). A task-day sits where its first row is.
+    const order = [...new Set(screen.getAllByTestId('entry').map((r) => r.getAttribute('data-sel-key')).filter((k): k is string => k !== null))];
+    const between = (a: HTMLElement, b: HTMLElement): Set<string> => {
+      const [from, to] = [order.indexOf(a.getAttribute('data-sel-key') ?? ''), order.indexOf(b.getAttribute('data-sel-key') ?? '')].sort((x, y) => x - y) as [number, number];
+      return new Set(order.slice(from, to + 1));
+    };
+    const picked = (): Set<string | null> => new Set(selectedRows().map((r) => r.getAttribute('data-sel-key')));
+    const tuesday = rowsOf('Tue 10 Mar 2026');
+    const today = rowsOf(TODAY);
+    // Forward, from the oldest day on screen to the newest.
+    await user.click(tuesday[0] as HTMLElement);
+    await shift(user, today.at(-1) as HTMLElement);
+    expect(picked()).toEqual(between(tuesday[0] as HTMLElement, today.at(-1) as HTMLElement));
+    // Backward, from the newest to the oldest.
+    await user.click(today[0] as HTMLElement);
+    await shift(user, tuesday.at(-1) as HTMLElement);
+    expect(picked()).toEqual(between(today[0] as HTMLElement, tuesday.at(-1) as HTMLElement));
+    expect(picked().size).toBeGreaterThan(2);
   });
 
   it('selecting one row of a task-day selects every row of it, and says so', async () => {

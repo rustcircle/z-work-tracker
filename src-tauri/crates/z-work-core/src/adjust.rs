@@ -10,8 +10,8 @@ use uuid::Uuid;
 use crate::error::CoreError;
 use crate::machine::Ctx;
 use crate::model::{
-    AuditEntry, BillablePause, GapDecision, GapKind, IdleGap, PauseReason, Segment, SegmentEdit,
-    Shared, TaskState,
+    AuditEntry, BillablePause, Extra, GapDecision, GapKind, IdleGap, PauseReason, Segment,
+    SegmentEdit, Shared, TaskState,
 };
 use crate::time::Ts;
 use crate::validate::{MAX_SEGMENT_SECS, check_chosen_date};
@@ -254,6 +254,7 @@ impl Shared {
             subtask_id: input.subtask_id.clone(),
             edit: None,
             edit_stamp: ctx.stamp(),
+            extra: Extra::new(),
         };
         self.refuse_taking_from_billed_pause(&seg)?;
         if !input.allow_overlap {

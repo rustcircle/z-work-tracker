@@ -1,5 +1,6 @@
-// Task-list items of a TipTap document, the unit that can carry its own tracked time. Mirrors
-// `subtasks.rs`: the backend assigns missing or repeated ids, a copy keeps the text but forgets ids and ticks.
+// Task-list items of a TipTap document, the unit that can carry its own tracked time and some of the task's tags. Mirrors
+// `subtasks.rs`: the backend assigns missing or repeated ids, a copy keeps the text but forgets ids and ticks, and the tags
+// a piece of time counts under follow `effective` (`fixtures/subtask-tags-parity.json` pins both sides to the same table).
 import type { RichDoc } from './types';
 
 type Json = Record<string, unknown>;
@@ -105,4 +106,67 @@ export function assignSubtaskIds(doc: RichDoc, previous: RichDoc | undefined, fr
     attrs.subtaskId = id;
   });
   return out;
+}
+
+// ---------------------------------------------------------------- tags of a subtask (1.4)
+
+/**
+ * The tags a piece of a task's time counts under (`subtasks::effective`): the subtask's own list cut to the task's tags, in
+ * the task's order, or with no list (`null`: "Same as task") the task's tags. Empty is "No tag". Every reader follows this,
+ * because a change to the task's tags rewrites no list: a tag taken off the task drops out of every list at once, and counts
+ * again where a list still holds it if the task gets it back. A list naming a tag twice counts it once.
+ */
+export function effectiveTags(taskTags: readonly string[], own: readonly string[] | null | undefined): string[] {
+  return own == null ? [...taskTags] : taskTags.filter((t) => own.includes(t));
+}
+
+/** A subtask's own tags as an editor shows them (`subtasks::shown`): the stored list cut to the task's tags, or `null` for "Same as task". */
+export function shownTags(taskTags: readonly string[], stored: readonly string[] | null | undefined): string[] | null {
+  return stored == null ? null : effectiveTags(taskTags, stored);
+}
+
+/** Tags are a set: their order is no change. */
+export function sameTagSet(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((t) => b.includes(t));
+}
+
+/** The same tags in the same order, which is what the backend compares to see whether a task's tags changed (a reorder is a change). */
+export function sameTagOrder(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((t, i) => t === b[i]);
+}
+
+/** Two states of a subtask's tags, as an editor shows them: `null` ("Same as task") is only the same as `null`, and lists are sets. */
+export function sameOverride(a: readonly string[] | null | undefined, b: readonly string[] | null | undefined): boolean {
+  if (a == null || b == null) return a == null && b == null;
+  return sameTagSet(a, b);
+}
+
+/** What `effectiveTagsOf` reads of a task: the snapshot's task view has both (`Subtask.tags` is what the editor shows). */
+export interface TaggedTask {
+  tags: readonly string[];
+  /** The items of the task's list now. A task read from an old file or a fixture may come without them. */
+  subtasks?: readonly { id: string; tags?: readonly string[] | null }[];
+}
+
+/** The tags each piece of one task's time counts under, worked out once (`subtasks::EffectiveTags`). */
+export interface TaskTagSets {
+  /**
+   * For time on `subtaskId`, or on none. Only an item still in the list keeps its own tags: time on one that is gone counts
+   * under the task's tags, as time on no subtask does.
+   */
+  of(subtaskId: string | null | undefined): readonly string[];
+  /** Every piece of the task counts under the task's own tags, so nothing needs splitting. */
+  readonly uniform: boolean;
+}
+
+export function effectiveTagsOf(task: TaggedTask): TaskTagSets {
+  const base = effectiveTags(task.tags, null);
+  const own = new Map<string, string[]>();
+  for (const item of task.subtasks ?? []) {
+    if (item.id !== '' && item.tags != null) own.set(item.id, effectiveTags(task.tags, item.tags));
+  }
+  return {
+    of: (subtaskId) => (subtaskId != null ? own.get(subtaskId) : undefined) ?? base,
+    uniform: [...own.values()].every((tags) => sameTagOrder(tags, base)),
+  };
 }

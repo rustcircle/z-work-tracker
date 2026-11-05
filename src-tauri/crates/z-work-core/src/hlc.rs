@@ -134,6 +134,9 @@ impl Stamped for Task {
             tags_stamp,
             active_subtask: _,
             active_subtask_stamp,
+            subtask_tags,
+            // A later version's fields: whatever clocks they hold mean nothing here.
+            extra: _,
         } = self;
         for s in [
             name_stamp,
@@ -148,6 +151,9 @@ impl Stamped for Task {
         }
         if let Some(s) = discarded {
             f(s);
+        }
+        for entry in subtask_tags.values() {
+            f(&entry.stamp);
         }
     }
 }
@@ -165,6 +171,7 @@ impl Stamped for Segment {
             subtask_id: _,
             edit: _,
             edit_stamp,
+            extra: _,
         } = self;
         f(edit_stamp);
     }
@@ -530,6 +537,22 @@ mod tests {
         v
     }
 
+    /// The data with the fields of a later version left out: what their clocks mean is that version's business, so
+    /// they are never stamps seen here (`Stamped for Task`).
+    fn known_fields(data: &Shared) -> Shared {
+        let mut d = data.clone();
+        for t in d.tasks.values_mut() {
+            t.extra.clear();
+            for e in t.subtask_tags.values_mut() {
+                e.extra.clear();
+            }
+        }
+        for s in d.segments.values_mut() {
+            s.extra.clear();
+        }
+        d
+    }
+
     /// One random edit per record: kept as it was, replaced by `other`'s record of the same kind and id (new, or
     /// changed with its stamps), or removed.
     fn mix<T: Clone>(
@@ -606,11 +629,12 @@ mod tests {
             }
         }
 
-        /// 3. Every stamp in the JSON of the data is visited, once, and the newest is what `newest_stamp` says.
+        /// 3. Every stamp in the JSON of the data is visited, once, and the newest is what `newest_stamp` says. A later
+        /// version's fields are not this version's to read, even when they hold something shaped like a stamp.
         #[test]
         fn for_each_stamp_visits_every_stamp(data in shared(), device in "[a-c]") {
             let mut found = Vec::new();
-            stamps_in_json(&serde_json::to_value(&data).unwrap(), &mut found);
+            stamps_in_json(&serde_json::to_value(known_fields(&data)).unwrap(), &mut found);
             let mut visited = Vec::new();
             data.for_each_stamp(|s| visited.push(s.clone()));
             let found = sorted(found);
@@ -670,5 +694,26 @@ mod tests {
             // Nothing written, nothing newer.
             prop_assert_eq!(crate::store::plan_rows(&next, &next, false).unwrap().newest(), None);
         }
+    }
+
+    /// A subtask's clock is a stamp seen here, as every clock of a known field is. A later version's field holding
+    /// something shaped like a stamp is not.
+    #[test]
+    fn a_subtask_entrys_clock_is_seen_and_a_later_versions_is_not() {
+        let stamp = |at: &str| serde_json::json!({"at": at, "by": "d"});
+        let old = stamp("2026-11-01T09:00:00Z");
+        let task = serde_json::json!({
+            "id": "t", "name": "T", "nameStamp": old, "projectId": "p", "projectStamp": old,
+            "descriptionStamp": old, "deletedStamp": old, "createdAt": "2026-11-01T09:00:00Z",
+            "state": "paused", "stateStamp": old, "tagsStamp": old,
+            "subtaskTags": {"s1": {"tags": [], "stamp": stamp("2026-11-02T09:00:00Z")}},
+            "laterField": stamp("2026-11-03T09:00:00Z"),
+        });
+        let data: Shared =
+            serde_json::from_value(serde_json::json!({"tasks": {"t": task}})).unwrap();
+        assert_eq!(
+            data.newest_stamp().map(|s| s.at.iso()),
+            Some("2026-11-02T09:00:00Z".to_owned())
+        );
     }
 }

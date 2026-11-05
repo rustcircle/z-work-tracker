@@ -84,7 +84,7 @@ const COMMANDS: Record<string, 'blocked' | 'allowed'> = {
   // Projects and tasks.
   create_project: 'blocked', update_project: 'blocked', set_project_archived: 'blocked', delete_project: 'blocked',
   create_task: 'blocked', update_task: 'blocked', patch_task: 'blocked', delete_draft: 'blocked', delete_task: 'blocked',
-  task_from_template: 'blocked', set_active_subtask: 'blocked',
+  task_from_template: 'blocked', set_active_subtask: 'blocked', set_subtask_tags: 'blocked',
   // The timer.
   start_task: 'blocked', resume_task: 'blocked', pause_task: 'blocked', stop_task: 'blocked',
   // Logged time.
