@@ -205,10 +205,15 @@ pub struct Task {
     pub extra: Extra,
 }
 
-/// Fields a later version wrote that this one doesn't know, by name. Each comes back as it came, with one limit for
-/// a later version to keep to: an integer past the i64 and u64 range is read as the nearest f64 and written back as
-/// one (`18446744073709551616` as `1.8446744073709552e+19`). serde_json's `arbitrary_precision` would lift it, but with
-/// `#[serde(flatten)]` that feature breaks the typed number fields, so it stays off. How these fields merge:
+/// Fields a later version wrote that this one doesn't know, by name. Each comes back as it came, except for numbers,
+/// which a later version has to allow for:
+/// - an integer past the i64 and u64 range is read as the nearest f64 and written back as one
+///   (`18446744073709551616` as `1.8446744073709552e+19`);
+/// - a float is read by serde_json's default parser, which can be one unit off in the last place, so some come back
+///   changed in their last digit on the first read (`994.8220858895705` as `994.8220858895704`), and then stay.
+///
+/// `arbitrary_precision` would lift the first, but with `#[serde(flatten)]` it breaks the typed number fields, so it
+/// stays off. `float_roundtrip` would lift the second, for every float this version reads. How these fields merge:
 /// `merge::merge_extra`.
 pub type Extra = BTreeMap<String, Value>;
 

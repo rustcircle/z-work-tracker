@@ -225,6 +225,9 @@ fn merge_task(a: &Task, b: &Task) -> Task {
 ///   never loses to an older one, and a later version can clear a field by keeping only its clock.
 /// - Any other key is kept from whichever copy has it, the larger text winning between two.
 ///
+/// Clocks compare as every clock here does: at whole UTC seconds, then by device. The text is canonical JSON with
+/// -0.0 read as 0.0 (`order_text`), so that values equal to each other also tie.
+///
 /// So fields set on two devices both survive, and a copy without them, as every 1.3 and 1.4 copy is, takes none away.
 /// Which keys go together depends on their names alone, and each group is a max under a total order of its own (a pair
 /// with a clock above every one without), so the merge stays a join.
@@ -257,7 +260,7 @@ fn merge_extra(a: &Extra, b: &Extra) -> Extra {
                     _ => ca.is_some().cmp(&cb.is_some()),
                 };
                 let from_a = by_clock
-                    .then_with(|| canonical(&pair(a, keys)).cmp(&canonical(&pair(b, keys))))
+                    .then_with(|| order_text(pair(a, keys)).cmp(&order_text(pair(b, keys))))
                     != Ordering::Less;
                 let from = if from_a { a } else { b };
                 keep(field, from.get(field));
@@ -291,19 +294,43 @@ fn clock_of(value: Option<&Value>) -> Option<Stamp> {
 }
 
 /// A field and its clock as one copy holds them, the keys it lacks left out: what breaks a tie between two pairs.
-fn pair<'m>(m: &'m Extra, keys: [&str; 2]) -> BTreeMap<&'m str, &'m Value> {
-    keys.into_iter()
-        .filter_map(|k| m.get_key_value(k))
-        .map(|(k, v)| (k.as_str(), v))
-        .collect()
+fn pair(m: &Extra, keys: [&str; 2]) -> Value {
+    Value::Object(
+        keys.into_iter()
+            .filter_map(|k| m.get_key_value(k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
+    )
 }
 
 /// Whichever value is there, the larger text between two.
 fn larger<'v>(a: Option<&'v Value>, b: Option<&'v Value>) -> Option<&'v Value> {
     match (a, b) {
-        (Some(x), Some(y)) => Some(if canonical(x) >= canonical(y) { x } else { y }),
+        (Some(x), Some(y)) => Some(if order_text(x.clone()) >= order_text(y.clone()) {
+            x
+        } else {
+            y
+        }),
         (x, y) => x.or(y),
     }
+}
+
+/// The text that orders a later version's values: canonical JSON with -0.0 written as 0.0. Two values are equal
+/// (`Value::eq`, for which -0.0 is 0.0) exactly when their texts are, so which of two equal values a merge keeps, as
+/// `merge_map` keeps the first of two equal records, never changes the outcome of a later merge.
+fn order_text(mut v: Value) -> String {
+    fn plus_zero(v: &mut Value) {
+        match v {
+            Value::Number(n) if n.is_f64() && n.as_f64().is_some_and(|f| f == 0.0) => {
+                *v = Value::from(0.0);
+            }
+            Value::Array(items) => items.iter_mut().for_each(plus_zero),
+            Value::Object(fields) => fields.values_mut().for_each(plus_zero),
+            _ => {}
+        }
+    }
+    plus_zero(&mut v);
+    canonical(&v)
 }
 
 fn field<T: Serialize + Clone>(a: &T, sa: &Stamp, b: &T, sb: &Stamp) -> (T, Stamp) {
@@ -513,8 +540,8 @@ pub(crate) mod strategies {
     }
 
     /// A later version's fields with every shape the merge tells apart: fields with their clocks, a clock without its
-    /// field, keys that can't pair (`Stamp`, a clock's clock, the empty key), and values that look like a clock but
-    /// aren't one (a list, a bad time) or are one with more in it.
+    /// field, keys that can't pair (`Stamp`, a clock's clock, the empty key), values that look like a clock but aren't
+    /// one (a list, a bad time) or are one with more in it, one clock written three ways, and -0.0 beside 0.0.
     pub(crate) fn later_fields() -> impl Strategy<Value = Extra> {
         let key = prop::sample::select(vec![
             "budget",
@@ -530,9 +557,14 @@ pub(crate) mod strategies {
             .prop_map(|(h, by)| json!({"at": format!("2026-11-05T0{h}:00:00Z"), "by": by}));
         let value = prop_oneof![
             (0i64..3).prop_map(|n| json!(n)),
+            Just(json!(0.0)),
+            Just(json!(-0.0)),
+            Just(json!({"n": -0.0})),
             Just(json!("x")),
             Just(Value::Null),
             clock,
+            Just(json!({"at": "2026-11-05T01:00:00+00:00", "by": "a"})),
+            Just(json!({"at": "2026-11-05T01:00:00.900Z", "by": "a"})),
             Just(json!(["2026-11-05T01:00:00Z", "a"])),
             Just(json!({"at": "not a time", "by": "a"})),
             Just(json!({"at": "2026-11-05T01:00:00Z", "by": "a", "seq": 1})),
@@ -1181,6 +1213,31 @@ mod tests {
         let want = extra(json!({"note": "b", "Stamp": 1, "other": true}));
         assert_eq!(merge_extra(&p, &q), want);
         assert_eq!(merge_extra(&q, &p), want);
+    }
+
+    /// -0.0 equals 0.0 as a value, and one clock can be written two ways. Two values that are equal must also tie in
+    /// the order, or which of them a merge keeps (the first, when they are equal) decides a later merge: the review's
+    /// three copies, merged directly and as tasks, where the merge of a file passes an equal task by untouched.
+    #[test]
+    fn equal_values_tie_in_the_order_so_the_laws_hold_with_minus_zero() {
+        let clock = |at: &str| json!({"at": at, "by": "a"});
+        let (z, utc) = ("2026-11-05T09:00:00Z", "2026-11-05T09:00:00+00:00");
+        let extra = |k: f64, at: &str| -> Extra {
+            serde_json::from_value(json!({"k": k, "kStamp": clock(at)})).unwrap()
+        };
+        let (a, b, c) = (extra(-0.0, z), extra(-0.0, utc), extra(0.0, utc));
+        assert_eq!(
+            merge_extra(&merge_extra(&a, &b), &c),
+            merge_extra(&a, &merge_extra(&b, &c))
+        );
+        let (x, y, w) = (extra(-0.0, utc), extra(0.0, utc), extra(-0.0, z));
+        let file = |e: &Extra| {
+            let mut s = later_copy(&json!({}));
+            s.tasks.get_mut("t").unwrap().extra = e.clone();
+            s
+        };
+        let (x, y, w) = (file(&x), file(&y), file(&w));
+        assert_eq!(merge(&merge(&x, &y), &w), merge(&x, &merge(&y, &w)));
     }
 
     #[test]
