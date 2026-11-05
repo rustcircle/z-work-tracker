@@ -2,7 +2,8 @@
 // that changes it. An item counts under its task's tags ("Same as task", the default) or under some of them, and none
 // ticked is "No tag". Every change is saved at once, one after the other, each from what the one before left, with what
 // the row showed as the value to compare with, so a stale view never overwrites another computer's newer choice: the
-// backend refuses with `conflict`, nothing is written, and the row says so and shows what is stored.
+// backend refuses with `conflict`, nothing is written, and the row says so and shows what is stored. A change that fails or
+// is refused drops the ones queued behind it, which were worked out from a state the store never reached.
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 
 import { useAppState } from '../../app/store';
@@ -77,6 +78,10 @@ export function SubtaskTags({ taskId, item, tags, ro }: Props) {
   const latest = useRef<Intent | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
   const pending = useRef(0);
+  // Counts the times a change failed or was refused: a queued change from before one is not sent.
+  const epoch = useRef(0);
+  // Whether focus is in the control, to give it somewhere to go if the list closes under it.
+  const focused = useRef(false);
 
   // Another computer took over while the list was open: nothing in it can be changed now.
   if (open && ro.readOnly) setOpen(false);
@@ -97,17 +102,29 @@ export function SubtaskTags({ taskId, item, tags, ro }: Props) {
     const from = latest.current ? latest.current.tags : item.tags;
     const next = change(from);
     if (sameOverride(from, next)) return;
+    const mine = epoch.current;
     latest.current = { tags: next };
     setIntent(latest.current);
     setNote(null);
     pending.current += 1;
+    /** What is queued was asked for from what an earlier change would have left: with that gone, the row shows what is stored again. */
+    const drop = (): void => {
+      epoch.current += 1;
+      latest.current = null;
+      setIntent(null);
+    };
     queue.current = queue.current.then(async () => {
       try {
+        if (mine !== epoch.current) return;
         const reply = await api.setSubtaskTags(taskId, item.id, next, { tags: from });
         adopt(reply.snapshot);
-        if (reply.conflict) setNote(CONFLICT_NOTE);
+        if (reply.conflict) {
+          setNote(CONFLICT_NOTE);
+          drop();
+        }
       } catch (e) {
         showError(errorMessage(e));
+        drop();
       } finally {
         pending.current -= 1;
         // With nothing left on its way the row follows the store again.
@@ -124,13 +141,24 @@ export function SubtaskTags({ taskId, item, tags, ro }: Props) {
     if (giveFocusBack) buttonRef.current?.focus();
   };
 
+  // Another computer took the lease while focus was in the control: the list is gone and the button is off, so focus goes to the
+  // item's row, which can hold it, and not to the page.
+  useEffect(() => {
+    if (!ro.readOnly || !focused.current) return;
+    focused.current = false;
+    rootRef.current?.closest<HTMLElement>('li')?.focus();
+  }, [ro.readOnly]);
+
   // While the list is open: focus goes into it, and a press or focus anywhere else closes it without taking focus back.
   useEffect(() => {
     if (!open) return undefined;
     popRef.current?.querySelector<HTMLElement>('[data-tags-item]')?.focus();
     popRef.current?.scrollIntoView?.({ block: 'nearest' });
     const leave = (e: Event): void => {
-      if (e.target instanceof Node && !rootRef.current?.contains(e.target)) setOpen(false);
+      if (e.target instanceof Node && !rootRef.current?.contains(e.target)) {
+        focused.current = false;
+        setOpen(false);
+      }
     };
     document.addEventListener('pointerdown', leave, true);
     document.addEventListener('focusin', leave, true);
@@ -147,10 +175,11 @@ export function SubtaskTags({ taskId, item, tags, ro }: Props) {
       close(true);
       return;
     }
-    // A checkbox answers Space by itself; Enter ticks it too, as the owner asked, and a button answers both.
+    // A checkbox answers Space by itself; Enter ticks it too, as the owner asked, and a button answers both. Holding Enter down
+    // ticks it once, not at the speed the keyboard repeats.
     if (e.key === 'Enter' && e.target instanceof HTMLInputElement) {
       e.preventDefault();
-      e.target.click();
+      if (!e.repeat) e.target.click();
       return;
     }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
@@ -164,7 +193,17 @@ export function SubtaskTags({ taskId, item, tags, ro }: Props) {
   };
 
   return (
-    <div className="subtask-tags" ref={rootRef}>
+    <div
+      className="subtask-tags"
+      ref={rootRef}
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onBlur={(e) => {
+        // A blur with nowhere to go (the window, an element taken away) is not focus leaving: only a move to another element is.
+        if (e.relatedTarget instanceof Node && !e.currentTarget.contains(e.relatedTarget)) focused.current = false;
+      }}
+    >
       <button
         ref={buttonRef}
         type="button"

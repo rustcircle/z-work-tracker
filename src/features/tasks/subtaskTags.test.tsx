@@ -288,6 +288,20 @@ describe('choosing with the keyboard', () => {
     expect(calls('set_subtask_tags').map((a) => a.tags)).toEqual([[], ['tag-concept', 'tag-revision', 'tag-admin'], null, [], null]);
   });
 
+  it('ticks once for a held Enter, not once for every repeat of the key', async () => {
+    const user = userEvent.setup();
+    boot(world());
+    const c = await card('Logo concepts');
+    await user.click(tagsButton(c, 'Sketches', 'Same as task'));
+    const box = dialogOf(c, 'Sketches').getByRole('checkbox', { name: 'Concept' });
+    box.focus();
+    fireEvent.keyDown(box, { key: 'Enter' });
+    fireEvent.keyDown(box, { key: 'Enter', repeat: true });
+    fireEvent.keyDown(box, { key: 'Enter', repeat: true });
+    await waitFor(() => expect(storedOf()?.tags).toEqual(['tag-revision', 'tag-admin']));
+    expect(calls('set_subtask_tags')).toHaveLength(1);
+  });
+
   it('closes when focus moves on past the list, without taking focus back', async () => {
     const user = userEvent.setup();
     boot(world());
@@ -328,6 +342,35 @@ describe('while another computer holds the lease', () => {
     await waitFor(() => expect(c.queryByRole('dialog')).toBeNull());
     expect(tagsButton(c, 'Sketches', 'Same as task')).toBeDisabled();
     expect(calls('set_subtask_tags')).toEqual([]);
+  });
+
+  it('focus goes to the item’s row when the lease is taken with focus in the list, since the list and the button are gone', async () => {
+    const user = userEvent.setup();
+    boot(world());
+    const c = await card('Logo concepts');
+    await user.click(tagsButton(c, 'Sketches', 'Same as task'));
+    expect(dialogOf(c, 'Sketches').getByRole('button', { name: 'Same as task' })).toHaveFocus();
+    await act(async () => {
+      seedLease(state, 'live');
+      await emit('state-changed');
+    });
+    await waitFor(() => expect(c.queryByRole('dialog')).toBeNull());
+    expect(document.querySelector('[data-row="st-sketches"]')).toHaveFocus();
+  });
+
+  it('leaves focus where it is when the lease is taken and focus was elsewhere', async () => {
+    const user = userEvent.setup();
+    boot(world());
+    const c = await card('Logo concepts');
+    await user.click(tagsButton(c, 'Sketches', 'Same as task'));
+    const edit = c.getByRole('button', { name: 'Edit Logo concepts' });
+    edit.focus();
+    await waitFor(() => expect(c.queryByRole('dialog')).toBeNull());
+    await act(async () => {
+      seedLease(state, 'live');
+      await emit('state-changed');
+    });
+    expect(edit).toHaveFocus();
   });
 
   it('a change that was already on its way when the lease went says what the backend said, and shows what is stored', async () => {
@@ -426,6 +469,45 @@ describe('changes that follow each other', () => {
     ]);
     await waitFor(() => expect(tagsButton(c, 'Sketches', 'Admin')).toBeVisible());
     expect(c.queryByRole('alert')).toBeNull();
+  });
+
+  it('drops what is queued behind a change that fails: it was worked out from a state the store never reached, so it is not sent', async () => {
+    const s = world();
+    boot(s);
+    const c = await card('Logo concepts');
+    fireEvent.click(tagsButton(c, 'Sketches', 'Same as task'));
+    const list = dialogOf(c, 'Sketches');
+    s.failNext = ['set_subtask_tags'];
+    fireEvent.click(list.getByRole('checkbox', { name: 'Concept' }));
+    fireEvent.click(list.getByRole('checkbox', { name: 'Revision' }));
+    await waitFor(() => expect(screen.getByText('mock: set_subtask_tags failed')).toBeVisible());
+    // The second change was never sent, so the backend never refuses it as a conflict, and the row says no such thing.
+    expect(calls('set_subtask_tags')).toHaveLength(1);
+    expect(c.queryByRole('alert')).toBeNull();
+    await waitFor(() => expect(list.getByRole('checkbox', { name: 'Concept' })).toBeChecked());
+    expect(list.getByRole('checkbox', { name: 'Revision' })).toBeChecked();
+    expect(storedOf()).toBeUndefined();
+    // The next change starts from what is stored and goes through.
+    fireEvent.click(list.getByRole('checkbox', { name: 'Admin' }));
+    await waitFor(() => expect(storedOf()?.tags).toEqual(['tag-concept', 'tag-revision']));
+    expect(calls('set_subtask_tags')[1]).toMatchObject({ expected: { tags: null } });
+  });
+
+  it('drops what is queued behind a refused change too, and says so once', async () => {
+    boot(world());
+    const c = await card('Logo concepts');
+    fireEvent.click(tagsButton(c, 'Sketches', 'Same as task'));
+    const list = dialogOf(c, 'Sketches');
+    // Another computer gave the item a list while this one still shows "Same as task".
+    const logo = state.tasks.find((t) => t.id === 't-logo');
+    if (logo) logo.subtaskTags = { 'st-sketches': { tags: ['tag-concept'], stamp: SAME_STAMP } };
+    fireEvent.click(list.getByRole('checkbox', { name: 'Concept' }));
+    fireEvent.click(list.getByRole('checkbox', { name: 'Revision' }));
+    await waitFor(() => expect(c.getByRole('alert')).toHaveTextContent(CONFLICT_NOTE));
+    expect(calls('set_subtask_tags')).toHaveLength(1);
+    expect(c.getAllByRole('alert')).toHaveLength(1);
+    expect(storedOf()?.tags).toEqual(['tag-concept']);
+    await waitFor(() => expect(tagsButton(c, 'Sketches', 'Concept')).toBeVisible());
   });
 
   it('shows an error when a save fails, and the row goes back to what is stored', async () => {

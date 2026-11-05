@@ -35,6 +35,12 @@ const effectiveCases = table.effective as unknown as EffectiveCase[];
 const pruneCases = table.prune as unknown as PruneCase[];
 const setCases = table.set as unknown as SetCase[];
 
+describe('the shared table', () => {
+  it('has the cases it has today, so that a table cut short is noticed', () => {
+    expect([effectiveCases.length, pruneCases.length, setCases.length]).toEqual([14, 6, 12]);
+  });
+});
+
 const TAGS = ['tag-a', 'tag-b', 'tag-c', 'tag-d', 'tag-x'];
 const FIRST = '2026-11-05T09:00:00Z';
 const STAMP = { at: '2026-11-01T09:00:00Z', by: 'd' };

@@ -23,8 +23,8 @@ const viewOf = (c: EffectiveCase) => ({
 });
 
 describe('effective tags of a subtask, the table shared with the Rust core', () => {
-  it('has the cases the Rust test counts', () => {
-    expect(cases.length).toBeGreaterThanOrEqual(12);
+  it('has the cases the table has today, so that a table cut short is noticed (the Rust test asks for 12 at least)', () => {
+    expect(cases.length).toBeGreaterThanOrEqual(14);
   });
 
   it.each(cases.map((c) => [c.name, c] as const))('%s', (_, c) => {
